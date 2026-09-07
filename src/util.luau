@@ -4,6 +4,7 @@ local messages = require("./messages")
 
 type World = types.World
 type Entity<T = nil> = types.Entity<T>
+type ErrorGuard = types.ErrorGuard
 type SyncKind = types.SyncKind
 
 local function describe(world: World, entity: Entity): string
@@ -47,6 +48,25 @@ local function own<T>(original: T, current: T): T
 		return table.clone(original :: any) :: any
 	end
 	return current
+end
+
+local function create_guard(): ErrorGuard
+	local failed: any = nil
+	local function run(fn: () -> ())
+		local ok, err = pcall(fn)
+		if not ok and failed == nil then
+			failed = err
+		end
+	end
+	local function rethrow()
+		if failed ~= nil then
+			error(failed, 0)
+		end
+	end
+	local function get_error(): any
+		return failed
+	end
+	return { run = run, rethrow = rethrow, get_error = get_error }
 end
 
 local function run_all<T>(items: { T }, fn: (T) -> ())
@@ -99,6 +119,7 @@ end
 return table.freeze({
 	describe = describe,
 	targets_of = targets_of,
+	create_guard = create_guard,
 	sync = sync,
 	own = own,
 	create_guid = create_guid,

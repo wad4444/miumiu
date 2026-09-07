@@ -43,21 +43,21 @@ declare namespace miumiu {
 		read(key: string): { expect(): unknown };
 	}
 
-	/** The part of the lapis library the import uses; pass the library itself. */
-	export interface LapisLibrary {
-		createCollection: (name: string, options: unknown) => LapisCollection;
+	/** The part of the lapis library the import uses; pass the library itself. `O` is its collection options type. */
+	export interface LapisLibrary<O = unknown> {
+		createCollection(name: string, options: O): LapisCollection;
 	}
 
-	/** `meta(collection, miumiu.from_foreign, { type: "lapis", name, source: lapis, options })`. */
-	export interface LapisSource {
+	/** `meta(collection, miumiu.from_foreign, { type: "lapis", name, source: lapis, options })`: `options` are handed to `source.createCollection` as they are, so keep the lapis migrations in them for as long as unimported keys exist. */
+	export interface LapisSource<O = unknown> {
 		type: "lapis";
 		name: string;
-		source: LapisLibrary;
-		options: unknown;
+		source: LapisLibrary<O>;
+		options: O;
 	}
 
 	/** Every foreign source the import understands; lapis is the only one. */
-	export type ForeignSource = LapisSource;
+	export type ForeignSource = LapisSource<any>;
 
 	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes; `idle_interval` (default 60) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off. `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `default_scope` marks the one collection that takes every saveable and kind without a `field_of` pair when a world declares several. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). */
 	export interface CollectionConfig {
@@ -126,24 +126,47 @@ declare namespace miumiu {
 	}
 
 	/** A typed hook symbol; `Args` is what the callback receives. */
-	export interface Hook<Args extends unknown[]> {
+	export interface Hook<Args extends unknown[], Name extends string = string> {
 		readonly __hook: Args;
+		readonly __name: Name;
 	}
 	/** Fires after a pull adopted something new, with the merged truth in stored form. */
-	export type PulledHook = Hook<[truth: Data]>;
+	export type PulledHook = Hook<[truth: Data], "pulled">;
 	/** Fires once when the session closes, with why: final write done, a newer server took the key, or `close` ran out of budget. */
-	export type ClosedHook = Hook<[closure: Closure]>;
+	export type ClosedHook = Hook<[closure: Closure], "closed">;
 	/** Fires right before the session writes, while its entities are still linked: snapshots run here. */
-	export type WritingHook = Hook<[]>;
+	export type WritingHook = Hook<[], "writing">;
+	/** Fires once a batch's group is in every record it touched. Connecting after that fires at once. */
+	export type LandedHook = Hook<[], "landed">;
+	/** Fires once a batch's commit failed: the group was abandoned on every session and the world rolled back (only values the batch still held). Connecting after that fires at once. */
+	export type RefusedHook = Hook<[message: string], "refused">;
+
+	/** Where a batch stands: `pending` until its commit finishes, then `landed` or `refused`. */
+	export type Outcome = { kind: "pending" } | { kind: "landed" } | { kind: "refused"; message: string };
+
+	/** The handle `batch` and `delta` return. The commit runs in the background; hook or await it. */
+	export interface Batch {
+		/** `pending`, `landed` or `refused`. */
+		get_outcome(): Outcome;
+		/** True once landed or refused. */
+		is_settled(): boolean;
+		/** Connect to `landed` or `refused`; fires at once if already settled. Returns a disconnect. Callbacks are pcalled and a throw is warned, never raised. */
+		hook(hook: LandedHook, callback: () => void): () => void;
+		hook(hook: RefusedHook, callback: (message: string) => void): () => void;
+		/** Yields until settled; returns on `landed`, throws the message on `refused`. The durability point for receipts. */
+		await(): void;
+	}
 
 	/** Why a session closed: `clean` after its final write; `refused` when a newer server took the key; `abandoned` when `close` gave up on the final write. Both latter kinds lost the unwritten changes. */
 	export type Closure = { kind: "clean" } | { kind: "refused"; message: string } | { kind: "abandoned"; message: string };
 
-	/** The hook symbols `Session.hook` takes; see `PulledHook`, `ClosedHook`, `WritingHook`. */
+	/** The hook symbols `Session.hook` (`pulled`, `closed`, `writing`) and `Batch.hook` (`landed`, `refused`) take. */
 	export const hooks: {
 		readonly pulled: PulledHook;
 		readonly closed: ClosedHook;
 		readonly writing: WritingHook;
+		readonly landed: LandedHook;
+		readonly refused: RefusedHook;
 	};
 
 	/** One live key. Obtain through `get_session`; owned by the link, never unload it yourself. */
@@ -162,10 +185,12 @@ declare namespace miumiu {
 		is_open(): boolean;
 		/** True while ops are journaled but not yet written, including while a write is in flight. */
 		is_dirty(): boolean;
-		/** Rebase unwritten changes onto the live record and write them now instead of waiting for `pull_interval`. Yields; returns only once every change journaled before the call is in the record, and throws otherwise (write failed after its retries, session refused or closed). The boolean says whether something new from elsewhere was adopted, not whether the write happened. This is the durability point for receipts. */
+		/** Rebase unwritten changes onto the live record and write them now instead of waiting for `pull_interval`. Yields; returns only once every change journaled before the call is in the record, and throws otherwise (write failed after its retries, session refused or closed). The boolean says whether something new from elsewhere was adopted, not whether the write happened. The durability point for a plain write; receipts await a `batch`. */
 		sync(): boolean;
 		/** Connect to `pulled`, `closed` or `writing`; returns a disconnect. Callbacks are pcalled and a throw is warned, never raised. */
-		hook<Args extends unknown[]>(hook: Hook<Args>, callback: (...args: Args) => void): () => void;
+		hook(hook: PulledHook, callback: (truth: Data) => void): () => void;
+		hook(hook: ClosedHook, callback: (closure: Closure) => void): () => void;
+		hook(hook: WritingHook, callback: () => void): () => void;
 	}
 
 	/** Drain queued link/unlink/load/pull events into the world. Call every Heartbeat. No-op after `close`. Unlink, then `step`, then delete the entity: a root deleted while linked keeps its record, and its owned children are deleted with it on the next `step`. */
@@ -176,12 +201,14 @@ declare namespace miumiu {
 	export function get_session(world: World, collection: Entity, key: string): Session | undefined;
 	/** Erase a key in one write: a fresh empty record, every stored key stamped past its old stamp. A loaded key also drops its unwritten changes and lazy marks, puts initials back on every linked entity, deletes its owned children and resets attached ones; a key nobody here holds is wiped straight in the store. Yields; throws if the write fails, keeping everything. */
 	export function wipe(world: World, collection: Entity, key: string): void;
-	/** Every write inside lands as one group, on every key it touches, or none. Yields until written; throws and rolls the world back otherwise, leaving alone any value the world changed again meanwhile. */
-	export function batch(world: World, fn: () => void): void;
+	/** Every write inside lands as one group, on every key it touches, or none. Runs `fn` now, journals the group and returns without yielding; the commit runs in the background and the returned `Batch` reports it (`await` for receipts). A write `fn` cannot make (guard, unloaded entity, `fn` throwing) throws here and rolls the world back at once; a commit refused later rolls back only the values the batch still holds and fires `refused`. A nested call joins the outer batch and returns the outer handle. A batch that captured no saveable write lands at once; snapshots are evaluated at write time outside any batch. */
+	export function batch(world: World, fn: () => void): Batch;
 	/** Like `batch`, but each `set` on a root saveable is diffed against the previous value into `add`/`insert`/`erase`/`put`/`drop`. Build new values from the old ones. A write inside a child is a whole put, never a diff. */
-	export function delta(world: World, fn: () => void): void;
+	export function delta(world: World, fn: () => void): Batch;
 	/** True for a `Session` returned by `get_session`. */
 	export function is_session(value: unknown): value is Session;
+	/** True for a `Batch` returned by `batch` or `delta`. */
+	export function is_batch(value: unknown): value is Batch;
 	/** Route the library's warnings; omit to restore `warn`. */
 	export function set_warn(sink?: (message: string) => void): void;
 

@@ -190,6 +190,12 @@ local errors = table.freeze({
 })
 
 local warnings = table.freeze({
+	batch_refused = function(id: string, keys: { string }, message: string)
+		return prefixed(`batch {id} on "{table.concat(keys, '", "')}" refused and rolled back: {message}`)
+	end,
+	rollback_failed = function(id: string, err: unknown)
+		return prefixed(`rollback of batch {id} threw and may be incomplete: {err}`)
+	end,
 	hook_failed = function(owner: unknown, hook: unknown, err: unknown)
 		return prefixed(`{hook} callback on {owner} failed: {err}`)
 	end,

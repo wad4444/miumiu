@@ -24,6 +24,7 @@
 	"devDependencies": {
 		"@rbxts/compiler-types": "^3.0.0-types.0",
 		"@rbxts/jecs": "^0.11.0",
+		"@rbxts/lapis": "^0.3.8",
 		"@rbxts/types": "^1.0.911",
 		"typescript": "^5.5.3"
 	}

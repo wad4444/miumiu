@@ -19,7 +19,7 @@ type UnloadAttempt = types.UnloadAttempt
 local close_budget = 25
 local close_backoff_cap = 8
 
-local function handle(context: Context, event: Event)
+local function dispatch(context: Context, event: Event)
 	if event.kind == "link" then
 		link.on_link(context, event.entity, event.collection, event.key)
 	elseif event.kind == "unlink" then
@@ -41,7 +41,7 @@ local function drain(context: Context)
 		link.run_cleanups(context)
 		local events = world_state.events
 		while #events > 0 do
-			handle(context, table.remove(events, 1) :: Event)
+			dispatch(context, table.remove(events, 1) :: Event)
 		end
 	until #world_state.cleanups == 0
 end

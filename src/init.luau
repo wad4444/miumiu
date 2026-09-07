@@ -1,5 +1,6 @@
 local types = require("@self/types")
 local batch = require("@self/batch")
+local handle = require("@self/handle")
 local hooks = require("@self/hooks")
 local ids = require("@self/ids")
 local logging = require("@self/logging")
@@ -30,6 +31,10 @@ export type CollectionConfig = types.CollectionConfig
 export type ResolvedCollectionConfig = types.ResolvedCollectionConfig
 export type Session = types.Session
 export type Closure = types.Closure
+export type Batch = types.Batch
+export type Outcome = types.Outcome
+export type LandedHook = types.LandedHook
+export type RefusedHook = types.RefusedHook
 export type PulledHook = types.PulledHook
 export type ClosedHook = types.ClosedHook
 export type WritingHook = types.WritingHook
@@ -64,6 +69,7 @@ local miumiu = {
 
 	hooks = hooks,
 	is_session = session.is_session,
+	is_batch = handle.is_batch,
 	set_warn = logging.set_warn,
 }
 

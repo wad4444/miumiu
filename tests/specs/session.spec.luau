@@ -13,7 +13,7 @@ return function()
 	local add = utils.add
 	local fresh_id = utils.fresh_id
 
-	describe("load_session", function()
+	describe("session.load_session", function()
 		it("starts empty and writes nothing for a fresh key", function()
 			local backend = utils.create_backend()
 			local loaded = utils.open_session(backend, "k")
@@ -42,7 +42,7 @@ return function()
 		end)
 	end)
 
-	describe("journal and pull", function()
+	describe("session.journal", function()
 		it("applies journaled ops to the truth before they are written", function()
 			local backend = utils.create_backend()
 			local loaded = utils.open_session(backend, "k", { pull_interval = never })
@@ -313,7 +313,7 @@ return function()
 		end)
 	end)
 
-	describe("unload", function()
+	describe("session.unload", function()
 		it("writes what is left and closes", function()
 			local backend = utils.create_backend()
 			local loaded = utils.open_session(backend, "k", { pull_interval = never })

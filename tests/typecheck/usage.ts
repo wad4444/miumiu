@@ -1,4 +1,5 @@
-import { component, type Entity, Exclusive, meta, Name, pair, tag, type World } from "@rbxts/jecs";
+import { component, type Entity, Exclusive, meta, Name, pair, tag, type World, world as create_world } from "@rbxts/jecs";
+import lapis from "@rbxts/lapis";
 import miumiu, {
 	type ChildConfig,
 	type Closure,
@@ -13,30 +14,34 @@ const config: CollectionConfig = {
 	pull_interval: 15,
 	idle_interval: 60,
 	default_scope: true,
-	user_ids: (key) => [tonumber(key) ?? 0],
+	user_ids: (key) => {
+		const id = tonumber(key);
+		return id === undefined ? [] : [id];
+	},
 	data_store_service: game.GetService("DataStoreService"),
 };
 
 export const player_data = tag();
 meta(player_data, miumiu.collection, "player-data");
 meta(player_data, miumiu.config, config);
+const legacy_options = { defaultData: { luck_boosts: [] as number[] } };
 meta(player_data, miumiu.from_foreign, {
 	type: "lapis",
 	name: "PlayerData",
-	source: {} as miumiu.LapisLibrary,
-	options: { defaultData: {} },
+	source: lapis,
+	options: legacy_options,
 });
 interface OldSave {
 	luck_boosts: number[];
-	containers?: Record<string, { zones: Record<string, number> }>;
+	containers?: ReadonlyMap<string, { zones: ReadonlyMap<string, number> }>;
 }
 const convert_containers: Migration<OldSave> = (world, entity, context) => {
-	for (const [id, stored] of pairs(context.stored.containers ?? {})) {
+	for (const [id, stored] of context.stored.containers ?? new Map()) {
 		const container = world.entity();
 		world.add(container, plot);
 		world.set(container, plot_kind, id);
 		world.add(container, pair(owner_link, entity));
-		for (const [index, rarity] of pairs(stored.zones)) {
+		for (const [index, rarity] of stored.zones) {
 			const zone = world.entity();
 			world.add(zone, zone_tag);
 			world.set(zone, zone_index, tonumber(index) ?? 0);
@@ -131,9 +136,11 @@ export function ready(world: World, on_ready: (entity: Entity) => void) {
 
 export function grant(world: World, entity: Entity, product: number) {
 	const [ok, err] = pcall(() =>
-		miumiu.batch(world, () => {
-			world.set(entity, pair(buff, fire), { multiplier: 2, expires_at: os.time() + product });
-		}),
+		miumiu
+			.batch(world, () => {
+				world.set(entity, pair(buff, fire), { multiplier: 2, expires_at: os.time() + product });
+			})
+			.await(),
 	);
 	return ok ? Enum.ProductPurchaseDecision.PurchaseGranted : (print(err), Enum.ProductPurchaseDecision.NotProcessedYet);
 }
@@ -167,13 +174,19 @@ export function wipe(world: World, user_id: number) {
 }
 
 export function transfer(world: World, sender: Entity, receiver: Entity, amount: number) {
-	miumiu.batch(world, () => {
+	const group: miumiu.Batch = miumiu.batch(world, () => {
 		miumiu.delta(world, () => {
 			world.set(sender, money, world.get(sender, money)! - amount);
 			world.set(receiver, money, world.get(receiver, money)! + amount);
 		});
 		world.add(sender, tutorial_finished);
 	});
+	group.hook(miumiu.hooks.landed, () => print("transferred"));
+	group.hook(miumiu.hooks.refused, (message: string) => print("refused", message));
+	// @ts-expect-error a batch never fires session hooks
+	group.hook(miumiu.hooks.pulled, () => {});
+	const outcome: miumiu.Outcome = group.get_outcome();
+	return miumiu.is_batch(group) && outcome.kind !== "refused" && !group.is_settled();
 }
 
 export function is_ready(world: World, entity: Entity) {
@@ -182,6 +195,28 @@ export function is_ready(world: World, entity: Entity) {
 
 export function failure(world: World, entity: Entity): string | undefined {
 	return world.get(entity, pair(miumiu.data_error, player_data));
+}
+
+export function on_failure(world: World, kick: (entity: Entity, message: string) => void) {
+	return world.added(miumiu.data_error, (entity, id, message) => {
+		if (id === pair(miumiu.data_error, player_data)) kick(entity, message);
+	});
+}
+
+export const late_world = create_world();
+export const late_saveable = late_world.component<number>();
+late_world.set(late_saveable, miumiu.saveable, "late");
+late_world.set(late_saveable, miumiu.snapshot, (() => 1) as Snapshot<number>);
+late_world.set(player_data, miumiu.config, config);
+
+export function grant_async(world: World, entity: Entity) {
+	return Promise.try(() =>
+		miumiu
+			.batch(world, () => {
+				world.add(entity, tutorial_finished);
+			})
+			.await(),
+	);
 }
 
 export function watch(value: unknown) {
@@ -199,6 +234,8 @@ export function watch(value: unknown) {
 		print(closure.kind === "clean" ? "saved" : closure.message);
 	});
 	session.hook(miumiu.hooks.writing, () => print(session.is_dirty()));
+	// @ts-expect-error a session never fires batch hooks
+	session.hook(miumiu.hooks.landed, () => {});
 	disconnect();
 	return session.is_open() && session.is_dirty();
 }
@@ -232,5 +269,6 @@ export const every_export = {
 	delta: true,
 	hooks: true,
 	is_session: true,
+	is_batch: true,
 	set_warn: true,
 } satisfies Record<keyof typeof miumiu, true>;

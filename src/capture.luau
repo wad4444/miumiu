@@ -15,7 +15,6 @@ local state = require("./state")
 local util = require("./util")
 
 type Entity<T = nil> = types.Entity<T>
-type Except = types.Except
 type Ancestry = types.Ancestry
 type Capture = types.Capture
 type CaptureEntry = types.CaptureEntry
@@ -23,6 +22,7 @@ type ChildKind = types.ChildKind
 type ChildRecord = types.ChildRecord
 type ComponentWrite = types.ComponentWrite
 type Context = types.Context
+type Data = types.Data
 type ExistingChild = types.ExistingChild
 type Held = types.Held
 type Op = types.Op
@@ -222,18 +222,10 @@ local function split_path(ancestry: Ancestry): SplitPath
 	return { key = key, path = path }
 end
 
-local function except_of(write: ComponentWrite): Except
-	return {
-		entity = write.entity,
-		entry = write.entry,
-		target = write.except,
-		removed = write.change == "removed",
-	}
-end
-
-local function child_put(context: Context, ancestry: Ancestry, except: Except?): Op
+local function child_put(context: Context, ancestry: Ancestry): Op
 	local split = split_path(ancestry)
-	local index = context.world_state.children
+	local world_state = context.world_state
+	local index = world_state.children
 	local entity = children.lookup_entity(index, ancestry.root, ancestry.path)
 	local held = children.child_of(index, entity) :: ChildRecord
 	return {
@@ -242,12 +234,12 @@ local function child_put(context: Context, ancestry: Ancestry, except: Except?):
 		path = split.path,
 		value = children.pack(
 			context.world,
+			world_state.entities,
 			index,
 			entity,
 			held.kind,
 			context.schema.named,
-			context.world_state.warned,
-			except
+			world_state.warned
 		),
 		at = os.time(),
 	}
@@ -294,8 +286,48 @@ local function capture_ops(capture: Capture, sessions: { SessionInternal }, grou
 	end
 end
 
+local function shadow_fields(shadow: { [string]: any }, entries: { SchemaEntry }): Data
+	local fields: Data = {}
+	for _, entry in entries do
+		local value = shadow[entry.key]
+		if entry.kind == "tag" then
+			if value == true then
+				fields[entry.key] = true
+			elseif entry.has_initial then
+				fields[entry.key] = false
+			end
+		elseif value ~= nil then
+			fields[entry.key] = codec.stored_form(entry, value)
+		end
+	end
+	return fields
+end
+
+local function record_child(context: Context, capture: Capture, entity: Entity)
+	if capture.children[entity] then
+		return
+	end
+	capture.children[entity] = true
+	local world_state = context.world_state
+	local held = children.child_of(world_state.children, entity) :: ChildRecord
+	local shadow = state.entity_state(world_state, entity).shadow
+	table.insert(capture.undo, {
+		kind = "child",
+		entity = entity,
+		child = held.kind,
+		previous = shadow_fields(shadow, held.kind.entries),
+		value = nil,
+	})
+end
+
 local function record_component(context: Context, capture: Capture, owner: Held, write: ComponentWrite)
 	local entry, entity = write.entry, write.entity
+	if owner.kind == "child" then
+		record_child(context, capture, entity)
+		remember(context.world_state, write)
+		capture_ops(capture, owner.sessions, { child_put(context, owner.ancestry) }, coalesce_key(owner.ancestry))
+		return
+	end
 	local previous = remember(context.world_state, write)
 	if entry.kind == "tag" then
 		table.insert(capture.undo, { kind = "tag", entity = entity, id = entry.id, present = previous == true })
@@ -309,16 +341,6 @@ local function record_component(context: Context, capture: Capture, owner: Held,
 			capture.undo,
 			{ kind = "component", entity = entity, id = entry.id, previous = previous, value = write.value }
 		)
-	end
-
-	if owner.kind == "child" then
-		capture_ops(
-			capture,
-			owner.sessions,
-			{ child_put(context, owner.ancestry, except_of(write)) },
-			coalesce_key(owner.ancestry)
-		)
-		return
 	end
 
 	if capture.delta then
@@ -371,16 +393,16 @@ local function journal_component(context: Context, write: ComponentWrite, flushi
 		warn_unsaved(context, write)
 		return
 	end
+	local entity_state = state.entity_state(world_state, write.entity)
 	if #owner.sessions == 0 then
-		if capture then
+		if capture and not entity_state.dropped then
 			reject_unloaded(context, write)
 		end
 		return
 	end
 
 	validate_write(context, write)
-	local entity_state = state.entity_state(world_state, write.entity)
-	if capture then
+	if capture and not flushing then
 		if capture.delta and is_lazy(write.entry) then
 			restore(context, write, entity_state.shadow[write.entry.key])
 			error(messages.errors.not_a_delta(write.entry.key, messages.reasons.lazy), 0)
@@ -403,7 +425,7 @@ local function journal_component(context: Context, write: ComponentWrite, flushi
 	local previous = entity_state.shadow[write.entry.key]
 	local encoded, op = pcall(function(): Op
 		if owner.kind == "child" then
-			return child_put(context, owner.ancestry, except_of(write))
+			return child_put(context, owner.ancestry)
 		end
 		return codec.op_for(write.entry, write.change, write.value)
 	end)
@@ -545,8 +567,11 @@ local function on_detached(context: Context, write: RelationWrite)
 		end
 		return
 	end
+	if not write.deleted then
+		state.entity_state(world_state, write.entity).dropped = true
+	end
 	emit_child(context, ancestry, child_drop, function(capture)
-		table.insert(capture.undo, { kind = "pair", entity = write.entity, id = pair, present = true })
+		table.insert(capture.undo, { kind = "pair", entity = write.entity, id = write.trigger, present = true })
 	end)
 end
 
@@ -596,6 +621,7 @@ local function on_attached(context: Context, write: RelationWrite)
 		error(id, 0)
 	end
 	children.record(index, write.entity, write.child, write.parent, id)
+	state.entity_state(world_state, write.entity).dropped = false
 	if applying then
 		return
 	end
@@ -614,7 +640,7 @@ local function on_attached(context: Context, write: RelationWrite)
 	emit_child(context, ancestry, function(found)
 		return child_put(context, found)
 	end, function(capture)
-		table.insert(capture.undo, { kind = "pair", entity = write.entity, id = pair, present = false })
+		table.insert(capture.undo, { kind = "pair", entity = write.entity, id = write.trigger, present = false })
 	end)
 end
 

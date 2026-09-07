@@ -17,9 +17,9 @@ local util = require("./util")
 type World = types.World
 type Entity<T = nil> = types.Entity<T>
 type Cleanup = types.Cleanup
-type Detached = types.Detached
 type CollectionState = types.CollectionState
 type Context = types.Context
+type Detached = types.Detached
 type LinkPhase = types.LinkPhase
 type LinkState = types.LinkState
 type LinkStatus = types.LinkStatus
@@ -335,26 +335,20 @@ local function on_unlink(context: Context, entity: Entity, collection_entity: En
 	local by_key = state.link_states_of(context.world_state, collection_entity)
 	local key = state.linked_key(context.world_state, entity, collection_entity)
 	local link_state = if key then by_key[key] else nil
-	local failed: any = nil
-	local function guarded(fn: () -> ())
-		local ok, err = pcall(fn)
-		if not ok and failed == nil then
-			failed = err
-		end
-	end
+	local guard = util.create_guard()
 	if link_state and state.open_session(link_state) then
-		guarded(function()
+		guard.run(function()
 			write_fields(context, entity, collection_entity)
 		end)
 	end
-	guarded(function()
+	guard.run(function()
 		mark(context, entity, collection_entity, "none")
 	end)
 	if key and link_state then
 		forget_link(context, entity, collection_entity)
 		link_state.entities[entity] = nil
 		if link_state.phase.kind == "loaded" then
-			guarded(function()
+			guard.run(function()
 				reconcile.release_children(context, entity, schema.root_of(context.schema, collection_entity).kinds)
 			end)
 		end
@@ -369,9 +363,7 @@ local function on_unlink(context: Context, entity: Entity, collection_entity: En
 			end
 		end
 	end
-	if failed ~= nil then
-		error(failed, 0)
-	end
+	guard.rethrow()
 end
 
 local function on_loaded(context: Context, link_state: LinkState, loaded: SessionInternal)
@@ -462,22 +454,16 @@ end
 local function detach_all(context: Context): Detached
 	local world_state = context.world_state
 	local sessions: { SessionInternal } = {}
-	local failed: any = nil
-	local function guarded(fn: () -> ())
-		local ok, err = pcall(fn)
-		if not ok and failed == nil then
-			failed = err
-		end
-	end
+	local guard = util.create_guard()
 	for collection_entity, by_key in world_state.link_states do
 		for _, link_state in by_key do
 			if state.open_session(link_state) then
-				guarded(function()
+				guard.run(function()
 					snapshot_all(context, link_state)
 				end)
 			end
 			for entity in link_state.entities do
-				guarded(function()
+				guard.run(function()
 					mark(context, entity, collection_entity, "none")
 				end)
 			end
@@ -496,7 +482,7 @@ local function detach_all(context: Context): Detached
 		forget_orphan(world_state, loaded)
 		table.insert(sessions, loaded)
 	end
-	return { sessions = sessions, err = failed }
+	return { sessions = sessions, err = guard.get_error() }
 end
 
 return table.freeze({

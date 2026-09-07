@@ -2,8 +2,8 @@ local types = require("./types")
 local relations = require("./relations")
 
 type World = types.World
-type Context = types.Context
 type Entity<T = nil> = types.Entity<T>
+type Context = types.Context
 type EntityState = types.EntityState
 type LinkState = types.LinkState
 type SchemaEntry = types.SchemaEntry
@@ -59,7 +59,8 @@ local function entity_state(world_state: WorldState, entity: Entity): EntityStat
 	if existing then
 		return existing
 	end
-	local created: EntityState = { shadow = {}, supplied = {}, lazy = {}, baseline = {} }
+	local created: EntityState =
+		{ shadow = {}, supplied = {}, lazy = {}, baseline = {}, removing = {}, dropped = false }
 	world_state.entities[entity] = created
 	return created
 end

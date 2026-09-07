@@ -4,18 +4,28 @@
 
 First release candidate. Lockless sessions on jecs 0.11.
 
-Core: saveable components and tags, operations captured from world writes, `batch` and
-`delta`, per-key last-writer-wins stamps, a commit store for multi-key groups, guards,
-serdes, initial values, `get_session`, `close` with a budget. A failed batch commit undoes
-only the values its own writes still hold. Session hooks `pulled`, `closed(closure)` and
-`writing`; `get_closure` reporting `clean`, `refused` or `abandoned`; `sync` as the
-durability point. `idle_interval = math.huge` turns idle reads off. `set_warn`. Group,
-record and child ids are GUIDs; no `job_id` config.
+Core: saveable components and tags, operations captured from world writes, per-key
+last-writer-wins stamps, a commit store for multi-key groups, guards, serdes, initial
+values, `get_session`, `close` with a budget. Session hooks `pulled`, `closed(closure)`
+and `writing`; `get_closure` reporting `clean`, `refused` or `abandoned`; `sync` as the
+durability point of a plain write. `idle_interval = math.huge` turns idle reads off.
+`set_warn`. Group, record and child ids are GUIDs; no `job_id` config. An unlink, a load
+or a `close` whose listeners throw still detaches, marks and unloads. Cleanups queued by
+an event land in the same `step`.
+
+Batches: `batch` and `delta` run their function, journal the group and return a `Batch`
+handle without yielding (`get_outcome`, `is_settled`, `hook(landed | refused)`, `await`,
+`is_batch`); the commit runs in the background and `await` is the durability point for
+receipts. A failed commit undoes only the values its own writes still hold, repairs a
+child a plain write touched meanwhile, fires `refused`, and warns when nothing hooked
+it; a rollback that throws still settles the batch.
 
 Children (`miumiu.child`, `miumiu.child_id`): owned entities stored inside a record,
 attached ones supplied from it, nested to any depth, the relation marked `Exclusive`,
 one relation per entity. Attached entities keep their claim-time values as the baseline,
-recorded for the whole attached subtree when its top claims. `put`/`drop` stamped per
+recorded for the whole attached subtree when its top claims. A removal on a child (a
+tag, a component, a pair, `world:clear`) reaches the record at once. A child kind must
+be declared on a tag. `put`/`drop` stamped per
 path, a parent put outranking its subtree and the key's `set` outranking both; no `/` in
 keys or ids. Leave order unlink, `step`, delete: unlink deletes owned children and resets
 attached ones. `miumiu.data_shallow` for links that must not spawn children. Imported
@@ -35,20 +45,18 @@ stored targets; duplicate names warn and the loser is left out; a component pair
 without a value is not stored.
 
 Write-time values: snapshots (`miumiu.snapshot`) evaluated before every write, children
-included; `miumiu.lazy` saveables read at write time, flushed by unlink and `close`,
-recorded normally inside `batch`, refused inside `delta`.
+included, as a group of their own outside any batch; `miumiu.lazy` saveables read at
+write time, flushed by unlink, unclaim and `close`, surviving the supply of the write
+that preceded them, recorded normally inside `batch`, refused inside `delta`.
 
 Wipe: `miumiu.wipe` erases a key, loaded or not, stamping every stored key so older
 writes from elsewhere lose; a failed wipe keeps the session's changes.
 
-Config: `user_ids(key)` attaches user ids to every write and wipe of a key. A child
-kind must be declared on a tag. An unlink, a load or a `close` whose listeners throw
-still detaches, marks and unloads. A removal on a child reaches the record at once. A
-pending lazy value survives the supply of the write that preceded it, and an unclaim
-flushes it. Cleanups queued by an event land in the same `step`.
+Config: `user_ids(key)` attaches user ids to every write and wipe of a key.
 
 Migrations: scratch-world migrations, append-only, `context.legacy` for dropped keys and
-`context.stored` for the raw record; import from lapis.
+`context.stored` for the raw record (`MigrationContext<S>` in roblox-ts); import from
+lapis.
 
 Record format (the contract a future version keeps reading): `data` (stored form per
 key; tags as `true`, or `false` on a child for a removed tag with an initial; children

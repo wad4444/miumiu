@@ -10,15 +10,32 @@ local util = require("./util")
 type World = types.World
 type Entity<T = nil> = types.Entity<T>
 type ChildKind = types.ChildKind
+type EntityState = types.EntityState
 type Named = types.Named
 type RelationEntry = types.RelationEntry
+type Removal = types.Removal
 type RecorderSink = types.RecorderSink
 type Schema = types.Schema
 type SchemaEntry = types.SchemaEntry
 
+local function removing_of(world: World, entity: Entity): { [string]: Removal }
+	return state.entity_state(state.get(world), entity).removing
+end
+
+local function removed_targets(world: World, entity: Entity, key: string): { [Entity]: boolean }
+	local removing = removing_of(world, entity)
+	local existing = removing[key]
+	if existing and existing.kind == "targets" then
+		return existing.targets
+	end
+	local targets: { [Entity]: boolean } = {}
+	removing[key] = { kind = "targets", targets = targets }
+	return targets
+end
+
 local function watch_pairs(world: World, entry: RelationEntry, named: Named, sink: RecorderSink): { () -> () }
 	local warned = state.get(world).warned
-	local function emit(entity: Entity, except: Entity?, deleted: boolean)
+	local function emit(entity: Entity, except: { [Entity]: boolean }?, deleted: boolean)
 		local value = if deleted then nil else relations.pack(world, entry, entity, except, named, warned)
 		sink({
 			kind = "component",
@@ -27,18 +44,20 @@ local function watch_pairs(world: World, entry: RelationEntry, named: Named, sin
 			change = if value == nil then "removed" else "changed",
 			value = value,
 			deleted = deleted,
-			except = except,
 		})
 	end
+	local function settled(entity: Entity)
+		removing_of(world, entity)[entry.key] = nil
+		emit(entity, nil, false)
+	end
 	return {
-		world:added(entry.id, function(entity)
-			emit(entity, nil, false)
-		end),
-		world:changed(entry.id, function(entity)
-			emit(entity, nil, false)
-		end),
+		world:added(entry.id, settled),
+		world:changed(entry.id, settled),
 		world:removed(entry.id, function(entity, id, deleted)
-			emit(entity, jecs.pair_second(world, id), deleted == true)
+			local targets = removed_targets(world, entity, entry.key)
+			targets[jecs.pair_second(world, id)] = true
+			relations.prune(world, entry, entity, targets)
+			emit(entity, targets, deleted == true)
 		end),
 	}
 end
@@ -84,6 +103,7 @@ local function watch(world: World, entry: SchemaEntry, named: Named, sink: Recor
 	end
 	return {
 		world:added(entry.id, function(entity, _, value)
+			removing_of(world, entity)[entry.key] = nil
 			sink({
 				kind = "component",
 				entity = entity,
@@ -94,6 +114,7 @@ local function watch(world: World, entry: SchemaEntry, named: Named, sink: Recor
 			})
 		end),
 		world:changed(entry.id, function(entity, _, value)
+			removing_of(world, entity)[entry.key] = nil
 			sink({
 				kind = "component",
 				entity = entity,
@@ -104,6 +125,7 @@ local function watch(world: World, entry: SchemaEntry, named: Named, sink: Recor
 			})
 		end),
 		world:removed(entry.id, function(entity, _, deleted)
+			removing_of(world, entity)[entry.key] = { kind = "field" }
 			sink({
 				kind = "component",
 				entity = entity,

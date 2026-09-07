@@ -27,7 +27,7 @@ return function()
 		return miumiu[name]
 	end
 
-	describe("ids", function()
+	describe("ids.named", function()
 		it("are distinct", function()
 			local seen = {}
 			for _, name in components do
@@ -69,6 +69,8 @@ return function()
 			expect(tostring(miumiu.hooks.pulled)).to.equal("Symbol(pulled)")
 			expect(tostring(miumiu.hooks.closed)).to.equal("Symbol(closed)")
 			expect(tostring(miumiu.hooks.writing)).to.equal("Symbol(writing)")
+			expect(tostring(miumiu.hooks.landed)).to.equal("Symbol(landed)")
+			expect(tostring(miumiu.hooks.refused)).to.equal("Symbol(refused)")
 		end)
 
 		it("expose default as self for roblox-ts", function()

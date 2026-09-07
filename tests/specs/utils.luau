@@ -358,6 +358,29 @@ local function declare_saveable(world: World, kind: "component" | "tag", key: st
 	return id
 end
 
+export type Kinds = {
+	owns: Entity,
+	item: Entity,
+	holds: Entity,
+	container: Entity,
+	container_kind: Entity<string>,
+}
+
+local function declare_kinds(world: World): Kinds
+	local owns = world:entity()
+	world:add(owns, jecs.Exclusive)
+	local item = world:entity()
+	world:set(item, jecs.Name, "item")
+	world:set(item, miumiu.child, { via = owns, key = "inventory", mode = "owned" })
+	local holds = world:entity()
+	world:add(holds, jecs.Exclusive)
+	local container_kind = world:component()
+	local container = world:entity()
+	world:set(container, jecs.Name, "container")
+	world:set(container, miumiu.child, { via = holds, key = "containers", mode = "attached", id = container_kind })
+	return { owns = owns, item = item, holds = holds, container = container, container_kind = container_kind }
+end
+
 local function scope(world: World, ids: { Entity<any> }, targets: { Entity })
 	for _, id in ids do
 		for _, target in targets do
@@ -514,6 +537,7 @@ return table.freeze({
 	create_collection = create_collection,
 	declare_saveable = declare_saveable,
 	scope = scope,
+	declare_kinds = declare_kinds,
 	create_fixture = create_fixture,
 	create_set_serdes = create_set_serdes,
 	link_state = link_state,

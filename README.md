@@ -159,9 +159,32 @@ miumiu.batch(world, function()
 end)
 ```
 
-`batch` and `delta` both yield until every key they touched has the group, and throw
-(rolling the world back) when they cannot. Inside `delta`, build new tables from the old
-ones so untouched elements keep their identity.
+`batch` and `delta` run the function now, journal the group and return at once, so they
+are safe inside a system. The commit runs in the background; the returned handle reports
+it:
+
+```luau
+local batch = miumiu.batch(world, function()
+	world:set(player, money, 5)
+end)
+batch:hook(miumiu.hooks.refused, function(message)
+	warn(message)
+end)
+```
+
+A write the function cannot make (a guard, an unloaded entity, an error inside) throws
+right there and rolls the world back. A commit that fails later rolls back only the
+values the batch still holds, fires `refused`, and warns when nothing hooked it;
+`batch:await()` yields until the group is in every record and throws that message
+instead. The handle also has `get_outcome()` (`pending`, `landed` or `refused` with the
+message) and `is_settled()`. Hooks and the rollback run on the commit thread, between
+frames. Inside `delta`, build new tables from the old ones so untouched elements keep
+their identity.
+
+A batch groups saveable writes only. One that captured none lands at once, and a
+snapshot component is evaluated at write time outside any batch, so it lands even when
+the batch is refused; to put a snapshot's value in the group, set the component by hand
+inside the function.
 
 ## Items as entities
 
@@ -294,6 +317,20 @@ miumiu.batch(world, function()
 end)
 ```
 
+A gift between two online players is one `world:add` (the `Exclusive` relation drops the
+old pair) over two keys. The record is the batch's to undo; bookkeeping outside the
+record (a hotbar slot, an equipped flag) is yours to put back in the `refused` hook:
+
+```luau
+local batch = miumiu.batch(world, function()
+	world:add(tool, jecs.pair(owner_link, receiver))
+end)
+batch:hook(miumiu.hooks.refused, function(message)
+	world:set(tool, hotbar_slot, previous_slot)
+	notify(giver, message)
+end)
+```
+
 ## Values written every frame
 
 A component set every Heartbeat (a golem's battery) should not journal a put per frame.
@@ -326,12 +363,10 @@ world:added(miumiu.data_loaded, function(entity, id)
 		return
 	end
 	pending_gifts[entity] = nil
-	task.spawn(function()
-		miumiu.delta(world, function()
-			world:set(entity, money, world:get(entity, money) + amount)
-		end)
-		world:remove(entity, link)
+	miumiu.delta(world, function()
+		world:set(entity, money, world:get(entity, money) + amount)
 	end)
+	world:remove(entity, link)
 end)
 
 local function gift(user_id: number, amount: number)
@@ -356,8 +391,8 @@ with the pair; `world:added(pair(...))` does not fire.
 writes as long as that server also writes money through `delta`. A plain `world:set`
 there replaces the whole value and would overwrite a gift that landed in the same
 window, so write shared currencies through `delta` everywhere. The hook runs inside
-`step`, hence the `task.spawn`: `delta` yields, and `step` must not. `batch` makes the
-whole thing one group. A transfer between two players,
+`step`, which is fine: `delta` does not yield, and the unlink's final write carries the
+group. `batch` makes the whole thing one group. A transfer between two players,
 one of them elsewhere, is a `batch` over two linked entities:
 
 ```luau
@@ -375,9 +410,10 @@ from both entities: they share one session and see each other's writes on the ne
 
 ## Receipts
 
-`batch` returns only once everything it wrote is in the record and throws otherwise, so
-it is the durability point. Write the receipt and grant the reward in one batch: a crash
-between the two cannot leave a receipt marked processed with nothing granted.
+`batch(...):await()` returns only once everything the batch wrote is in the record and
+throws otherwise, so it is the durability point. Write the receipt and grant the reward
+in one batch: a crash between the two cannot leave a receipt marked processed with
+nothing granted.
 
 ```luau
 local function process_receipt(receipt): Enum.ProductPurchaseDecision
@@ -388,15 +424,17 @@ local function process_receipt(receipt): Enum.ProductPurchaseDecision
 	if world:get(entity, processed_receipts)[receipt.PurchaseId] then
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
-	local ok = pcall(miumiu.batch, world, function()
-		if not grant(entity, receipt.ProductId) then
-			error("nothing to grant")
-		end
-		miumiu.delta(world, function()
-			local processed = table.clone(world:get(entity, processed_receipts))
-			processed[receipt.PurchaseId] = os.time()
-			world:set(entity, processed_receipts, processed)
-		end)
+	local ok = pcall(function()
+		miumiu.batch(world, function()
+			if not grant(entity, receipt.ProductId) then
+				error("nothing to grant")
+			end
+			miumiu.delta(world, function()
+				local processed = table.clone(world:get(entity, processed_receipts))
+				processed[receipt.PurchaseId] = os.time()
+				world:set(entity, processed_receipts, processed)
+			end)
+		end):await()
 	end)
 	return if ok then Enum.ProductPurchaseDecision.PurchaseGranted else Enum.ProductPurchaseDecision.NotProcessedYet
 end
@@ -405,10 +443,25 @@ end
 A receipt Roblox retries after a crash is already in the dictionary, so it is granted
 without granting twice. A dictionary of processed ids composes across servers; a capped
 array does not. Coming from an array, a migration turns it into a dictionary and prunes
-what is older than the window you keep. A throw leaves the world rolled back, and Roblox
-asks again later; a grant that cannot be fulfilled returns `false` and the `error` inside
-the batch turns it into that same rollback. `batch` yields, so it cannot run inside a
-system that must not yield: spawn it.
+what is older than the window you keep. The key stays a saveable, so `context.legacy`
+refuses it; read the array through the component in the scratch world:
+
+```luau
+function(world, entity)
+	local processed = {}
+	for _, id in world:get(entity, processed_receipts) or {} do
+		processed[id] = os.time()
+	end
+	world:set(entity, processed_receipts, processed)
+end
+```
+
+A throw leaves the world rolled back, and Roblox asks again later; a grant that cannot
+be fulfilled returns `false` and the `error` inside the batch turns it into that same
+rollback. The rollback undoes saveable values only: a grant with side effects outside
+them (entities spawned, a global event started) must be idempotent or undone in the
+`refused` hook. `await` yields, which `ProcessReceipt` may; a system that must not yield
+uses the handle's `landed` and `refused` hooks instead.
 
 ## When a session ends mid-play
 
@@ -537,6 +590,10 @@ function link(player: Player) {
 
 Every export is typed in `src/index.d.ts`. `Set<string>` and `Map<string, T>` are plain
 string-keyed tables already and need no serdes; `Set<number>` and `Map<number, T>` do.
+`Batch.await` throws on refusal rather than returning a tuple, like `sync`; wrap it in
+`pcall` or `Promise.try(() => batch.await())` where a Promise fits better. A migration
+that reads `context.stored` guards keys a record may lack
+(`if (context.stored.settings === undefined) return;`).
 
 ## Warnings
 

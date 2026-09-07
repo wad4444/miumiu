@@ -8,6 +8,7 @@ local messages = require("./messages")
 local ops = require("./ops")
 local recorder = require("./recorder")
 local relations = require("./relations")
+local state = require("./state")
 local util = require("./util")
 
 type World = types.World
@@ -270,7 +271,15 @@ local function run(
 		local child = children.children_of(index, scratch.entity, slot.key)[slot.id]
 		local held = children.child_of(index, child)
 		group[slot.id] = if held
-			then children.pack(scratch.world, index, child, held.kind, scratch.named, scratch.warned)
+			then children.pack(
+				scratch.world,
+				state.get(scratch.world).entities,
+				index,
+				child,
+				held.kind,
+				scratch.named,
+				scratch.warned
+			)
 			else nil
 		migrated[slot.key] = if next(group) ~= nil then group else nil
 	end

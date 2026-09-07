@@ -3,7 +3,7 @@ return function()
 
 	local logging = require(ReplicatedStorage.Packages.miumiu.logging)
 
-	describe("logging", function()
+	describe("logging.warn", function()
 		it("routes to the sink and restores warn on nil", function()
 			local captured = {}
 			logging.set_warn(function(message)

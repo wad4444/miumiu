@@ -1,0 +1,95 @@
+return function()
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+	local handle = require(ReplicatedStorage.Packages.miumiu.handle)
+	local hooks = require(ReplicatedStorage.Packages.miumiu.hooks)
+	local logging = require(ReplicatedStorage.Packages.miumiu.logging)
+
+	afterEach(function()
+		logging.set_warn(nil)
+	end)
+
+	describe("handle.create_batch", function()
+		it("starts pending and names itself by its outcome", function()
+			local batch = handle.create_batch()
+			expect(handle.is_batch(batch)).to.equal(true)
+			expect(handle.is_batch({})).to.equal(false)
+			expect(batch:get_outcome().kind).to.equal("pending")
+			expect(batch:is_settled()).to.equal(false)
+			expect(tostring(batch)).to.equal("Batch(pending)")
+			batch:land()
+			expect(tostring(batch)).to.equal("Batch(landed)")
+			local refused = handle.create_batch()
+			refused:hook(hooks.refused, function() end)
+			refused:refuse("id", { "k" }, "no")
+			expect(tostring(refused)).to.equal("Batch(refused)")
+			expect((refused:get_outcome() :: any).message).to.equal("no")
+		end)
+
+		it("fires hooks connected before and after settling, once each", function()
+			local batch = handle.create_batch()
+			local landed = 0
+			local disconnect = batch:hook(hooks.landed, function()
+				landed += 1
+			end)
+			batch:hook(hooks.refused, function()
+				landed -= 100
+			end)
+			batch:land()
+			expect(landed).to.equal(1)
+			batch:hook(hooks.landed, function()
+				landed += 10
+			end)
+			expect(landed).to.equal(11)
+			disconnect()
+			batch:land()
+			expect(landed).to.equal(11)
+		end)
+
+		it("wakes every waiter, skips a dead one, and throws the refusal from await", function()
+			local batch = handle.create_batch()
+			local woke = 0
+			for _ = 1, 2 do
+				task.spawn(function()
+					batch:await()
+					woke += 1
+				end)
+			end
+			local dead = task.spawn(function()
+				batch:await()
+			end)
+			task.cancel(dead)
+			batch:land()
+			expect(woke).to.equal(2)
+			batch:await()
+			local refused = handle.create_batch()
+			local caught = nil
+			task.spawn(function()
+				local ok, err = pcall(refused.await, refused)
+				caught = if ok then "landed" else err
+			end)
+			refused:hook(hooks.refused, function() end)
+			refused:refuse("id", { "k" }, "store down")
+			expect(caught).to.equal("store down")
+			expect(function()
+				refused:await()
+			end).to.throw("store down")
+		end)
+
+		it("warns a frame later when nobody hooked the refusal", function()
+			local warnings = {}
+			logging.set_warn(function(message)
+				table.insert(warnings, message)
+			end)
+			local hooked = handle.create_batch()
+			hooked:refuse("a", { "k1", "k2" }, "no")
+			hooked:hook(hooks.refused, function() end)
+			local silent = handle.create_batch()
+			silent:refuse("b", { "k1", "k2" }, "no")
+			expect(#warnings).to.equal(0)
+			task.wait()
+			expect(#warnings).to.equal(1)
+			expect((string.find(warnings[1], 'batch b on "k1", "k2" refused', 1, true))).to.be.ok()
+		end)
+	end)
+end

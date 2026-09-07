@@ -21,14 +21,14 @@ local function pack(
 	world: World,
 	entry: RelationEntry,
 	entity: Entity,
-	except: Entity?,
+	except: { [Entity]: boolean }?,
 	named: Named,
 	warned: Warned
 ): Data?
 	local packed: Data = {}
 	local any = false
 	for _, target in util.targets_of(world, entity, entry.id) do
-		if target == except or not takes(entry, target) then
+		if (except and except[target]) or not takes(entry, target) then
 			continue
 		end
 		local name = world:get(target, jecs.Name)
@@ -56,6 +56,14 @@ local function pack(
 		any = true
 	end
 	return if any then packed else nil
+end
+
+local function prune(world: World, entry: RelationEntry, entity: Entity, targets: { [Entity]: boolean })
+	for target in targets do
+		if not world:has(entity, jecs.pair(entry.id, target)) then
+			targets[target] = nil
+		end
+	end
 end
 
 local function apply(world: World, entry: RelationEntry, entity: Entity, named: Named, value: Data, warned: Warned)
@@ -95,5 +103,6 @@ end
 
 return table.freeze({
 	pack = pack,
+	prune = prune,
 	apply = apply,
 })

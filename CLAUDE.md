@@ -13,10 +13,10 @@ src/types.luau        every type the library owns, internal ones included
 src/ids.luau          every preregistered component/tag the library exposes
 src/messages.luau     every user-facing string (errors, warnings, closures, reasons)
 src/logging.luau      warn sink (`miumiu.set_warn`), warn_once over a per-world `warned` table
-src/symbol.luau       opaque symbols; hooks.luau holds the hook symbols (pulled, closed, writing)
-src/callbacks.luau    connect/fire registry behind Session:hook
+src/symbol.luau       opaque symbols; hooks.luau holds the hook symbols (pulled, closed, writing, landed, refused)
+src/callbacks.luau    connect/invoke/fire registry behind Session:hook and Batch:hook
 src/mutex.luau        per-session lock (cake-style class)
-src/util.luau         describe, targets_of, sync (no-yield runner), own (copy-on-write), run_all, join_all, cached, create_guid
+src/util.luau         describe, targets_of, sync (no-yield runner), own (copy-on-write), run_all, join_all, create_guard, cached, create_guid
 src/state.luau        per-world state: applying marks, entity shadows, link_states_of, open_session, read_values
 src/contexts.luau     create_context = world + world_state + schema (builds and freezes the schema)
 src/schema.luau       saveable discovery, field_of scopes (roots per collection, kinds), freeze
@@ -38,7 +38,8 @@ src/foreign/          adapters for importing from other libraries (lapis.luau)
 src/listeners.luau    data_link listeners → events; install/uninstall
 src/link.luau         link lifecycle: link/unlink/loaded/load_failed/closed/pulled handlers, cleanups, get_session, wipe_key, detach_all
 src/step.luau         the event loop, get_session, wipe, close
-src/batch.luau        batch/delta: capture, commit (single or shared), rollback
+src/batch.luau        batch/delta: capture, background commit (single or shared), rollback
+src/handle.luau       Batch: the handle batch/delta return (outcome, landed/refused hooks, await; cake-style class)
 src/index.d.ts        the roblox-ts surface
 tests/specs/          TestEZ specs, never inside src
 tests/coverage.luau   block instrumenter used by the runner
@@ -59,7 +60,7 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 
 ## Classes (the cake pattern)
 
-`src/session.luau` and `src/mutex.luau` are the reference:
+`src/session.luau`, `src/handle.luau` and `src/mutex.luau` are the reference:
 
 - Methods are module-level `local function name(self: types.X, ...)`.
 - A `template` table at the bottom holds default values plus the method references;
@@ -76,7 +77,8 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 - Identity is a `symbol` field checked by `is_x`, never `getmetatable`.
 - Events are one `hook(self, hooks.x, callback) -> disconnect` over the typed symbols in
   `src/hooks.luau` (`PulledHook = Symbol<"pulled">`; `SessionHook` is an intersection of
-  overloads that gives each callback a real signature), backed by `src/callbacks.luau`
+  overloads that gives each callback a real signature; `BatchHook` does the same for
+  `landed` / `refused`), backed by `src/callbacks.luau`
   (`connect` / `fire`; `fire` pcalls every callback and warns through `messages`).
   Background loops live in their own module (`src/pull_loop.luau`), never inside the
   class file.
@@ -132,8 +134,8 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 
 - TestEZ, specs in `tests/specs/*.spec.luau`; shared fixtures in `tests/specs/utils.luau`.
   Specs require packages by full path (`ReplicatedStorage.Packages.miumiu`) so luau-lsp
-  can type them. Leaf modules (ops, delta, commit, datastore, mutex, schema, collection,
-  session, logging, state, ids) get a unit spec; world behaviour is split by phase into
+  can type them. Leaf modules (ops, delta, commit, datastore, mutex, handle, schema,
+  collection, session, logging, state, ids) get a unit spec; world behaviour is split by phase into
   `link.spec`, `write.spec`, `unlink.spec` (unlink and `close`), `batch.spec`,
   `migrations.spec` (migrations and foreign import), `children.spec` (child kinds,
   snapshots, lazy, wipe) and `pairs.spec` (saveable pairs), each ending in a `regressions`

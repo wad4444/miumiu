@@ -8,13 +8,15 @@ local util = require("./util")
 
 type World = types.World
 type Entity<T = nil> = types.Entity<T>
-type Except = types.Except
 type Ancestry = types.Ancestry
 type ChildIndex = types.ChildIndex
 type ChildKind = types.ChildKind
 type ChildRecord = types.ChildRecord
 type Data = types.Data
+type EntityState = types.EntityState
 type Named = types.Named
+type RelationEntry = types.RelationEntry
+type Removal = types.Removal
 type SchemaEntry = types.SchemaEntry
 type Warned = types.Warned
 type WorldState = types.WorldState
@@ -127,34 +129,64 @@ local function lookup_entity(index: ChildIndex, root: Entity, path: { string }):
 	return current
 end
 
-local function excludes(except: Except?, entity: Entity, entry: SchemaEntry): Except?
-	if except and except.entity == entity and except.entry == entry then
-		return except
+local function removing_field(
+	world: World,
+	removing: { [string]: Removal },
+	entity: Entity,
+	entry: SchemaEntry
+): boolean
+	local removal = removing[entry.key]
+	if removal == nil or removal.kind ~= "field" then
+		return false
 	end
-	return nil
+	if world:has(entity, entry.id) then
+		return true
+	end
+	removing[entry.key] = nil
+	return false
+end
+
+local function removing_targets(
+	world: World,
+	removing: { [string]: Removal },
+	entity: Entity,
+	entry: RelationEntry
+): { [Entity]: boolean }?
+	local removal = removing[entry.key]
+	if removal == nil or removal.kind ~= "targets" then
+		return nil
+	end
+	relations.prune(world, entry, entity, removal.targets)
+	if next(removal.targets) == nil then
+		removing[entry.key] = nil
+		return nil
+	end
+	return removal.targets
 end
 
 local function pack_fields(
 	world: World,
+	entities: { [Entity]: EntityState },
 	entity: Entity,
 	entries: { SchemaEntry },
 	named: Named,
-	warned: Warned,
-	except: Except?
+	warned: Warned
 ): Data
 	local packed: Data = {}
+	local entity_state = entities[entity]
+	local removing: { [string]: Removal } = if entity_state then entity_state.removing else {}
 	for _, entry in entries do
-		local hit = excludes(except, entity, entry)
 		if entry.kind == "tag" then
-			if world:has(entity, entry.id) and not (hit and hit.removed) then
+			if world:has(entity, entry.id) and not removing_field(world, removing, entity, entry) then
 				packed[entry.key] = true
 			elseif entry.has_initial then
 				packed[entry.key] = false
 			end
 		elseif entry.kind == "relation" then
-			packed[entry.key] = relations.pack(world, entry, entity, if hit then hit.target else nil, named, warned)
+			local except = removing_targets(world, removing, entity, entry)
+			packed[entry.key] = relations.pack(world, entry, entity, except, named, warned)
 		else
-			local value = if hit and hit.removed then nil else world:get(entity, entry.id)
+			local value = if removing_field(world, removing, entity, entry) then nil else world:get(entity, entry.id)
 			if value ~= nil then
 				packed[entry.key] = codec.stored_form(entry, value)
 			end
@@ -165,21 +197,21 @@ end
 
 local function pack(
 	world: World,
+	entities: { [Entity]: EntityState },
 	index: ChildIndex,
 	entity: Entity,
 	kind: ChildKind,
 	named: Named,
-	warned: Warned,
-	except: Except?
+	warned: Warned
 ): Data
-	local packed = pack_fields(world, entity, kind.entries, named, warned, except)
+	local packed = pack_fields(world, entities, entity, kind.entries, named, warned)
 	local nested_kinds: { ChildKind } = kind.kinds
 	for _, nested in nested_kinds do
 		local list = children_of(index, entity, nested.key)
 		if next(list) ~= nil then
 			local group: Data = {}
 			for id, child in list do
-				group[id] = pack(world, index, child, nested, named, warned, except)
+				group[id] = pack(world, entities, index, child, nested, named, warned)
 			end
 			packed[nested.key] = group
 		end

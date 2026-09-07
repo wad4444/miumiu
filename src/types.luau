@@ -214,14 +214,14 @@ export type ComponentWrite = {
 	change: Change,
 	value: any,
 	deleted: boolean,
-	except: Entity?,
 }
 
-export type Except = {
-	entity: Entity,
-	entry: SchemaEntry,
-	target: Entity?,
-	removed: boolean,
+export type Removal = { kind: "field" } | { kind: "targets", targets: { [Entity]: boolean } }
+
+export type ErrorGuard = {
+	run: (fn: () -> ()) -> (),
+	rethrow: () -> (),
+	get_error: () -> any,
 }
 
 export type Detached = {
@@ -363,6 +363,33 @@ export type MutexInternal = Mutex & {
 export type RefusedClosure = { kind: "refused", message: string }
 export type Closure = { kind: "clean" } | RefusedClosure | { kind: "abandoned", message: string }
 
+export type LandedHook = Symbol<"landed">
+export type RefusedHook = Symbol<"refused">
+
+export type Outcome = { kind: "pending" } | { kind: "landed" } | { kind: "refused", message: string }
+
+export type BatchHook =
+	((Batch, LandedHook, callback: () -> ()) -> () -> ())
+	& ((Batch, RefusedHook, callback: (message: string) -> ()) -> () -> ())
+
+export type Batch = {
+	get_outcome: (Batch) -> Outcome,
+	is_settled: (Batch) -> boolean,
+	hook: BatchHook,
+	await: (Batch) -> (),
+}
+
+export type BatchInternal = Batch & {
+	symbol: Symbol,
+	internal_values: {
+		outcome: Outcome,
+	},
+	internal_hooks: CallbackRegistry,
+	internal_waiters: { thread },
+	land: (BatchInternal) -> (),
+	refuse: (BatchInternal, id: string, keys: { string }, message: string) -> (),
+}
+
 export type PulledHook = Symbol<"pulled">
 export type ClosedHook = Symbol<"closed">
 export type WritingHook = Symbol<"writing">
@@ -463,6 +490,7 @@ export type Undo =
 	| { kind: "component", entity: Entity, id: Entity<any>, previous: any, value: any }
 	| { kind: "pair", entity: Entity, id: Entity, present: boolean }
 	| { kind: "relation", entity: Entity, entry: RelationEntry, previous: Data?, value: Data? }
+	| { kind: "child", entity: Entity, child: ChildKind, previous: Data, value: Data? }
 
 export type CaptureEntry = {
 	session: SessionInternal,
@@ -474,6 +502,8 @@ export type Capture = {
 	delta: boolean,
 	undo: { Undo },
 	entries: { CaptureEntry },
+	children: { [Entity]: boolean },
+	batch: BatchInternal,
 }
 
 export type Applying = {
@@ -487,6 +517,8 @@ export type EntityState = {
 	tree: Data?,
 	baseline: Data,
 	lazy: { [string]: boolean },
+	removing: { [string]: Removal },
+	dropped: boolean,
 }
 
 export type WorldState = {

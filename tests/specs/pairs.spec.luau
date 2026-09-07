@@ -4,6 +4,7 @@ return function()
 	local jecs = require(ReplicatedStorage.Packages.jecs)
 	local miumiu = require(ReplicatedStorage.Packages.miumiu)
 	local schema = require(ReplicatedStorage.Packages.miumiu.schema)
+	local util = require(ReplicatedStorage.Packages.miumiu.util)
 	local utils = require(ReplicatedStorage.Tests.utils)
 
 	type Entity<T = nil> = miumiu.Entity<T>
@@ -39,17 +40,9 @@ return function()
 		world:set(fire, jecs.Name, "fire")
 		local ice = world:entity()
 		world:set(ice, jecs.Name, "ice")
-		local owns = world:entity()
-		world:add(owns, jecs.Exclusive)
-		local item = world:entity()
-		world:set(item, jecs.Name, "item")
-		world:set(item, miumiu.child, { via = owns, key = "inventory", mode = "owned" })
-		local holds = world:entity()
-		world:add(holds, jecs.Exclusive)
-		local plot_kind = world:component()
-		local plot = world:entity()
-		world:set(plot, jecs.Name, "plot")
-		world:set(plot, miumiu.child, { via = holds, key = "containers", mode = "attached", id = plot_kind })
+		local kinds = utils.declare_kinds(world)
+		local owns, item, holds, plot, plot_kind =
+			kinds.owns, kinds.item, kinds.holds, kinds.container, kinds.container_kind
 		utils.scope(world, { has_buff }, { item, plot, t.player_data })
 		utils.scope(world, { t.items }, { item })
 		return {
@@ -72,15 +65,10 @@ return function()
 
 	local function buffs_of(t: Fixture, r: Relations, entity: Entity): { [string]: boolean }
 		local names = {}
-		local index = 0
-		while true do
-			local target = t.world:target(entity, r.has_buff, index)
-			if target == nil then
-				return names
-			end
+		for _, target in util.targets_of(t.world, entity, r.has_buff) do
 			names[t.world:get(target, jecs.Name) or "?"] = true
-			index += 1
 		end
+		return names
 	end
 
 	describe("saveable pairs", function()
@@ -191,20 +179,24 @@ return function()
 			t.world:add(player, jecs.pair(r.has_buff, r.fire))
 			session:sync()
 			expect(function()
-				miumiu.batch(t.world, function()
-					t.world:add(player, jecs.pair(r.has_buff, r.ice))
-					t.world:set(player, jecs.pair(r.stack, r.fire), 2)
-					t.world:remove(player, jecs.pair(r.has_buff, r.fire))
-					error("boom")
-				end)
+				miumiu
+					.batch(t.world, function()
+						t.world:add(player, jecs.pair(r.has_buff, r.ice))
+						t.world:set(player, jecs.pair(r.stack, r.fire), 2)
+						t.world:remove(player, jecs.pair(r.has_buff, r.fire))
+						error("boom")
+					end)
+					:await()
 			end).to.throw("boom")
 			expect(buffs_of(t, r, player).fire).to.equal(true)
 			expect(buffs_of(t, r, player).ice).to.equal(nil)
 			expect(t.world:has(player, jecs.pair(r.stack, r.fire))).to.equal(false)
 			expect(function()
-				miumiu.delta(t.world, function()
-					t.world:add(player, jecs.pair(r.has_buff, r.ice))
-				end)
+				miumiu
+					.delta(t.world, function()
+						t.world:add(player, jecs.pair(r.has_buff, r.ice))
+					end)
+					:await()
 			end).to.throw("not a delta")
 			expect(buffs_of(t, r, player).ice).to.equal(nil)
 			expect(session:is_dirty()).to.equal(false)
@@ -212,11 +204,8 @@ return function()
 			local writes = t.backend.calls.UpdateAsync
 			t.backend:delay_next("UpdateAsync", utils.timings.in_flight, "before")
 			t.backend:fail_next("UpdateAsync", "before", "store down")
-			local failed = false
-			task.spawn(function()
-				failed = not pcall(miumiu.batch, t.world, function()
-					t.world:add(player, jecs.pair(r.has_buff, r.ice))
-				end)
+			local batch = miumiu.batch(t.world, function()
+				t.world:add(player, jecs.pair(r.has_buff, r.ice))
 			end)
 			expect(utils.wait_until(function()
 				return t.backend.calls.UpdateAsync > writes
@@ -225,8 +214,9 @@ return function()
 			t.world:set(poison, jecs.Name, "poison")
 			t.world:add(player, jecs.pair(r.has_buff, poison))
 			expect(utils.wait_until(function()
-				return failed
+				return batch:is_settled()
 			end)).to.equal(true)
+			expect(batch:get_outcome().kind).to.equal("refused")
 			expect(buffs_of(t, r, player).ice).to.equal(true)
 			expect(buffs_of(t, r, player).poison).to.equal(true)
 		end)
@@ -471,6 +461,7 @@ return function()
 				end).to.throw("takes a list of entities")
 			end
 		end)
+
 		it("removing a pair from an attached child reaches the record", function()
 			local t, r = setup()
 			local plot = t.world:entity()
@@ -500,6 +491,33 @@ return function()
 			expect(utils.warned(t.backend, "has no jecs.Name")).to.equal(false)
 			local id = t.world:get(sword, miumiu.child_id)
 			expect(t.backend:dump("p1").data.inventory[id].buffs).to.equal(nil)
+		end)
+		it("world:clear removes the pair set from the record, inside a batch too", function()
+			local t, r = setup()
+			local player = utils.link_entity(t, "p1", { money = 3 })
+			local session = utils.session_of(t, "p1")
+			t.world:add(player, jecs.pair(r.has_buff, r.fire))
+			t.world:add(player, jecs.pair(r.has_buff, r.ice))
+			session:sync()
+			expect(t.backend:dump("p1").data.buffs.fire).to.equal(true)
+			t.world:clear(player)
+			session:sync()
+			local data = t.backend:dump("p1").data
+			expect(data.money).to.equal(nil)
+			expect(data.buffs).to.equal(nil)
+			t.world:set(player, t.money, 4)
+			t.world:add(player, jecs.pair(r.has_buff, r.fire))
+			t.world:add(player, jecs.pair(r.has_buff, r.ice))
+			session:sync()
+			expect(t.backend:dump("p1").data.buffs.ice).to.equal(true)
+			miumiu
+				.batch(t.world, function()
+					t.world:clear(player)
+				end)
+				:await()
+			data = t.backend:dump("p1").data
+			expect(data.money).to.equal(nil)
+			expect(data.buffs).to.equal(nil)
 		end)
 	end)
 end

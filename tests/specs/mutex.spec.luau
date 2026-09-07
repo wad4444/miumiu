@@ -3,7 +3,7 @@ return function()
 
 	local mutex = require(ReplicatedStorage.Packages.miumiu.mutex)
 
-	describe("mutex", function()
+	describe("mutex.create_mutex", function()
 		it("runs one critical section at a time in order", function()
 			local lock = mutex.create_mutex()
 			local order = {}

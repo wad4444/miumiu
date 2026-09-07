@@ -238,7 +238,15 @@ end)
 
 A snapshot must not read its own saveable: a playtime that adds "now minus session
 start" to its stored value compounds on every write. Keep the base in a non-saveable
-component and compute from that:
+component and compute from that. Declared before the world:
+
+```luau
+jecs.meta(total_playtime, miumiu.snapshot, function(world, entity)
+	return world:get(entity, playtime_base) + os.time() - world:get(entity, session_start)
+end)
+```
+
+At runtime, once the record is on the entity:
 
 ```luau
 world:added(miumiu.data_loaded, function(entity, id)
@@ -247,14 +255,12 @@ world:added(miumiu.data_loaded, function(entity, id)
 		world:set(entity, session_start, os.time())
 	end
 end)
-jecs.meta(total_playtime, miumiu.snapshot, function(world, entity)
-	return world:get(entity, playtime_base) + os.time() - world:get(entity, session_start)
-end)
 ```
 
 ## Relationships
 
-Pairs on an entity can be saved too. Name the relation and mark it `pairs`:
+Pairs on an entity can be saved too. Name the relation and mark it `pairs`, before the
+world like every other declaration:
 
 ```luau
 local has_buff = jecs.tag()
@@ -263,7 +269,11 @@ jecs.meta(has_buff, miumiu.pairs)
 
 local fire = jecs.tag()
 jecs.meta(fire, jecs.Name, "fire")
+```
 
+Then a pair is a save:
+
+```luau
 world:add(player, jecs.pair(has_buff, fire))
 ```
 
@@ -276,13 +286,17 @@ entity also carries, is left out with a warning; a stored name no entity carries
 skipped with a warning. The set is stored whole, so it takes no guard, serdes,
 snapshot, lazy or `delta`. Scope the relation with `field_of` like any saveable.
 
-A component relation stores the pair's value. A timed buff and its expiry loop:
+A component relation stores the pair's value. A timed buff:
 
 ```luau
 local buff = jecs.component() :: jecs.Entity<{ multiplier: number, expires_at: number }>
 jecs.meta(buff, miumiu.saveable, "buffs")
 jecs.meta(buff, miumiu.pairs, { targets = { oil_buff, cell_buff } })
+```
 
+Applying one, and the expiry loop:
+
+```luau
 world:set(golem, jecs.pair(buff, oil_buff), { multiplier = 2, expires_at = os.time() + 300 })
 
 for golem, applied in world:query(jecs.pair(buff, oil_buff)) do

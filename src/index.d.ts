@@ -93,7 +93,7 @@ declare namespace miumiu {
 		/** The stored key being migrated. */
 		readonly key: string;
 		/** A component of the scratch world holding a key that is no longer a saveable. Throws for current saveables and absent keys. */
-		legacy<T = unknown>(stored_key: string): Entity<T>;
+		legacy: <T = unknown>(stored_key: string) => Entity<T>;
 		/** The record as it was read, before any migration ran: a deep copy, frozen. Writes go through the scratch world. */
 		readonly stored: S;
 	}

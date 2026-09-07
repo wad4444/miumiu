@@ -1,0 +1,11 @@
+std = "testez"
+
+exclude = ["tests/*.d.luau"]
+
+[lints]
+# Luau string requires (`require("./module")`) are not modelled by selene's
+# roblox standard library.
+incorrect_standard_library_use = "allow"
+global_usage = "allow"
+mixed_table = "allow"
+shadowing = "allow"

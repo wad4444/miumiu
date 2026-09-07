@@ -1,0 +1,9 @@
+/Packages
+/DevPackages
+/sourcemap.json
+/globalTypes.d.luau
+*.rbxm
+*.rbxl
+*.rbxlx
+/node_modules
+*.tgz

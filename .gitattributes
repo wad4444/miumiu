@@ -1,0 +1,4 @@
+*.ts text eol=lf
+*.tsx text eol=lf
+*.luau text eol=lf
+*.sh text eol=lf

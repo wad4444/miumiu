@@ -1,0 +1,27 @@
+{
+	"name": "miumiu-test",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"$className": "ReplicatedStorage",
+			"Packages": {
+				"$path": "Packages",
+				"miumiu": {
+					"$path": "src"
+				}
+			},
+			"DevPackages": {
+				"$path": "DevPackages"
+			},
+			"Tests": {
+				"$path": "tests/specs"
+			}
+		},
+		"ServerScriptService": {
+			"$className": "ServerScriptService",
+			"main": {
+				"$path": "tests/main.server.luau"
+			}
+		}
+	}
+}

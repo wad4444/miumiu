@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: StyLua, Selene & Luau
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rokit
+        uses: CompeyDev/setup-rokit@v0.1.2
+
+      - name: Cache Wally packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            Packages
+            DevPackages
+          key: wally-${{ runner.os }}-${{ hashFiles('wally.lock') }}
+
+      - name: Install Wally packages
+        run: wally install
+
+      - name: Check formatting
+        run: stylua --check src tests
+
+      - name: Run Selene
+        run: selene src tests
+
+      - name: Generate sourcemap
+        run: rojo sourcemap test.project.json -o sourcemap.json
+
+      - name: Fetch Roblox global types
+        run: |
+          version=$(sed -n 's/.*luau-lsp@\(.*\)"/\1/p' rokit.toml)
+          curl -sL -o globalTypes.d.luau "https://raw.githubusercontent.com/JohnnyMorganz/luau-lsp/$version/scripts/globalTypes.d.luau"
+
+      - name: Analyze
+        run: luau-lsp analyze --sourcemap=sourcemap.json --definitions=globalTypes.d.luau --definitions=tests/testez.d.luau --base-luaurc=.luaurc src tests/specs tests/main.server.luau
+
+  types:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install NPM dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck the roblox-ts definitions
+        run: npm run typecheck
+
+  test:
+    name: TestEZ
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rokit
+        uses: CompeyDev/setup-rokit@v0.1.2
+
+      - name: Cache Wally packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            Packages
+            DevPackages
+          key: wally-${{ runner.os }}-${{ hashFiles('wally.lock') }}
+
+      - name: Install Wally packages
+        run: wally install
+
+      - name: Build test place
+        run: rojo build test.project.json -o test.rbxl
+
+      - name: Run tests
+        run: lune run tests/run.luau test.rbxl
+        env:
+          MIUMIU_COVERAGE: strict

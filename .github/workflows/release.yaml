@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    name: Versions agree
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Compare wally.toml, package.json, CHANGELOG.md and the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          wally=$(sed -n 's/^version = "\(.*\)"/\1/p' wally.toml)
+          npm=$(node -p "require('./package.json').version")
+          echo "tag=$tag wally=$wally npm=$npm"
+          test "$tag" = "$wally" && test "$tag" = "$npm"
+          grep -q "^## $tag" CHANGELOG.md
+
+  test:
+    name: Full check
+    needs: versions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rokit
+        uses: CompeyDev/setup-rokit@v0.1.2
+
+      - name: Install Wally packages
+        run: wally install
+
+      - name: Build test place
+        run: rojo build test.project.json -o test.rbxl
+
+      - name: Run tests
+        run: lune run tests/run.luau test.rbxl
+        env:
+          MIUMIU_COVERAGE: strict
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Typecheck
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+
+  wally:
+    name: Publish to Wally
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rokit
+        uses: CompeyDev/setup-rokit@v0.1.2
+
+      - name: Log in
+        run: wally login --token "${{ secrets.WALLY_AUTH_TOKEN }}"
+
+      - name: Publish
+        run: wally publish
+
+  npm:
+    name: Publish to npm
+    needs: wally
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

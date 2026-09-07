@@ -1,0 +1,130 @@
+return function()
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+	local commit = require(ReplicatedStorage.Packages.miumiu.commit)
+	local utils = require(ReplicatedStorage.Tests.utils)
+
+	local fresh_id = utils.fresh_id
+	local commit_store = utils.commit_store
+	local set = utils.set
+
+	describe("commit.fetch", function()
+		it("is undecided while the key is absent and young", function()
+			local backend = utils.create_backend()
+			local config = utils.create_config(backend)
+			local id = fresh_id()
+			expect(commit.fetch(config, id, os.time())).to.equal("undecided")
+			expect(commit.get_status(id)).to.equal("unknown")
+		end)
+
+		it("fails once the key is absent past commit_timeout", function()
+			local backend = utils.create_backend()
+			local config = utils.create_config(backend)
+			local id = fresh_id()
+			expect(commit.fetch(config, id, os.time() - config.commit_timeout - 1)).to.equal("failed")
+			expect(commit.get_status(id)).to.equal("failed")
+		end)
+
+		it("is committed when the key exists, whatever its age", function()
+			local backend = utils.create_backend()
+			local config = utils.create_config(backend)
+			local id = fresh_id()
+			commit_store(backend, config):SetAsync(id, true)
+			expect(commit.fetch(config, id, os.time() - 10000)).to.equal("committed")
+			expect(commit.get_status(id)).to.equal("committed")
+		end)
+
+		it("answers from the cache once decided", function()
+			local backend = utils.create_backend()
+			local config = utils.create_config(backend)
+			local id = fresh_id()
+			commit_store(backend, config):SetAsync(id, true)
+			expect(commit.fetch(config, id, os.time())).to.equal("committed")
+			local reads = backend.calls.GetAsync
+			expect(commit.fetch(config, id, os.time())).to.equal("committed")
+			expect(backend.calls.GetAsync).to.equal(reads)
+		end)
+
+		it("stays undecided and warns when the lookup fails", function()
+			local backend = utils.create_backend()
+			local config = utils.create_config(backend, { retry_attempts = 1 })
+			local id = fresh_id()
+			backend:fail_next("GetAsync", "before", "down")
+			expect(commit.fetch(config, id, os.time() - 10000)).to.equal("undecided")
+			expect(commit.get_status(id)).to.equal("unknown")
+			expect((string.find(backend.warnings[1], "down"))).to.be.ok()
+		end)
+	end)
+
+	describe("commit.mark", function()
+		it("writes the key and caches the status", function()
+			local backend = utils.create_backend()
+			local config = utils.create_config(backend)
+			local id = fresh_id()
+			commit.mark(config, id)
+			expect(commit_store(backend, config):GetAsync(id)).to.equal(true)
+			expect(commit.get_status(id)).to.equal("committed")
+		end)
+
+		it("prunes stale cache entries", function()
+			local backend = utils.create_backend()
+			local config = utils.create_config(backend, { commit_timeout = utils.timings.fast })
+			local stale = fresh_id()
+			commit.fetch(config, stale, os.time() - 10)
+			expect(commit.get_status(stale)).to.equal("failed")
+			local started = os.time()
+			expect(utils.wait_until(function()
+				return os.time() > started
+			end, utils.timings.long)).to.equal(true)
+			commit.mark(config, fresh_id())
+			expect(commit.get_status(stale)).to.equal("unknown")
+		end)
+
+		it("throws on the first failed write, whatever the retry config", function()
+			local backend = utils.create_backend()
+			local config = utils.create_config(backend, { retry_attempts = 5 })
+			local id = fresh_id()
+			backend:fail_next("SetAsync", "before", "down")
+			expect(function()
+				commit.mark(config, id)
+			end).to.throw("down")
+			expect(backend.calls.SetAsync).to.equal(1)
+			expect(commit.get_status(id)).to.equal("unknown")
+		end)
+	end)
+
+	describe("commit.resolve", function()
+		it("replays committed entries, drops failed ones, keeps unknown ones", function()
+			local backend = utils.create_backend()
+			local config = utils.create_config(backend)
+			local committed, failed, unknown = fresh_id(), fresh_id(), fresh_id()
+			commit.mark(config, committed)
+			commit.fetch(config, failed, os.time() - config.commit_timeout - 1)
+
+			local pending = {
+				[committed] = { created = 1, ops = { set("money", 5, 1) } },
+				[failed] = { created = 1, ops = { set("money", 99, 2) } },
+				[unknown] = { created = os.time(), ops = { set("gems", 1, 1) } },
+			}
+			local resolution = commit.resolve({ truth = {}, stamps = {} }, pending)
+			expect(resolution.truth.money).to.equal(5)
+			expect(resolution.truth.gems).to.equal(nil)
+			expect(resolution.stamps.money).to.equal(1)
+			expect(resolution.pending[committed]).to.equal(nil)
+			expect(resolution.pending[failed]).to.equal(nil)
+			expect(resolution.pending[unknown]).to.be.ok()
+			expect(pending[committed]).to.be.ok()
+			expect(#resolution.unknown).to.equal(1)
+			expect(resolution.unknown[1]).to.equal(unknown)
+			expect(#resolution.decided).to.equal(2)
+		end)
+
+		it("returns the same pending table when nothing is decided", function()
+			local id = fresh_id()
+			local pending = { [id] = { created = os.time(), ops = {} } }
+			local resolution = commit.resolve({ truth = {}, stamps = {} }, pending)
+			expect(resolution.pending).to.equal(pending)
+			expect(#resolution.unknown).to.equal(1)
+		end)
+	end)
+end

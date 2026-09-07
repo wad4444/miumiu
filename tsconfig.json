@@ -1,0 +1,20 @@
+{
+	"compilerOptions": {
+		"allowSyntheticDefaultImports": true,
+		"downlevelIteration": true,
+		"experimentalDecorators": true,
+		"forceConsistentCasingInFileNames": true,
+		"module": "commonjs",
+		"moduleDetection": "force",
+		"moduleResolution": "Node",
+		"noLib": true,
+		"resolveJsonModule": true,
+		"strict": true,
+		"target": "ESNext",
+		"noEmit": true,
+		"typeRoots": ["node_modules/@rbxts"],
+		"baseUrl": ".",
+		"paths": { "@rbxts/miumiu": ["src/index.d.ts"] }
+	},
+	"include": ["src/index.d.ts", "tests/typecheck"]
+}

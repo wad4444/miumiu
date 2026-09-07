@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+`Batch:await()` returns the `SettledOutcome` instead of throwing on a refusal, so a
+caller written for the throwing form must branch on the result. `Batch:get_result()`
+hands back what the function returned. `miumiu.hook(world, hooks.refused, fn)` hears
+every refusal on a world after the batch's own hooks and counts as hooked for the
+warning. A refused batch now restores exactly what it wrote, even under later writes,
+lazy flushes, re-parents, claims, kind tags and pairs, including when two batches
+overlapped, then supplies every entity of its keys again from the record so siblings and
+children that saw the group flip back with it; an entity unlinked or rejected meanwhile
+keeps no state. A batch over collections with different commit stores throws from
+`batch` itself. `README.md`, `DESIGN.md` and this file ship in both packages.
+
 ## 0.1.0 (2026-09-07)
 
 First release candidate. Lockless sessions on jecs 0.11.
@@ -7,18 +20,22 @@ First release candidate. Lockless sessions on jecs 0.11.
 Core: saveable components and tags, operations captured from world writes, per-key
 last-writer-wins stamps, a commit store for multi-key groups, guards, serdes, initial
 values, `get_session`, `close` with a budget. Session hooks `pulled`, `closed(closure)`
-and `writing`; `get_closure` reporting `clean`, `refused` or `abandoned`; `sync` as the
-durability point of a plain write. `idle_interval = math.huge` turns idle reads off.
-`set_warn`. Group, record and child ids are GUIDs; no `job_id` config. An unlink, a load
-or a `close` whose listeners throw still detaches, marks and unloads. Cleanups queued by
-an event land in the same `step`.
+and `writing`; `get_key`, `get_truth`, `get_stamps`, `get_config`, `is_open`,
+`is_dirty`, `is_session`; `get_closure` reporting `clean`, `refused` or `abandoned`;
+`sync` as the durability point of a plain write. The link pairs `data_loading`,
+`data_loaded` and `data_error(message)`. `idle_interval = math.huge` turns idle reads
+off and never runs under `pull_interval`; a `pull_interval` under the 6 s write cooldown
+warns. `set_warn`. Group, record and child ids are GUIDs. An unlink, a load or a `close`
+whose listeners throw still detaches, marks and unloads. Cleanups queued by an event
+land in the same `step`.
 
 Batches: `batch` and `delta` run their function, journal the group and return a `Batch`
-handle without yielding (`get_outcome`, `is_settled`, `hook(landed | refused)`, `await`,
-`is_batch`); the commit runs in the background and `await` is the durability point for
-receipts. A failed commit undoes only the values its own writes still hold, repairs a
-child a plain write touched meanwhile, fires `refused`, and warns when nothing hooked
-it; a rollback that throws still settles the batch.
+handle without yielding (`get_outcome`, `is_settled`, `hook(landed | refused)` firing at
+once when already settled, `await`, `is_batch`); the commit runs in the background and
+`await`, which yields and throws the message on a refusal, is the durability point for
+receipts. A failed commit undoes only the values its own writes still hold (a value the
+world wrote again meanwhile stays), silently, fires `refused` and warns when nothing
+hooked or awaited it in the same frame; a rollback that throws still settles the batch.
 
 Children (`miumiu.child`, `miumiu.child_id`): owned entities stored inside a record,
 attached ones supplied from it, nested to any depth, the relation marked `Exclusive`,
@@ -47,7 +64,7 @@ without a value is not stored.
 Write-time values: snapshots (`miumiu.snapshot`) evaluated before every write, children
 included, as a group of their own outside any batch; `miumiu.lazy` saveables read at
 write time, flushed by unlink, unclaim and `close`, surviving the supply of the write
-that preceded them, recorded normally inside `batch`, refused inside `delta`.
+that preceded them, recorded normally inside `batch`, a throw inside `delta`.
 
 Wipe: `miumiu.wipe` erases a key, loaded or not, stamping every stored key so older
 writes from elsewhere lose; a failed wipe keeps the session's changes.

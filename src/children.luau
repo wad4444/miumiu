@@ -12,6 +12,7 @@ type Ancestry = types.Ancestry
 type ChildIndex = types.ChildIndex
 type ChildKind = types.ChildKind
 type ChildRecord = types.ChildRecord
+type Context = types.Context
 type Data = types.Data
 type EntityState = types.EntityState
 type Named = types.Named
@@ -68,7 +69,7 @@ local function describe_kind(world: World, kind: ChildKind): string
 	return util.describe(world, kind.tag)
 end
 
-local function resolve_id(world: World, kind: ChildKind, entity: Entity): string?
+local function resolve_id(world: World, entity: Entity, kind: ChildKind): string?
 	if kind.mode ~= "attached" then
 		return world:get(entity, ids.child_id)
 	end
@@ -195,6 +196,17 @@ local function pack_fields(
 	return packed
 end
 
+local function pack_fields_of(context: Context, entity: Entity, kind: ChildKind): Data
+	return pack_fields(
+		context.world,
+		context.world_state.entities,
+		entity,
+		kind.entries,
+		context.schema.named,
+		context.world_state.warned
+	)
+end
+
 local function pack(
 	world: World,
 	entities: { [Entity]: EntityState },
@@ -228,7 +240,7 @@ local function kind_of(world: World, kinds: { ChildKind }, entity: Entity): Chil
 	return nil
 end
 
-local function reject_unnamed(world: World, kind: ChildKind, entity: Entity)
+local function reject_unnamed(world: World, entity: Entity, kind: ChildKind)
 	error(messages.errors.child_unnamed(util.describe(world, entity), describe_kind(world, kind)), 0)
 end
 
@@ -284,7 +296,8 @@ return table.freeze({
 	ancestry = ancestry,
 	lookup_entity = lookup_entity,
 	pack = pack,
-	pack_fields = pack_fields,
+	pack_fields_of = pack_fields_of,
+	describe_kind = describe_kind,
 	kind_of = kind_of,
 	delete_tree = delete_tree,
 	stored_children = stored_children,

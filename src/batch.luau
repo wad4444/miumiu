@@ -1,9 +1,15 @@
 local types = require("./types")
+local callbacks = require("./callbacks")
+local capture = require("./capture")
 local children = require("./children")
 local codec = require("./codec")
 local commit = require("./commit")
 local contexts = require("./contexts")
 local handle = require("./handle")
+local hooks = require("./hooks")
+local ids = require("./ids")
+local jecs = require("./dependencies/jecs")
+local link = require("./link")
 local logging = require("./logging")
 local messages = require("./messages")
 local ops = require("./ops")
@@ -22,23 +28,13 @@ type Context = types.Context
 type Data = types.Data
 type ResolvedCollectionConfig = types.ResolvedCollectionConfig
 type SchemaEntry = types.SchemaEntry
+type Touched = types.Touched
 type Undo = types.Undo
-
-local function child_fields(context: Context, entity: Entity, kind: ChildKind): Data
-	return children.pack_fields(
-		context.world,
-		context.world_state.entities,
-		entity,
-		kind.entries,
-		context.schema.named,
-		context.world_state.warned
-	)
-end
 
 local function still_ours(context: Context, undo: Undo): boolean
 	local world = context.world
 	if undo.kind == "component" then
-		return world:get(undo.entity, undo.id) == undo.value
+		return world:get(undo.entity, undo.entry.id) == undo.value
 	end
 	if undo.kind == "relation" then
 		local packed =
@@ -46,9 +42,19 @@ local function still_ours(context: Context, undo: Undo): boolean
 		return ops.deep_equal(packed, undo.value)
 	end
 	if undo.kind == "child" then
-		return undo.value == nil or ops.deep_equal(child_fields(context, undo.entity, undo.child), undo.value)
+		return ops.deep_equal(children.pack_fields_of(context, undo.entity, undo.child), undo.value)
+	end
+	if undo.kind == "pair" and undo.present and children.child_of(context.world_state.children, undo.entity) then
+		return false
 	end
 	return world:has(undo.entity, undo.id) ~= undo.present
+end
+
+local function is_carried(undo: Undo): boolean
+	if undo.kind == "pair" or undo.kind == "mark" then
+		return false
+	end
+	return undo.carried
 end
 
 local function restore_entry(context: Context, entity: Entity, entry: SchemaEntry, stored: any)
@@ -69,7 +75,7 @@ local function restore_entry(context: Context, entity: Entity, entry: SchemaEntr
 end
 
 local function repair_child(context: Context, entity: Entity, kind: ChildKind, previous: Data, value: Data)
-	local current = child_fields(context, entity, kind)
+	local current = children.pack_fields_of(context, entity, kind)
 	local entries: { SchemaEntry } = kind.entries
 	for _, entry in entries do
 		local key = entry.key
@@ -79,10 +85,55 @@ local function repair_child(context: Context, entity: Entity, kind: ChildKind, p
 	end
 end
 
-local function undo_one(context: Context, undo: Undo)
+local function rewrite_child(context: Context, entity: Entity, kind: ChildKind, previous: Data)
+	local current = children.pack_fields_of(context, entity, kind)
+	local entries: { SchemaEntry } = kind.entries
+	for _, entry in entries do
+		if not ops.deep_equal(current[entry.key], previous[entry.key]) then
+			restore_entry(context, entity, entry, previous[entry.key])
+		end
+	end
+end
+
+local function undo_one(context: Context, undo: Undo, carried: boolean)
 	local world = context.world
+	if undo.kind == "pair" then
+		local kind = undo.child
+		if undo.present then
+			if not world:contains(undo.parent) then
+				return
+			end
+			local id_component = if kind.mode == "owned" then ids.child_id else kind.id
+			if undo.stored_id ~= nil and not world:has(undo.entity, id_component) then
+				world:set(undo.entity, id_component, undo.stored_id)
+			end
+			world:add(undo.entity, kind.tag)
+			world:add(undo.entity, jecs.pair(kind.via, undo.parent))
+			if kind.mode == "attached" then
+				capture.supply_claimed(context, undo.entity, kind)
+			end
+			return
+		end
+		world:remove(undo.entity, undo.id)
+		if kind.mode == "attached" then
+			reconcile.reset_child(context, undo.entity, kind)
+		end
+		return
+	end
+	if undo.kind == "mark" then
+		if undo.present then
+			world:add(undo.entity, undo.id)
+		else
+			world:remove(undo.entity, undo.id)
+		end
+		return
+	end
 	if undo.kind == "child" then
-		reconcile.restore_fields(context, undo.entity, undo.child.entries, undo.previous)
+		if carried then
+			rewrite_child(context, undo.entity, undo.child, undo.previous)
+		else
+			reconcile.restore_fields(context, undo.entity, undo.child, undo.previous)
+		end
 		return
 	end
 	if undo.kind == "relation" then
@@ -96,16 +147,16 @@ local function undo_one(context: Context, undo: Undo)
 		)
 		return
 	end
-	if undo.kind == "tag" or undo.kind == "pair" then
+	if undo.kind == "tag" then
 		if undo.present then
 			world:add(undo.entity, undo.id)
 		else
 			world:remove(undo.entity, undo.id)
 		end
 	elseif undo.previous ~= nil then
-		world:set(undo.entity, undo.id, undo.previous)
+		world:set(undo.entity, undo.entry.id, undo.previous)
 	else
-		world:remove(undo.entity, undo.id)
+		world:remove(undo.entity, undo.entry.id)
 	end
 end
 
@@ -113,23 +164,41 @@ local function applied_id(undo: Undo): Entity<any>?
 	if undo.kind == "pair" or undo.kind == "child" then
 		return nil
 	end
-	if undo.kind == "relation" then
+	if undo.kind == "component" or undo.kind == "relation" then
 		return undo.entry.id
 	end
 	return undo.id
 end
 
-local function undo_all(context: Context, capture: Capture): { [Entity]: boolean }
+local function collect_keys(touched: Touched, undo: Undo)
+	local keys = touched[undo.entity]
+	if not keys then
+		keys = {}
+		touched[undo.entity] = keys
+	end
+	if undo.kind == "component" or undo.kind == "relation" then
+		keys[undo.entry.key] = true
+	elseif undo.kind == "tag" then
+		keys[undo.key] = true
+	elseif undo.kind == "child" then
+		local entries: { SchemaEntry } = undo.child.entries
+		for _, entry in entries do
+			keys[entry.key] = true
+		end
+	end
+end
+
+local function undo_all(context: Context, captured: Capture): Touched
 	local world, world_state = context.world, context.world_state
-	local touched: { [Entity]: boolean } = {}
+	local touched: Touched = {}
 	local first_error: any = nil
-	for index = #capture.undo, 1, -1 do
-		local undo = capture.undo[index]
+	for index = #captured.undo, 1, -1 do
+		local undo = captured.undo[index]
 		if not world:contains(undo.entity) then
 			continue
 		end
 		if not still_ours(context, undo) then
-			if undo.kind == "child" and undo.value ~= nil then
+			if undo.kind == "child" then
 				local ok, err = pcall(repair_child, context, undo.entity, undo.child, undo.previous, undo.value)
 				if not ok and first_error == nil then
 					first_error = err
@@ -137,10 +206,15 @@ local function undo_all(context: Context, capture: Capture): { [Entity]: boolean
 			end
 			continue
 		end
-		touched[undo.entity] = true
-		local ok, err = pcall(state.with_applying, world_state, undo.entity, applied_id(undo), function()
-			undo_one(context, undo)
-		end)
+		collect_keys(touched, undo)
+		local ok, err
+		if is_carried(undo) then
+			ok, err = pcall(undo_one, context, undo, true)
+		else
+			ok, err = pcall(state.with_applying, world_state, undo.entity, applied_id(undo), function()
+				undo_one(context, undo, false)
+			end)
+		end
 		if not ok and first_error == nil then
 			first_error = err
 		end
@@ -151,20 +225,68 @@ local function undo_all(context: Context, capture: Capture): { [Entity]: boolean
 	return touched
 end
 
-local function rollback(context: Context, capture: Capture)
-	if context.world_state.closed then
-		return
-	end
-	for entity in undo_all(context, capture) do
-		state.entity_state(context.world_state, entity).shadow =
-			state.read_values(context, entity, context.schema.entries)
+local function inherit_field(mine_previous: Data, mine_value: Data, other_previous: Data, key: string)
+	local value = mine_value[key]
+	if ops.deep_equal(other_previous[key], value) and not ops.deep_equal(value, mine_previous[key]) then
+		other_previous[key] = mine_previous[key]
 	end
 end
 
-local function pull_all(entries: { CaptureEntry })
-	util.join_all(entries, function(entry)
-		entry.session:sync()
-	end)
+local function inherit_previous(mine: Undo, other: Undo)
+	if mine.entity ~= other.entity or mine.kind ~= other.kind then
+		return
+	end
+	if mine.kind == "child" and other.kind == "child" then
+		for key in mine.value do
+			inherit_field(mine.previous, mine.value, other.previous, key)
+		end
+		for key in mine.previous do
+			if mine.value[key] == nil then
+				inherit_field(mine.previous, mine.value, other.previous, key)
+			end
+		end
+	elseif mine.kind == "component" then
+		if other.kind == "component" and mine.entry == other.entry and ops.deep_equal(other.previous, mine.value) then
+			other.previous = mine.previous
+		end
+	elseif mine.kind == "relation" then
+		if other.kind == "relation" and mine.entry == other.entry and ops.deep_equal(other.previous, mine.value) then
+			other.previous = mine.previous
+		end
+	elseif mine.kind == "tag" then
+		if other.kind == "tag" and mine.id == other.id and other.present ~= mine.present then
+			other.present = mine.present
+		end
+	elseif mine.kind == "pair" then
+		if other.kind == "pair" and mine.id == other.id and other.present ~= mine.present then
+			other.present = mine.present
+		end
+	elseif mine.kind == "mark" then
+		if other.kind == "mark" and mine.id == other.id and other.present ~= mine.present then
+			other.present = mine.present
+		end
+	end
+end
+
+local function disinherit(context: Context, captured: Capture)
+	local captures = context.world_state.captures
+	local mine_index = table.find(captures, captured) :: number
+	for index = mine_index + 1, #captures do
+		local other = captures[index]
+		for _, mine in captured.undo do
+			for _, undo in other.undo do
+				inherit_previous(mine, undo)
+			end
+		end
+	end
+end
+
+local function forget_capture(context: Context, captured: Capture)
+	local captures = context.world_state.captures
+	local index = table.find(captures, captured)
+	if index then
+		table.remove(captures, index)
+	end
 end
 
 local function open_entries(entries: { CaptureEntry }): { CaptureEntry }
@@ -175,6 +297,40 @@ local function open_entries(entries: { CaptureEntry }): { CaptureEntry }
 		end
 	end
 	return open
+end
+
+local function rollback(context: Context, captured: Capture)
+	local world_state = context.world_state
+	if world_state.closed then
+		return
+	end
+	disinherit(context, captured)
+	for entity, keys in undo_all(context, captured) do
+		local existing = world_state.entities[entity]
+		if existing then
+			existing.shadow = state.read_values(context, entity, context.schema.entries)
+			existing.tree = nil
+			for key in keys do
+				existing.supplied[key] = nil
+			end
+		end
+	end
+	for _, entry in open_entries(captured.entries) do
+		link.resupply(context, entry.session)
+	end
+end
+
+local function try_rollback(context: Context, captured: Capture, id: string)
+	local ok, err = pcall(rollback, context, captured)
+	if not ok then
+		logging.warn(messages.warnings.rollback_failed(id, err))
+	end
+end
+
+local function pull_all(entries: { CaptureEntry })
+	util.join_all(entries, function(entry)
+		entry.session:sync()
+	end)
 end
 
 local function settle(entries: { CaptureEntry }, id: string)
@@ -215,33 +371,36 @@ local function keys_of(entries: { CaptureEntry }): { string }
 	return keys
 end
 
-local function fail(context: Context, capture: Capture, id: string, err: unknown)
-	abandon_all(capture.entries, id)
-	local ok, rollback_err = pcall(rollback, context, capture)
-	if not ok then
-		logging.warn(messages.warnings.rollback_failed(id, rollback_err))
-	end
-	capture.batch:refuse(id, keys_of(capture.entries), tostring(err))
+local function fail(context: Context, captured: Capture, id: string, err: unknown)
+	abandon_all(captured.entries, id)
+	try_rollback(context, captured, id)
+	forget_capture(context, captured)
+	local listeners = context.world_state.hooks[hooks.refused]
+	local message = tostring(err)
+	captured.batch:refuse(id, keys_of(captured.entries), message, listeners ~= nil and #listeners > 0)
+	callbacks.fire(context.world_state.hooks, hooks.refused, captured.batch, captured.batch, message)
 end
 
-local function commit_single(context: Context, capture: Capture, entry: CaptureEntry)
+local function commit_single(context: Context, captured: Capture, entry: CaptureEntry)
 	local session = entry.session
-	local id = util.create_guid()
+	local id = captured.id
 	local ok, err = pcall(function()
 		session:journal({ id = id, ops = entry.ops, kind = "single" })
 		session:sync()
 	end)
 	if ok then
-		capture.batch:land()
+		forget_capture(context, captured)
+		captured.batch:land()
 		return
 	end
 	if session:has_landed(id) then
 		session:abandon(id)
-		settle(capture.entries, id)
-		capture.batch:land()
+		settle(captured.entries, id)
+		forget_capture(context, captured)
+		captured.batch:land()
 		return
 	end
-	fail(context, capture, id, err)
+	fail(context, captured, id, err)
 end
 
 local function mark_or_confirm(config: ResolvedCollectionConfig, id: string, created: number)
@@ -252,9 +411,9 @@ local function mark_or_confirm(config: ResolvedCollectionConfig, id: string, cre
 	error(err, 0)
 end
 
-local function commit_shared(context: Context, capture: Capture)
-	local entries = capture.entries
-	local id = util.create_guid()
+local function commit_shared(context: Context, captured: Capture)
+	local entries = captured.entries
+	local id = captured.id
 	local created = os.time()
 
 	local ok, err = pcall(function()
@@ -269,27 +428,29 @@ local function commit_shared(context: Context, capture: Capture)
 		mark_or_confirm(config, id, created)
 	end)
 	if not ok then
-		fail(context, capture, id, err)
+		fail(context, captured, id, err)
 		return
 	end
 	settle(entries, id)
-	capture.batch:land()
+	forget_capture(context, captured)
+	captured.batch:land()
 end
 
-local function commit_capture(context: Context, capture: Capture)
-	local entries = capture.entries
+local function commit_capture(context: Context, captured: Capture)
+	local entries = captured.entries
 	if #entries == 0 then
-		capture.batch:land()
+		forget_capture(context, captured)
+		captured.batch:land()
 		return
 	end
 	if #entries == 1 then
-		commit_single(context, capture, entries[1])
+		commit_single(context, captured, entries[1])
 		return
 	end
-	commit_shared(context, capture)
+	commit_shared(context, captured)
 end
 
-local function run(world: World, fn: () -> (), is_delta: boolean): Batch
+local function run(world: World, fn: () -> any, is_delta: boolean): Batch
 	local world_state = state.get(world)
 	local outer = world_state.capture
 	if outer then
@@ -304,31 +465,36 @@ local function run(world: World, fn: () -> (), is_delta: boolean): Batch
 	end
 
 	local context = contexts.create_context(world)
-	local capture: Capture = { delta = is_delta, undo = {}, entries = {}, children = {}, batch = handle.create_batch() }
-	world_state.capture = capture
-	local ok, err = pcall(fn)
+	local captured: Capture = {
+		id = util.create_guid(),
+		delta = is_delta,
+		undo = {},
+		entries = {},
+		children = {},
+		batch = handle.create_batch(),
+	}
+	table.insert(world_state.captures, captured)
+	world_state.capture = captured
+	local ok, result = pcall(fn)
 	world_state.capture = nil
+	if ok and #captured.entries > 1 then
+		ok, result = pcall(shared_config, captured.entries, captured.id)
+	end
 	if not ok then
-		local rolled, rollback_err = pcall(rollback, context, capture)
-		if not rolled then
-			logging.warn(messages.warnings.rollback_failed("capture", rollback_err))
-		end
-		error(err, 0)
+		try_rollback(context, captured, captured.id)
+		forget_capture(context, captured)
+		error(result, 0)
 	end
-	for _, undo in capture.undo do
-		if undo.kind == "child" then
-			undo.value = child_fields(context, undo.entity, undo.child)
-		end
-	end
-	task.spawn(commit_capture, context, capture)
-	return capture.batch
+	captured.batch:hold(result)
+	task.spawn(commit_capture, context, captured)
+	return captured.batch
 end
 
-local function batch(world: World, fn: () -> ()): Batch
+local function batch(world: World, fn: () -> any): Batch
 	return run(world, fn, false)
 end
 
-local function delta(world: World, fn: () -> ()): Batch
+local function delta(world: World, fn: () -> any): Batch
 	return run(world, fn, true)
 end
 

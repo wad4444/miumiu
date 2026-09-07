@@ -20,11 +20,13 @@ type Capture = types.Capture
 type CaptureEntry = types.CaptureEntry
 type ChildKind = types.ChildKind
 type ChildRecord = types.ChildRecord
+type ChildUndo = types.ChildUndo
 type ComponentWrite = types.ComponentWrite
 type Context = types.Context
 type Data = types.Data
 type ExistingChild = types.ExistingChild
 type Held = types.Held
+type MarkWrite = types.MarkWrite
 type Op = types.Op
 type Owner = types.Owner
 type RelationWrite = types.RelationWrite
@@ -32,6 +34,7 @@ type SchemaEntry = types.SchemaEntry
 type Scopes = types.Scopes
 type SessionInternal = types.SessionInternal
 type SplitPath = types.SplitPath
+type Undo = types.Undo
 type WorldState = types.WorldState
 type Write = types.Write
 
@@ -82,7 +85,7 @@ local function sessions_of(owner: Owner): { SessionInternal }
 	return owner.sessions
 end
 
-local function kind_tag_of(context: Context, entity: Entity): ChildKind?
+local function held_kind_of(context: Context, entity: Entity): ChildKind?
 	local held = children.child_of(context.world_state.children, entity)
 	if held then
 		return held.kind
@@ -91,7 +94,7 @@ local function kind_tag_of(context: Context, entity: Entity): ChildKind?
 end
 
 local function parent_holds(context: Context, kind: ChildKind, parent: Entity): boolean
-	local parent_kind = kind_tag_of(context, parent)
+	local parent_kind = held_kind_of(context, parent)
 	if parent_kind then
 		return schema.is_field_of(kind.scopes, parent_kind.tag, true)
 	end
@@ -124,14 +127,14 @@ end
 
 local function warn_unheld(context: Context, write: RelationWrite)
 	local world = context.world
-	local parent_kind = kind_tag_of(context, write.parent)
+	local parent_kind = held_kind_of(context, write.parent)
 	local holder = if parent_kind then parent_kind.tag else write.parent
 	logging.warn_once(
 		context.world_state.warned,
 		`{write.child.tag}/{holder}`,
 		messages.warnings.child_unheld(
 			util.describe(world, write.entity),
-			util.describe(world, write.child.tag),
+			children.describe_kind(world, write.child),
 			util.describe(world, holder)
 		)
 	)
@@ -166,6 +169,10 @@ local function restore(context: Context, write: ComponentWrite, previous: any)
 				previous or {},
 				context.world_state.warned
 			)
+		elseif entry.kind == "tag" then
+			if previous ~= true then
+				context.world:remove(entity, entry.id)
+			end
 		elseif previous == nil then
 			context.world:remove(entity, entry.id)
 		else
@@ -286,7 +293,14 @@ local function capture_ops(capture: Capture, sessions: { SessionInternal }, grou
 	end
 end
 
-local function shadow_fields(shadow: { [string]: any }, entries: { SchemaEntry }): Data
+local function forget_removal(world_state: WorldState, write: ComponentWrite)
+	local existing = world_state.entities[write.entity]
+	if existing and (write.change == "removed" or write.entry.kind == "relation") then
+		existing.removing[write.entry.key] = nil
+	end
+end
+
+local function shadow_fields(shadow: Data, entries: { SchemaEntry }): Data
 	local fields: Data = {}
 	for _, entry in entries do
 		local value = shadow[entry.key]
@@ -304,20 +318,71 @@ local function shadow_fields(shadow: { [string]: any }, entries: { SchemaEntry }
 end
 
 local function record_child(context: Context, capture: Capture, entity: Entity)
-	if capture.children[entity] then
-		return
-	end
-	capture.children[entity] = true
 	local world_state = context.world_state
 	local held = children.child_of(world_state.children, entity) :: ChildRecord
+	local value = children.pack_fields_of(context, entity, held.kind)
+	local existing = capture.children[entity]
+	if existing then
+		existing.value = value
+		return
+	end
 	local shadow = state.entity_state(world_state, entity).shadow
-	table.insert(capture.undo, {
+	local undo: ChildUndo = {
 		kind = "child",
 		entity = entity,
 		child = held.kind,
 		previous = shadow_fields(shadow, held.kind.entries),
-		value = nil,
-	})
+		value = value,
+		carried = false,
+	}
+	capture.children[entity] = undo
+	table.insert(capture.undo, undo)
+end
+
+local function covers_path(prefix: { string }, path: { string }): boolean
+	if #path < #prefix then
+		return false
+	end
+	for index, segment in prefix do
+		if path[index] ~= segment then
+			return false
+		end
+	end
+	return true
+end
+
+local function each_undo(world_state: WorldState, fn: (Undo) -> ())
+	for _, capture in world_state.captures do
+		for _, undo in capture.undo do
+			fn(undo)
+		end
+	end
+end
+
+local function mark_carried(world_state: WorldState, entity: Entity, key: string)
+	each_undo(world_state, function(undo)
+		if undo.kind == "tag" then
+			if undo.entity == entity and undo.key == key then
+				undo.carried = true
+			end
+		elseif undo.kind == "component" or undo.kind == "relation" then
+			if undo.entity == entity and undo.entry.key == key then
+				undo.carried = true
+			end
+		end
+	end)
+end
+
+local function mark_carried_children(world_state: WorldState, ancestry: Ancestry)
+	each_undo(world_state, function(undo)
+		if undo.kind ~= "child" then
+			return
+		end
+		local other = children.ancestry(world_state, undo.entity)
+		if other and other.root == ancestry.root and covers_path(ancestry.path, other.path) then
+			undo.carried = true
+		end
+	end)
 end
 
 local function record_component(context: Context, capture: Capture, owner: Held, write: ComponentWrite)
@@ -328,31 +393,48 @@ local function record_component(context: Context, capture: Capture, owner: Held,
 		capture_ops(capture, owner.sessions, { child_put(context, owner.ancestry) }, coalesce_key(owner.ancestry))
 		return
 	end
+	if capture.delta then
+		local reason = if entry.kind == "tag"
+			then messages.reasons.tag
+			elseif entry.kind == "relation" then messages.reasons.pair
+			elseif write.change == "removed" then messages.reasons.removed
+			else nil
+		if reason then
+			forget_removal(context.world_state, write)
+			if write.change ~= "removed" then
+				restore(context, write, state.entity_state(context.world_state, entity).shadow[entry.key])
+			end
+			error(messages.errors.not_a_delta(entry.key, reason), 0)
+		end
+	end
 	local previous = remember(context.world_state, write)
 	if entry.kind == "tag" then
-		table.insert(capture.undo, { kind = "tag", entity = entity, id = entry.id, present = previous == true })
+		table.insert(capture.undo, {
+			kind = "tag",
+			entity = entity,
+			id = entry.id,
+			key = entry.key,
+			present = previous == true,
+			carried = false,
+		})
 	elseif entry.kind == "relation" then
-		table.insert(
-			capture.undo,
-			{ kind = "relation", entity = entity, entry = entry, previous = previous, value = write.value }
-		)
+		table.insert(capture.undo, {
+			kind = "relation",
+			entity = entity,
+			entry = entry,
+			previous = previous,
+			value = write.value,
+			carried = false,
+		})
 	else
-		table.insert(
-			capture.undo,
-			{ kind = "component", entity = entity, id = entry.id, previous = previous, value = write.value }
-		)
-	end
-
-	if capture.delta then
-		if entry.kind == "tag" then
-			error(messages.errors.not_a_delta(entry.key, messages.reasons.tag), 0)
-		end
-		if entry.kind == "relation" then
-			error(messages.errors.not_a_delta(entry.key, messages.reasons.pair), 0)
-		end
-		if write.change == "removed" then
-			error(messages.errors.not_a_delta(entry.key, messages.reasons.removed), 0)
-		end
+		table.insert(capture.undo, {
+			kind = "component",
+			entity = entity,
+			entry = entry,
+			previous = previous,
+			value = write.value,
+			carried = false,
+		})
 	end
 
 	for _, session in owner.sessions do
@@ -371,6 +453,9 @@ end
 
 local function reject_unloaded(context: Context, write: Write)
 	local world = context.world
+	if write.kind == "component" then
+		forget_removal(context.world_state, write)
+	end
 	if write.kind == "component" and write.change == "added" then
 		state.with_applying(context.world_state, write.entity, write.entry.id, function()
 			world:remove(write.entity, write.entry.id)
@@ -393,15 +478,16 @@ local function journal_component(context: Context, write: ComponentWrite, flushi
 		warn_unsaved(context, write)
 		return
 	end
-	local entity_state = state.entity_state(world_state, write.entity)
 	if #owner.sessions == 0 then
-		if capture and not entity_state.dropped then
+		local existing = world_state.entities[write.entity]
+		if capture and not (existing and existing.dropped) then
 			reject_unloaded(context, write)
 		end
 		return
 	end
 
 	validate_write(context, write)
+	local entity_state = state.entity_state(world_state, write.entity)
 	if capture and not flushing then
 		if capture.delta and is_lazy(write.entry) then
 			restore(context, write, entity_state.shadow[write.entry.key])
@@ -435,9 +521,11 @@ local function journal_component(context: Context, write: ComponentWrite, flushi
 	end
 	remember(world_state, write)
 	if owner.kind == "child" then
+		mark_carried_children(world_state, owner.ancestry)
 		journal_ops(owner.sessions, { op }, coalesce_key(owner.ancestry))
 		return
 	end
+	mark_carried(world_state, write.entity, write.entry.key)
 	journal_ops(owner.sessions, { op }, write.entry.key)
 end
 
@@ -477,12 +565,12 @@ end
 
 local function assign_id(context: Context, write: RelationWrite): string
 	local world = context.world
-	local existing = children.resolve_id(world, write.child, write.entity)
+	local existing = children.resolve_id(world, write.entity, write.child)
 	if existing then
 		return existing
 	end
 	if write.child.mode == "attached" then
-		children.reject_unnamed(world, write.child, write.entity)
+		children.reject_unnamed(world, write.entity, write.child)
 	end
 	return children.mint_id(world, write.entity)
 end
@@ -501,11 +589,15 @@ local function emit_child(context: Context, ancestry: Ancestry?, op_for: (Ancest
 		return
 	end
 	local coalesce = coalesce_key(ancestry)
+	local op = op_for(ancestry)
 	if capture then
-		capture_ops(capture, sessions, { op_for(ancestry) }, coalesce)
+		capture_ops(capture, sessions, { op }, coalesce)
 		return
 	end
-	journal_ops(sessions, { op_for(ancestry) }, coalesce)
+	if op.kind == "put" then
+		mark_carried_children(world_state, ancestry)
+	end
+	journal_ops(sessions, { op }, coalesce)
 end
 
 local function shallow_root(context: Context, root: Entity): boolean
@@ -517,8 +609,8 @@ local function shallow_root(context: Context, root: Entity): boolean
 	return false
 end
 
-local function attach(context: Context, write: RelationWrite, ancestry: Ancestry?)
-	reconcile.record_baselines(context, write.entity, write.child)
+local function supply_claimed(context: Context, entity: Entity, kind: ChildKind)
+	local ancestry = children.ancestry(context.world_state, entity)
 	if not ancestry then
 		return
 	end
@@ -528,7 +620,28 @@ local function attach(context: Context, write: RelationWrite, ancestry: Ancestry
 	end
 	local split = split_path(ancestry)
 	local stored = ops.resolve(sessions[1]:get_truth(), split.key, split.path, #split.path)
-	reconcile.supply_child(context, write.entity, write.child, if type(stored) == "table" then stored else {})
+	reconcile.supply_child(context, entity, kind, if type(stored) == "table" then stored else {})
+end
+
+local function stored_id_of(context: Context, entity: Entity, kind: ChildKind): any
+	if kind.mode == "owned" then
+		return context.world:get(entity, ids.child_id)
+	end
+	return context.world:get(entity, kind.id)
+end
+
+local function mark_dropped(context: Context, entity: Entity)
+	local world_state = context.world_state
+	state.entity_state(world_state, entity).dropped = true
+	table.insert(world_state.dropped_entities, entity)
+end
+
+local function attach(context: Context, write: RelationWrite, was_dropped: boolean)
+	if not was_dropped then
+		reconcile.record_baselines(context, write.entity, write.child)
+	end
+	reconcile.refresh_shadows(context, write.entity, write.child)
+	supply_claimed(context, write.entity, write.child)
 end
 
 local function on_detached(context: Context, write: RelationWrite)
@@ -559,6 +672,21 @@ local function on_detached(context: Context, write: RelationWrite)
 		if not write.deleted and held then
 			table.insert(world_state.cleanups, { kind = "reset", entity = write.entity, child = write.child })
 		end
+		if not write.deleted then
+			mark_dropped(context, write.entity)
+			local capture = world_state.capture
+			if capture and previous then
+				table.insert(capture.undo, {
+					kind = "pair",
+					entity = write.entity,
+					id = write.trigger,
+					present = true,
+					child = write.child,
+					parent = write.parent,
+					stored_id = stored_id_of(context, write.entity, write.child),
+				})
+			end
+		end
 		return
 	end
 	if world_state.deleting[write.parent] then
@@ -568,10 +696,19 @@ local function on_detached(context: Context, write: RelationWrite)
 		return
 	end
 	if not write.deleted then
-		state.entity_state(world_state, write.entity).dropped = true
+		mark_dropped(context, write.entity)
 	end
+	local stored_id = stored_id_of(context, write.entity, write.child)
 	emit_child(context, ancestry, child_drop, function(capture)
-		table.insert(capture.undo, { kind = "pair", entity = write.entity, id = write.trigger, present = true })
+		table.insert(capture.undo, {
+			kind = "pair",
+			entity = write.entity,
+			id = write.trigger,
+			present = true,
+			child = write.child,
+			parent = write.parent,
+			stored_id = stored_id,
+		})
 	end)
 end
 
@@ -583,8 +720,8 @@ local function validate_kind(context: Context, write: RelationWrite)
 			error(
 				messages.errors.child_kinds_ambiguous(
 					util.describe(world, write.entity),
-					util.describe(world, write.child.tag),
-					util.describe(world, other.tag)
+					children.describe_kind(world, write.child),
+					children.describe_kind(world, other)
 				),
 				0
 			)
@@ -596,8 +733,8 @@ local function validate_kind(context: Context, write: RelationWrite)
 		error(
 			messages.errors.child_double_parent(
 				util.describe(world, write.entity),
-				util.describe(world, write.child.tag),
-				util.describe(world, held.kind.tag)
+				children.describe_kind(world, write.child),
+				children.describe_kind(world, held.kind)
 			),
 			0
 		)
@@ -621,32 +758,73 @@ local function on_attached(context: Context, write: RelationWrite)
 		error(id, 0)
 	end
 	children.record(index, write.entity, write.child, write.parent, id)
-	state.entity_state(world_state, write.entity).dropped = false
+	local existing = world_state.entities[write.entity]
+	local was_dropped = existing ~= nil and existing.dropped
+	if existing then
+		existing.dropped = false
+	end
 	if applying then
 		return
 	end
 	local ancestry = children.ancestry(world_state, write.entity)
 	if write.child.mode == "attached" then
-		attach(context, write, ancestry)
+		attach(context, write, was_dropped)
+		local capture = world_state.capture
+		if capture then
+			table.insert(capture.undo, {
+				kind = "pair",
+				entity = write.entity,
+				id = write.trigger,
+				present = false,
+				child = write.child,
+				parent = write.parent,
+				stored_id = stored_id_of(context, write.entity, write.child),
+			})
+		end
 		return
 	end
-	reconcile.refresh_shadows(context, write.entity, write.child)
 	if
 		world_state.capture
 		and (ancestry == nil or #sessions_of(root_owner(context, ancestry.root, ancestry.kind.scopes)) == 0)
 	then
 		reject_unloaded(context, write)
 	end
+	reconcile.refresh_shadows(context, write.entity, write.child)
+	local stored_id = stored_id_of(context, write.entity, write.child)
 	emit_child(context, ancestry, function(found)
 		return child_put(context, found)
 	end, function(capture)
-		table.insert(capture.undo, { kind = "pair", entity = write.entity, id = write.trigger, present = false })
+		table.insert(capture.undo, {
+			kind = "pair",
+			entity = write.entity,
+			id = write.trigger,
+			present = false,
+			child = write.child,
+			parent = write.parent,
+			stored_id = stored_id,
+		})
 	end)
+end
+
+local function on_marked(context: Context, write: MarkWrite)
+	local world_state = context.world_state
+	local capture = world_state.capture
+	if capture == nil or state.is_applying(world_state, write.entity, write.child.tag) then
+		return
+	end
+	table.insert(capture.undo, {
+		kind = "mark",
+		entity = write.entity,
+		id = write.child.tag,
+		present = write.change == "removed",
+	})
 end
 
 local function journal(context: Context, write: Write)
 	if write.kind == "component" then
 		journal_component(context, write, false)
+	elseif write.kind == "mark" then
+		on_marked(context, write)
 	elseif write.change == "removed" then
 		on_detached(context, write)
 	else
@@ -675,7 +853,7 @@ local function index_existing(context: Context)
 		if not parent_holds(context, kind, existing.parent) then
 			continue
 		end
-		local resolved, id = pcall(children.resolve_id, world, kind, entity)
+		local resolved, id = pcall(children.resolve_id, world, entity, kind)
 		if not resolved then
 			logging.warn(messages.warnings.child_indexing_failed(util.describe(world, entity), id))
 			continue
@@ -685,7 +863,10 @@ local function index_existing(context: Context)
 		end
 		if id == nil then
 			logging.warn(
-				messages.warnings.child_unnamed_existing(util.describe(world, entity), util.describe(world, kind.tag))
+				messages.warnings.child_unnamed_existing(
+					util.describe(world, entity),
+					children.describe_kind(world, kind)
+				)
 			)
 			continue
 		end
@@ -715,4 +896,5 @@ end
 return table.freeze({
 	install = install,
 	flush_lazy = flush_lazy,
+	supply_claimed = supply_claimed,
 })

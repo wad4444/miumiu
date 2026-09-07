@@ -1,6 +1,6 @@
 {
 	"name": "@rbxts/miumiu",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "ECS-first data store for jecs: collections are entities, saves are relationships, saveable components are the schema",
 	"main": "src/init.luau",
 	"types": "src/index.d.ts",
@@ -10,7 +10,7 @@
 	"keywords": ["roblox", "roblox-ts", "datastore", "ecs", "jecs"],
 	"author": "wad4444",
 	"license": "MIT",
-	"files": ["DESIGN.md", "src", "default.project.json", "!src/**/*.spec.luau"],
+	"files": ["CHANGELOG.md", "DESIGN.md", "src", "default.project.json", "!src/**/*.spec.luau"],
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/wad4444/miumiu.git"

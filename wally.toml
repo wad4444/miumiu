@@ -1,12 +1,12 @@
 [package]
 name = "cheetiedotpy/miumiu"
 description = "ECS-first data store: collections are entities, saves are relationships, saveable components are the schema"
-version = "0.1.0"
+version = "0.2.0"
 license = "MIT"
 registry = "https://github.com/UpliftGames/wally-index"
 realm = "shared"
 exclude = ["**"]
-include = ["default.project.json", "LICENSE.txt", "wally.toml", "src", "src/**"]
+include = ["CHANGELOG.md", "DESIGN.md", "README.md", "default.project.json", "LICENSE.txt", "wally.toml", "src", "src/**"]
 
 [dependencies]
 jecs = "ukendio/jecs@0.11.0"

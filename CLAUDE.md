@@ -30,16 +30,16 @@ src/session.luau      one key: journal, merge, pull (read or update), adopt, unl
 src/pull_loop.luau    the per-session loop (pull_interval when dirty, idle_interval when clean)
 src/recorder.luau     jecs added/changed/removed listeners feeding a sink (pairs packed per write, jecs.Name index); used by capture and migrations
 src/relations.luau    saveable pairs: pack the dictionary of a relation's pairs, apply one onto an entity
-src/children.luau     child index (entity → parent/kind/id), ancestry paths, kind_of, pack / pack_fields, delete_tree (marks deleting), stored_children
-src/capture.luau      world writes → validated ops, batch capture, shadows, lazy flush at write time, index_existing (pre-step children)
+src/children.luau     child index (entity → parent/kind/id), ancestry paths, kind_of, pack / pack_fields_of, delete_tree (marks deleting), stored_children
+src/capture.luau      world writes → validated ops, batch capture (undos, carried marks), shadows, lazy flush at write time (flush_lazy), claim-time supply (supply_claimed), pre-step child indexing
 src/reconcile.luau    merged truth → entity (initials, decode, apply; lazy-marked keys skipped), child supply, reset_child, baselines, snapshots, wipe_entity
 src/migrations.luau   scratch-world migrations
 src/foreign/          adapters for importing from other libraries (lapis.luau)
 src/listeners.luau    data_link listeners → events; install/uninstall
-src/link.luau         link lifecycle: link/unlink/loaded/load_failed/closed/pulled handlers, cleanups, get_session, wipe_key, detach_all
+src/link.luau         link lifecycle: link/unlink/loaded/load_failed/closed/pulled handlers, cleanups, get_session, wipe_key, detach_all, resupply
 src/step.luau         the event loop, get_session, wipe, close
 src/batch.luau        batch/delta: capture, background commit (single or shared), rollback
-src/handle.luau       Batch: the handle batch/delta return (outcome, landed/refused hooks, await; cake-style class)
+src/handle.luau       Batch: the handle batch/delta return (outcome, result via hold/get_result, landed/refused hooks, await; cake-style class)
 src/index.d.ts        the roblox-ts surface
 tests/specs/          TestEZ specs, never inside src
 tests/coverage.luau   block instrumenter used by the runner
@@ -66,7 +66,8 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 - A `template` table at the bottom holds default values plus the method references;
   `create_x` does `table.clone(template)`, re-creates every mutable sub-table, sets
   `setmetatable(instance, meta)` and returns `instance :: types.X`.
-- `meta` carries only `__tostring` (`Session(key)`, `Mutex(free)`); no `__index`.
+- `meta` carries only `__tostring` (`Session(key)`, `Mutex(free)`, `Batch(pending)`); no
+  `__index`.
 - Scalars live in `internal_values`, tables in their own `internal_*` field; the public
   surface is getters (`get_key`, `is_open`) and verbs. The public type (`Session`) lists
   only that surface; `SessionInternal = Session & { internal_*, internal verbs }` is what
@@ -78,8 +79,11 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 - Events are one `hook(self, hooks.x, callback) -> disconnect` over the typed symbols in
   `src/hooks.luau` (`PulledHook = Symbol<"pulled">`; `SessionHook` is an intersection of
   overloads that gives each callback a real signature; `BatchHook` does the same for
-  `landed` / `refused`), backed by `src/callbacks.luau`
-  (`connect` / `fire`; `fire` pcalls every callback and warns through `messages`).
+  `landed` / `refused`; the world-level `miumiu.hook(world, refused, fn)` in `step.luau`
+  uses the same registry on the world state), backed by `src/callbacks.luau`
+  (`connect` / `invoke` / `fire`;
+  `invoke` pcalls one callback and warns through `messages`, `fire` does that for every
+  connected one; `Batch:hook` invokes at once when the batch is already settled).
   Background loops live in their own module (`src/pull_loop.luau`), never inside the
   class file.
 - Validation helpers are `validate_*(self)`.
@@ -119,14 +123,19 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
   rejected child pair or tag, claim-time supply of an attached child (`capture.attach` →
   `reconcile.supply_child`), `wipe` (`reconcile.wipe_entity`) and child-id minting
   (`children.mint_id`, which writes `child_id` bare: nothing listens on it), always under
-  `state.with_applying` (which nests) so listeners skip it. The one deliberate exception
-  is a snapshot write (`reconcile.snapshot_fields`): it runs unmarked so it journals like
-  a game write. Listeners read or enqueue into `src/state.luau`.
+  `state.with_applying` (which nests) so listeners skip it. Two deliberate exceptions
+  run unmarked so they journal like a game write: a snapshot write
+  (`reconcile.snapshot_fields`), and a refused batch's corrective restore
+  (`batch.rewrite_child` and an unmarked `undo_one` for an undo a later journaled op
+  carried, flagged by `capture.mark_carried` / `mark_carried_children`; and
+  `batch.repair_child` for a child a plain write changed since). Listeners read or
+  enqueue into `src/state.luau`.
 - Anything run inside a `removed` hook only reads: no `world:add/set/remove/delete`.
-- Plain `task.spawn` / `task.wait`; `task.defer` only for the load thread so a same-frame
-  cancel never reaches storage. Timestamps are `os.time()`. Never `os.clock()`:
-  benchmarking only, in specs too. The `tick` shim MockDataStoreService needs in
-  `tests/run.luau` is the one place it appears.
+- Plain `task.spawn` / `task.wait`; `task.defer` only for the load thread (a same-frame
+  cancel never reaches storage) and for `handle.refuse`'s unhooked-refusal warning (a
+  `hook(refused)` or `await` in the same frame silences it). Timestamps are `os.time()`.
+  Never `os.clock()`: benchmarking only, in specs too. The `tick` shim
+  MockDataStoreService needs in `tests/run.luau` is the one place it appears.
 - Nothing touches `DataStoreService` at require time; the module must load on the client.
   Storage calls live in `datastore.luau` only.
 
@@ -152,8 +161,9 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
   `utils.open_session`. Prefer `utils.wait_until(condition)` over fixed `task.wait` calls;
   `utils.timings.never` is the "never pulls on its own" interval, `utils.timings.grace` the
   one grace wait for negative assertions (long enough to cover a pull interval with
-  jitter), `in_flight` / `short` / `fast` / `window` / `slow` / `overdue` the delay and
-  interval sizes; specs never spell a wait, delay or interval out as a literal. The mock
+  jitter), `in_flight` / `short` / `fast` / `window` / `slow` / `overdue` / `long` the
+  delay, interval and timeout sizes, `poll` / `patience` what `wait_until` uses; specs
+  never spell a wait, delay or interval out as a literal. The mock
   completes calls synchronously, so a spec that needs a load in flight uses
   `delay_next("GetAsync", s, "before")`: a load is
   a `GetAsync` unless the key carries a seed or pending entries to settle. `delay_next`

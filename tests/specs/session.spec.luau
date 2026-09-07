@@ -406,18 +406,19 @@ return function()
 	end)
 
 	describe("regressions", function()
+		local function put_money(loaded, money: number, at: number)
+			loaded:journal({
+				id = utils.fresh_id(),
+				ops = { set("money", money, at) },
+				kind = "single",
+				coalesce = "money",
+			})
+		end
+
 		it("keeps a coalesced write journaled during the pull that lands its predecessor", function()
 			local backend = utils.create_backend()
 			local loaded = utils.open_session(backend, "k", { pull_interval = never })
 			local at = os.time()
-			local function put(money: number)
-				loaded:journal({
-					id = utils.fresh_id(),
-					ops = { set("money", money, at) },
-					kind = "single",
-					coalesce = "money",
-				})
-			end
 			backend:delay_next("GetAsync", utils.timings.in_flight, "before")
 			backend:delay_next("UpdateAsync", utils.timings.in_flight, "after")
 			local reads = backend.calls.GetAsync
@@ -429,11 +430,11 @@ return function()
 			expect(utils.wait_until(function()
 				return backend.calls.GetAsync > reads
 			end)).to.equal(true)
-			put(5)
+			put_money(loaded, 5, at)
 			expect(utils.wait_until(function()
 				return backend.calls.UpdateAsync == 1
 			end)).to.equal(true)
-			put(6)
+			put_money(loaded, 6, at)
 			expect(utils.wait_until(function()
 				return done
 			end)).to.equal(true)
@@ -446,15 +447,7 @@ return function()
 			local backend = utils.create_backend()
 			local loaded = utils.open_session(backend, "k", { pull_interval = never })
 			local at = os.time()
-			local function put(money: number)
-				loaded:journal({
-					id = utils.fresh_id(),
-					ops = { set("money", money, at) },
-					kind = "single",
-					coalesce = "money",
-				})
-			end
-			put(5)
+			put_money(loaded, 5, at)
 			backend:delay_next("UpdateAsync", utils.timings.in_flight, "after")
 			local done = false
 			task.spawn(function()
@@ -464,7 +457,7 @@ return function()
 			expect(utils.wait_until(function()
 				return backend.calls.UpdateAsync == 1
 			end)).to.equal(true)
-			put(6)
+			put_money(loaded, 6, at)
 			expect(utils.wait_until(function()
 				return done
 			end)).to.equal(true)
@@ -551,7 +544,7 @@ return function()
 			expect(utils.wait_until(function()
 				return err ~= nil
 			end)).to.equal(true)
-			expect((string.find(err, "newer server"))).to.be.ok()
+			expect((string.find(err, "newer server", 1, true))).to.be.ok()
 		end)
 
 		it("adopts a deleted record as an empty one", function()
@@ -690,8 +683,8 @@ return function()
 			expect(utils.wait_until(function()
 				return #backend.warnings == 2
 			end)).to.equal(true)
-			expect((string.find(backend.warnings[1], "flaky"))).to.be.ok()
-			expect((string.find(backend.warnings[2], "succeeded again"))).to.be.ok()
+			expect((string.find(backend.warnings[1], "flaky", 1, true))).to.be.ok()
+			expect((string.find(backend.warnings[2], "succeeded again", 1, true))).to.be.ok()
 			utils.journal(loaded, { set("money", 1, 1) })
 			expect(utils.wait_until(function()
 				local record = backend:dump("k")
@@ -748,7 +741,7 @@ return function()
 			expect(closed).to.equal(true)
 			local closure = loaded:get_closure()
 			assert(closure and closure.kind == "refused")
-			expect((string.find(closure.message, "newer server"))).to.be.ok()
+			expect((string.find(closure.message, "newer server", 1, true))).to.be.ok()
 		end)
 
 		it("does not warn when the pull loop stops on a newer record", function()
@@ -828,7 +821,7 @@ return function()
 			end)
 			utils.journal(loaded, { set("money", 1, 1) })
 			loaded:sync()
-			expect((string.find(backend.warnings[#backend.warnings], "hook boom"))).to.be.ok()
+			expect((string.find(backend.warnings[#backend.warnings], "hook boom", 1, true))).to.be.ok()
 			expect(backend:dump("k").data.money).to.equal(1)
 			loaded:unload()
 		end)

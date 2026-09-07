@@ -14,7 +14,7 @@ Wally:
 
 ```toml
 [dependencies]
-miumiu = "cheetiedotpy/miumiu@0.1.0"
+miumiu = "cheetiedotpy/miumiu@0.2.0"
 ```
 
 roblox-ts:
@@ -52,22 +52,30 @@ Ids come from `jecs.component()` / `jecs.tag()` and are described with `jecs.met
 *before* `jecs.world()`: jecs applies that metadata when a world is created and never
 again. Require miumiu before that too, its own ids are named the same way. Ids made with
 `world:component()` after the fact take `world:set(id, miumiu.saveable, "money")`
-instead. `miumiu.saveable` gives a component or tag its stored key. The component set on
-itself is its initial value. A guard rejects bad writes and skips bad stored values.
-Everything is declared before the first `miumiu.step` (or `batch` / `delta`); the schema
-freezes there.
+instead; every miumiu meta (`config`, `migrations`, `from_foreign`, `snapshot`, ...) may
+be `world:set` the same way, any time before the first `step` or link. `miumiu.saveable`
+gives a component or tag its stored key. The component set on itself is its initial
+value. A guard rejects bad writes and skips bad stored values.
+Everything is declared before the first `miumiu.step` (or `batch`, `delta`, `wipe`); the
+schema freezes there.
 
 `miumiu.config` fields, all optional:
 
 | field | default | meaning |
 |---|---|---|
-| `pull_interval` | 15 | seconds between writes while something is unwritten |
-| `idle_interval` | 60 | seconds between reads while clean; `math.huge` turns them off |
+| `pull_interval` | 15 | seconds between writes while something is unwritten; under 6 (the DataStore write cooldown) warns |
+| `idle_interval` | 60, never under `pull_interval` | seconds between reads while clean; `math.huge` turns them off |
 | `retry_attempts`, `retry_base` | 5, 1 | storage retries and their base delay, doubling |
 | `commit_store`, `commit_timeout` | `"miumiu_commits"`, 300 | the store and window multi-key batches commit through |
 | `data_store_service` | `DataStoreService` | swap in a mock for tests |
 | `default_scope` | `false` | with several collections, the one that takes unscoped saveables |
 | `user_ids` | none | `function(key)` returning the user ids every write and wipe of that key carries |
+
+Config is checked when a key links, not at `meta`: a bad value lands as
+`pair(miumiu.data_error, c)` on every entity that links, the same pair as in *When a
+session ends mid-play*, so a typo kicks every player under the kick that section
+recommends. Fix it before
+shipping; the message names the field.
 
 ## Link
 
@@ -98,21 +106,26 @@ game:BindToClose(function()
 end)
 ```
 
-`close` writes every open session and yields until the writes land or its budget runs
-out (25 s by default, under the 30 s `BindToClose` allows).
+`close` detaches every link first, then writes every open session, including the final
+writes of leaves already in progress, and yields until the writes land or its budget
+runs out (25 s by default, under the 30 s `BindToClose` allows). Write leave-time state
+before calling it, or in a `writing` hook: a saveable write made after `close` began is
+dropped.
 
-While the first read is in flight the entity carries `pair(miumiu.data_loading, c)`;
-once stored values are on it, `pair(miumiu.data_loaded, c)`. A failed load sets
-`pair(miumiu.data_error, c)` to the reason. Gate your systems on `data_loaded`. Leave in
-this order: unlink, a `step`, then delete the entity. Writes before `data_loaded` are dropped, so
-link first and gate the systems that write on the pair. A write made after the link is
+Joining: while the first read is in flight the entity carries
+`pair(miumiu.data_loading, c)`; once the record's values are supplied onto it (supply:
+the library writing stored values onto an entity), `pair(miumiu.data_loaded, c)`. A
+failed load sets `pair(miumiu.data_error, c)` to the reason. Writes before `data_loaded`
+are dropped, so link first and gate the systems that write on the pair.
+
+Leaving: unlink, a `step`, then delete the entity. A write made after the link is
 removed is not saved. Deleting a linked entity is not a save either: writes already
 journaled still land with the final write, but snapshots and pending lazy values are
 lost, and the record keeps the children the entity had. Inside a scheduler, an unlink
 in one system and the delete in the next frame's system after the `step` one is the
-same order. To know when the final write
-landed, take the session before unlinking and hook `closed` (a relink before the write
-lands takes the session back, and `closed` does not fire):
+same order. To know when the final write landed, take the session before unlinking and
+hook `closed` (a relink before the write lands takes the session back, and `closed`
+does not fire):
 
 ```luau
 local session = miumiu.get_session(world, player_data, key)
@@ -140,11 +153,23 @@ if session then
 end
 ```
 
+`sync` yields until every change journaled before the call is in the record and throws
+otherwise: the durability point for a plain write. Receipts use `batch(...):await()`
+instead (Receipts).
+
 The session behind a key is `miumiu.get_session(world, player_data, key)`: `get_key()`,
 `get_truth()` and `get_stamps()` (the stored form, read-only), `get_config()`,
 `is_open()`, `is_dirty()`, `sync()`, `get_closure()` once closed, and
 `hook(miumiu.hooks.pulled | closed | writing, fn)`. `is_dirty()` stays true while a
-write is in flight.
+write is in flight. `miumiu.is_session(value)` and `miumiu.is_batch(value)` tell a
+session or a batch handle from anything else.
+
+Hooks run on the library's threads: `pulled` on the pull thread, where the entities are
+updated only on the next `step`, so read the truth it hands you rather than the world;
+`writing` right before the write; `closed` while the session still holds its lock;
+`landed` and `refused` on the commit thread between frames. Never yield in `writing`,
+`closed`, `landed` or `refused`, and never `sync` from `writing`; `pulled` is the one
+hook that may `sync` again. A write made in `refused` is an ordinary journaled write.
 
 Writes that must land together, across any number of players, go in a batch; writes that
 should compose with what other servers did go in a delta:
@@ -174,12 +199,19 @@ end)
 
 A write the function cannot make (a guard, an unloaded entity, an error inside) throws
 right there and rolls the world back. A commit that fails later rolls back only the
-values the batch still holds, fires `refused`, and warns when nothing hooked it;
-`batch:await()` yields until the group is in every record and throws that message
-instead. The handle also has `get_outcome()` (`pending`, `landed` or `refused` with the
-message) and `is_settled()`. Hooks and the rollback run on the commit thread, between
-frames. Inside `delta`, build new tables from the old ones so untouched elements keep
-their identity.
+values the batch still holds, fires `refused`, and warns when nothing hooked or awaited
+it in the same frame. `batch:await()` yields until the group is in every record and
+returns the outcome, `{ kind = "landed" }` or `{ kind = "refused", message = ... }`,
+never throwing. The handle also has `get_outcome()` (the same record, `pending` until
+then), `is_settled()` and `get_result()`, what the function returned, there as soon as
+`batch` returns. Hooks and the rollback run on the commit thread, between frames. After
+the rollback every entity linked to the batch's keys is supplied again from the record,
+so siblings, children and attached trees that saw the group flip back too. Your jecs
+listeners fire for every one of those writes, as for any write; only the journal
+ignores them. `miumiu.hook(world, miumiu.hooks.refused, fn(batch, message))` hears
+every refusal on the world after the batch's own hooks, one place to tell a player, and
+counts as hooked for the warning. Inside `delta`, build new tables from the old ones so
+untouched elements keep their identity.
 
 A batch groups saveable writes only. One that captured none lands at once, and a
 snapshot component is evaluated at write time outside any batch, so it lands even when
@@ -249,6 +281,7 @@ end)
 At runtime, once the record is on the entity:
 
 ```luau
+local loaded = jecs.pair(miumiu.data_loaded, player_data)
 world:added(miumiu.data_loaded, function(entity, id)
 	if id == loaded then
 		world:set(entity, playtime_base, world:get(entity, total_playtime) or 0)
@@ -359,7 +392,7 @@ jecs.meta(battery, miumiu.lazy)
 A lazy write still counts as unwritten, so the session writes on its next interval;
 unlink, unclaim and `close` write pending lazy values too, and a pull never sets a
 pending value back. Inside `batch` a lazy write is recorded
-like any other; `delta` refuses it, since a value read at write time has no delta.
+like any other; `delta` throws on it, since a value read at write time has no delta.
 
 ## Other players
 
@@ -424,10 +457,10 @@ from both entities: they share one session and see each other's writes on the ne
 
 ## Receipts
 
-`batch(...):await()` returns only once everything the batch wrote is in the record and
-throws otherwise, so it is the durability point. Write the receipt and grant the reward
-in one batch: a crash between the two cannot leave a receipt marked processed with
-nothing granted.
+`batch(...):await()` returns `landed` only once everything the batch wrote is in the
+record, so it is the durability point. Write the receipt and grant the reward in one
+batch: a crash between the two cannot leave a receipt marked processed with nothing
+granted.
 
 ```luau
 local function process_receipt(receipt): Enum.ProductPurchaseDecision
@@ -438,19 +471,21 @@ local function process_receipt(receipt): Enum.ProductPurchaseDecision
 	if world:get(entity, processed_receipts)[receipt.PurchaseId] then
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
-	local ok = pcall(function()
-		miumiu.batch(world, function()
-			if not grant(entity, receipt.ProductId) then
-				error("nothing to grant")
-			end
-			miumiu.delta(world, function()
-				local processed = table.clone(world:get(entity, processed_receipts))
-				processed[receipt.PurchaseId] = os.time()
-				world:set(entity, processed_receipts, processed)
-			end)
-		end):await()
-	end)
-	return if ok then Enum.ProductPurchaseDecision.PurchaseGranted else Enum.ProductPurchaseDecision.NotProcessedYet
+	if not can_grant(entity, receipt.ProductId) then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	local outcome = miumiu.batch(world, function()
+		grant(entity, receipt.ProductId)
+		miumiu.delta(world, function()
+			local processed = table.clone(world:get(entity, processed_receipts))
+			processed[receipt.PurchaseId] = os.time()
+			world:set(entity, processed_receipts, processed)
+		end)
+	end):await()
+	if outcome.kind == "refused" then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	return Enum.ProductPurchaseDecision.PurchaseGranted
 end
 ```
 
@@ -458,7 +493,8 @@ A receipt Roblox retries after a crash is already in the dictionary, so it is gr
 without granting twice. A dictionary of processed ids composes across servers; a capped
 array does not. Coming from an array, a migration turns it into a dictionary and prunes
 what is older than the window you keep. The key stays a saveable, so `context.legacy`
-refuses it; read the array through the component in the scratch world:
+throws for it; read the array through the component in the scratch world, where guards
+do not run and a stored value arrives as-is:
 
 ```luau
 function(world, entity)
@@ -470,12 +506,23 @@ function(world, entity)
 end
 ```
 
-A throw leaves the world rolled back, and Roblox asks again later; a grant that cannot
-be fulfilled returns `false` and the `error` inside the batch turns it into that same
-rollback. The rollback undoes saveable values only: a grant with side effects outside
-them (entities spawned, a global event started) must be idempotent or undone in the
-`refused` hook. `await` yields, which `ProcessReceipt` may; a system that must not yield
-uses the handle's `landed` and `refused` hooks instead.
+A refusal leaves the world rolled back, and Roblox asks again later. An early `return`
+from the function is not an abort: whatever it captured commits. A grant that finds it
+cannot proceed throws, which rolls the batch back and propagates out of `batch` itself,
+so wrap the call in `pcall` when your grant can throw (in roblox-ts:
+`const [ok, batch] = pcall(() => miumiu.batch(world, () => { ... }))`, then
+`batch.await()` on `ok`). A product bought for another player grants onto that player's
+key through a link, wherever they are (Other players). The rollback undoes saveable
+values only: a grant with side effects outside them
+(entities spawned, a global event started) must be idempotent or undone in the `refused`
+hook. `await` yields, which `ProcessReceipt` may; a system that must not yield uses the
+handle's `landed` and `refused` hooks instead.
+
+During shutdown: a single-key batch whose group rides the final write lands; a
+multi-key batch that has not reached the commit store is dropped once `commit_timeout`
+passes; a refusal after `close` began settles the handle without a rollback (the
+entities are already detached); a receipt that arrives after that sees `refused` or a
+`not loaded` throw, and Roblox retries it on the next server.
 
 ## When a session ends mid-play
 
@@ -491,6 +538,9 @@ dropped, initials back on the linked entities, owned children deleted, attached 
 reset. A key nobody here holds is wiped straight in the store. Every stored key is
 stamped by the wipe, so a write another server journaled against the old record loses to
 it. It yields; if the write fails it throws and the session keeps its unwritten changes.
+It is the erasure path: the record left behind holds no data, only its stamps, version,
+write id and migration count, written under the key's `user_ids`. A key removed from
+outside (`RemoveAsync`) is adopted as empty on the next read.
 
 ## Migrate
 
@@ -592,7 +642,9 @@ meta(player_data, miumiu.collection, "PlayerData");
 const money = component<number>();
 meta(money, miumiu.saveable, "money");
 meta(money, money, 0);
+```
 
+```ts
 const world = create_world();
 
 function link(player: Player) {
@@ -604,10 +656,21 @@ function link(player: Player) {
 
 Every export is typed in `src/index.d.ts`. `Set<string>` and `Map<string, T>` are plain
 string-keyed tables already and need no serdes; `Set<number>` and `Map<number, T>` do.
-`Batch.await` throws on refusal rather than returning a tuple, like `sync`; wrap it in
-`pcall` or `Promise.try(() => batch.await())` where a Promise fits better. A migration
-that reads `context.stored` guards keys a record may lack
+`Batch.await` returns the outcome record and never throws, so `outcome.kind` narrows it;
+`Promise.try(() => batch.await())` lifts it into a Promise where one fits better. A
+migration that reads `context.stored` guards keys a record may lack
 (`if (context.stored.settings === undefined) return;`).
+
+## Testing
+
+A spec runs the library against MockDataStoreService: pass its service as
+`data_store_service` (in roblox-ts cast it to `Pick<DataStoreService, "GetDataStore">`),
+shrink `pull_interval` and `idle_interval` so writes and reads happen within the test,
+zero the mock's yields and budgets, capture warnings with `miumiu.set_warn`, and call
+`miumiu.step` in a loop or after each write instead of relying on Heartbeat. The mock
+completes every call synchronously, so `sync()` and `await()` return at once; give each
+test its own store name so keys never leak between tests. `tests/specs/utils.luau` in
+the repository is a complete fixture built that way.
 
 ## Warnings
 

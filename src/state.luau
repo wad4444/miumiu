@@ -4,6 +4,7 @@ local relations = require("./relations")
 type World = types.World
 type Entity<T = nil> = types.Entity<T>
 type Context = types.Context
+type Data = types.Data
 type EntityState = types.EntityState
 type LinkState = types.LinkState
 type SchemaEntry = types.SchemaEntry
@@ -29,6 +30,9 @@ local function get(world: World): WorldState
 		children = { by_entity = {}, by_parent = {} },
 		deleting = {},
 		cleanups = {},
+		dropped_entities = {},
+		captures = {},
+		hooks = {},
 		warned = {},
 		links = {},
 		link_states = {},
@@ -65,9 +69,9 @@ local function entity_state(world_state: WorldState, entity: Entity): EntityStat
 	return created
 end
 
-local function read_values(context: Context, entity: Entity, entries: { SchemaEntry }): { [string]: any }
+local function read_values(context: Context, entity: Entity, entries: { SchemaEntry }): Data
 	local world = context.world
-	local values: { [string]: any } = {}
+	local values: Data = {}
 	for _, entry in entries do
 		if entry.kind == "tag" then
 			values[entry.key] = world:has(entity, entry.id)

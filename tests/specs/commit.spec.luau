@@ -52,7 +52,7 @@ return function()
 			backend:fail_next("GetAsync", "before", "down")
 			expect(commit.fetch(config, id, os.time() - 10000)).to.equal("undecided")
 			expect(commit.get_status(id)).to.equal("unknown")
-			expect((string.find(backend.warnings[1], "down"))).to.be.ok()
+			expect((string.find(backend.warnings[1], "down", 1, true))).to.be.ok()
 		end)
 	end)
 

@@ -35,6 +35,13 @@ interface OldSave {
 	luck_boosts: number[];
 	containers?: ReadonlyMap<string, { zones: ReadonlyMap<string, number> }>;
 }
+const receipts_to_dictionary: Migration<OldSave> = (world, entity) => {
+	const processed = new Map<string, number>();
+	for (const id of (world.get(entity, processed_receipts) as unknown as string[] | undefined) ?? []) {
+		processed.set(id, os.time());
+	}
+	world.set(entity, processed_receipts, processed);
+};
 const convert_containers: Migration<OldSave> = (world, entity, context) => {
 	for (const [id, stored] of context.stored.containers ?? new Map()) {
 		const container = world.entity();
@@ -57,14 +64,17 @@ meta(player_data, miumiu.migrations, [
 		world.remove(entity, luck_boosts);
 	},
 	convert_containers,
+	receipts_to_dictionary,
 ]);
 
 export const money = component<number>();
 meta(money, miumiu.saveable, "money");
 meta(money, money, 0);
-const is_number: Guard = (value) => typeIs(value, "number");
+const is_number: Guard = (value: unknown): value is number => typeIs(value, "number");
 meta(money, miumiu.guard, is_number);
 
+export const processed_receipts = component<Map<string, number>>();
+meta(processed_receipts, miumiu.saveable, "processed_receipts");
 export const redeemed_codes = component<Set<string>>();
 meta(redeemed_codes, miumiu.saveable, "redeemed_codes");
 const codes_serdes: miumiu.Serdes<Set<string>, string[]> = {
@@ -134,15 +144,25 @@ export function ready(world: World, on_ready: (entity: Entity) => void) {
 	});
 }
 
+function grant_product(world: World, entity: Entity, product: number): boolean {
+	if (product === 0) return false;
+	world.set(entity, pair(buff, fire), { multiplier: 2, expires_at: os.time() + product });
+	return true;
+}
+
 export function grant(world: World, entity: Entity, product: number) {
-	const [ok, err] = pcall(() =>
-		miumiu
-			.batch(world, () => {
-				world.set(entity, pair(buff, fire), { multiplier: 2, expires_at: os.time() + product });
-			})
-			.await(),
+	const [ok, batch] = pcall(() =>
+		miumiu.batch(world, () => {
+			if (!grant_product(world, entity, product)) throw "not grantable";
+		}),
 	);
-	return ok ? Enum.ProductPurchaseDecision.PurchaseGranted : (print(err), Enum.ProductPurchaseDecision.NotProcessedYet);
+	if (!ok) return Enum.ProductPurchaseDecision.NotProcessedYet;
+	const outcome: miumiu.SettledOutcome = batch.await();
+	if (outcome.kind === "refused") {
+		print(outcome.message);
+		return Enum.ProductPurchaseDecision.NotProcessedYet;
+	}
+	return Enum.ProductPurchaseDecision.PurchaseGranted;
 }
 
 export function give(world: World, player: Entity) {
@@ -181,6 +201,12 @@ export function transfer(world: World, sender: Entity, receiver: Entity, amount:
 		});
 		world.add(sender, tutorial_finished);
 	});
+	const paid: miumiu.Batch<boolean> = miumiu.batch(world, () => (world.get(sender, money) ?? 0) >= amount);
+	const unhook = miumiu.hook(world, miumiu.hooks.refused, (refused: miumiu.Batch<unknown>, message: string) =>
+		print(refused.get_outcome().kind, message),
+	);
+	unhook();
+	if (!paid.get_result()) return false;
 	group.hook(miumiu.hooks.landed, () => print("transferred"));
 	group.hook(miumiu.hooks.refused, (message: string) => print("refused", message));
 	// @ts-expect-error a batch never fires session hooks
@@ -206,16 +232,15 @@ export function on_failure(world: World, kick: (entity: Entity, message: string)
 export const late_world = create_world();
 export const late_saveable = late_world.component<number>();
 late_world.set(late_saveable, miumiu.saveable, "late");
-late_world.set(late_saveable, miumiu.snapshot, (() => 1) as Snapshot<number>);
+function helper(world: World, entity: Entity): number | undefined {
+	return world.get(entity, late_saveable);
+}
+late_world.set(late_saveable, miumiu.snapshot, ((_, entity) => helper(late_world, entity)) as Snapshot<number>);
 late_world.set(player_data, miumiu.config, config);
 
 export function grant_async(world: World, entity: Entity) {
-	return Promise.try(() =>
-		miumiu
-			.batch(world, () => {
-				world.add(entity, tutorial_finished);
-			})
-			.await(),
+	return Promise.try(() => miumiu.batch(world, () => world.add(entity, tutorial_finished)).await()).then(
+		(outcome) => outcome.kind === "landed",
 	);
 }
 
@@ -225,6 +250,8 @@ export function watch(value: unknown) {
 	const truth: miumiu.Data = session.get_truth();
 	const stamps: miumiu.Stamps = session.get_stamps();
 	const resolved: miumiu.ResolvedCollectionConfig = session.get_config();
+	const closure: miumiu.Closure | undefined = session.get_closure();
+	if (closure?.kind === "abandoned") print(closure.message);
 	const record: miumiu.StoredRecord = { data: truth, stamps, version: 1 };
 	const pending: miumiu.Pending = record.pending ?? {};
 	const op: miumiu.Op | undefined = pending[session.get_key()]?.ops[0];
@@ -267,6 +294,7 @@ export const every_export = {
 	wipe: true,
 	batch: true,
 	delta: true,
+	hook: true,
 	hooks: true,
 	is_session: true,
 	is_batch: true,

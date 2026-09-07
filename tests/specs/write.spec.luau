@@ -3,6 +3,7 @@ return function()
 
 	local jecs = require(ReplicatedStorage.Packages.jecs)
 	local miumiu = require(ReplicatedStorage.Packages.miumiu)
+	local state = require(ReplicatedStorage.Packages.miumiu.state)
 	local utils = require(ReplicatedStorage.Tests.utils)
 
 	afterEach(utils.cleanup)
@@ -96,7 +97,6 @@ return function()
 			t.world:set(b, t.link, "p1")
 			settle(t, a)
 			settle(t, b)
-			expect(utils.session_of(t, "p1")).to.be.ok()
 			t.world:set(a, t.money, 4)
 			expect(utils.wait_until(function()
 				miumiu.step(t.world)
@@ -206,6 +206,17 @@ return function()
 			expect(t.backend.service:GetDataStore(`{t.backend.name}_other`):GetAsync("p1").data.money).to.equal(3)
 		end)
 
+		it("leaves no entity state for an unlinked entity that carried a saveable", function()
+			local t = setup({ pull_interval = never })
+			utils.link_entity(t, "p1")
+			local npc = t.world:entity()
+			t.world:set(npc, t.money, 3)
+			t.world:remove(npc, t.money)
+			t.world:set(npc, t.money, 4)
+			t.world:delete(npc)
+			expect(state.get(t.world).entities[npc]).to.equal(nil)
+		end)
+
 		it("coalesces consecutive sets of one key into one group", function()
 			local t = setup({ pull_interval = never })
 			local player = utils.link_entity(t, "p1", { money = 1 })
@@ -215,16 +226,9 @@ return function()
 			end
 			t.world:set(player, t.items, { "a" })
 			t.world:set(player, t.money, 51)
-			local count = 0
-			for _ in t.backend:dump("p1").landed do
-				count += 1
-			end
+			local count = utils.count(t.backend:dump("p1").landed)
 			session:sync()
-			local landed = 0
-			for _ in t.backend:dump("p1").landed do
-				landed += 1
-			end
-			expect(landed).to.equal(count + 3)
+			expect(utils.count(t.backend:dump("p1").landed)).to.equal(count + 3)
 			expect(t.backend:dump("p1").data.money).to.equal(51)
 		end)
 

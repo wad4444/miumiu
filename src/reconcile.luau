@@ -181,20 +181,13 @@ local function with_initials(entries: { SchemaEntry }, data: Data): Data
 	return filled
 end
 
-local function restore_fields(context: Context, entity: Entity, entries: { SchemaEntry }, data: Data)
+local function restore_fields(context: Context, entity: Entity, kind: ChildKind, data: Data)
 	local entity_state = state.entity_state(context.world_state, entity)
-	apply(context, entity, entries, entity_state, { truth = data, stamps = {} }, true)
+	apply(context, entity, kind.entries, entity_state, { truth = data, stamps = {} }, true)
 end
 
 local function record_baseline(context: Context, entity: Entity, kind: ChildKind)
-	state.entity_state(context.world_state, entity).baseline = children.pack_fields(
-		context.world,
-		context.world_state.entities,
-		entity,
-		kind.entries,
-		context.schema.named,
-		context.world_state.warned
-	)
+	state.entity_state(context.world_state, entity).baseline = children.pack_fields_of(context, entity, kind)
 end
 
 local function refresh_shadows(context: Context, entity: Entity, kind: ChildKind)

@@ -21,7 +21,7 @@ local function connect(registry: CallbackRegistry, hook: Symbol, callback: Callb
 	end
 end
 
-local function invoke(owner: unknown, hook: Symbol, callback: Callback, ...: any)
+local function invoke(hook: Symbol, owner: unknown, callback: Callback, ...: any)
 	local ok, err = pcall(callback, ...)
 	if not ok then
 		logging.warn(messages.warnings.hook_failed(owner, hook, err))
@@ -34,7 +34,7 @@ local function fire(registry: CallbackRegistry, hook: Symbol, owner: unknown, ..
 		return
 	end
 	for _, callback in table.clone(callbacks) do
-		invoke(owner, hook, callback, ...)
+		invoke(hook, owner, callback, ...)
 	end
 end
 

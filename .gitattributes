@@ -2,3 +2,7 @@
 *.tsx text eol=lf
 *.luau text eol=lf
 *.sh text eol=lf
+*.md text eol=lf
+.gitattributes text eol=lf
+*.json text eol=lf
+*.toml text eol=lf

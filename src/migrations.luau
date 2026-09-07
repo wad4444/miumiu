@@ -92,7 +92,7 @@ local function index_relation(scratch: MigrationScratch, write: RelationWrite)
 		end
 		return
 	end
-	local id = children.resolve_id(world, write.child, write.entity) or children.mint_id(world, write.entity)
+	local id = children.resolve_id(world, write.entity, write.child) or children.mint_id(world, write.entity)
 	children.record(index, write.entity, write.child, write.parent, id)
 	touch(scratch, write.entity)
 end
@@ -115,6 +115,9 @@ local function create_scratch(schema: Schema, root: Fields, warned: Warned): Mig
 		ops = {},
 		touched = {},
 		sink = function(write)
+			if write.kind == "mark" then
+				return
+			end
 			if write.kind == "relation" then
 				index_relation(scratch, write)
 				return

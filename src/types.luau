@@ -218,17 +218,6 @@ export type ComponentWrite = {
 
 export type Removal = { kind: "field" } | { kind: "targets", targets: { [Entity]: boolean } }
 
-export type ErrorGuard = {
-	run: (fn: () -> ()) -> (),
-	rethrow: () -> (),
-	get_error: () -> any,
-}
-
-export type Detached = {
-	sessions: { SessionInternal },
-	err: any,
-}
-
 export type RelationWrite = {
 	kind: "relation",
 	entity: Entity,
@@ -239,7 +228,14 @@ export type RelationWrite = {
 	deleted: boolean,
 }
 
-export type Write = ComponentWrite | RelationWrite
+export type MarkWrite = {
+	kind: "mark",
+	entity: Entity,
+	child: ChildKind,
+	change: "added" | "removed",
+}
+
+export type Write = ComponentWrite | RelationWrite | MarkWrite
 
 export type ChildRecord = {
 	kind: ChildKind,
@@ -285,6 +281,17 @@ export type ExistingChild = {
 }
 
 export type UnloadAttempt = { kind: "done" } | { kind: "failed", reason: string }
+
+export type ErrorGuard = {
+	run: (fn: () -> ()) -> (),
+	rethrow: () -> (),
+	get_error: () -> any,
+}
+
+export type Detached = {
+	sessions: { SessionInternal },
+	err: any,
+}
 
 export type RecorderSink = (write: Write) -> ()
 
@@ -366,7 +373,8 @@ export type Closure = { kind: "clean" } | RefusedClosure | { kind: "abandoned", 
 export type LandedHook = Symbol<"landed">
 export type RefusedHook = Symbol<"refused">
 
-export type Outcome = { kind: "pending" } | { kind: "landed" } | { kind: "refused", message: string }
+export type SettledOutcome = { kind: "landed" } | { kind: "refused", message: string }
+export type Outcome = { kind: "pending" } | SettledOutcome
 
 export type BatchHook =
 	((Batch, LandedHook, callback: () -> ()) -> () -> ())
@@ -374,25 +382,31 @@ export type BatchHook =
 
 export type Batch = {
 	get_outcome: (Batch) -> Outcome,
+	get_result: (Batch) -> any,
 	is_settled: (Batch) -> boolean,
 	hook: BatchHook,
-	await: (Batch) -> (),
+	await: (Batch) -> SettledOutcome,
 }
 
 export type BatchInternal = Batch & {
 	symbol: Symbol,
 	internal_values: {
 		outcome: Outcome,
+		result: any,
+		awaited: boolean,
 	},
 	internal_hooks: CallbackRegistry,
 	internal_waiters: { thread },
+	hold: (BatchInternal, result: any) -> (),
 	land: (BatchInternal) -> (),
-	refuse: (BatchInternal, id: string, keys: { string }, message: string) -> (),
+	refuse: (BatchInternal, id: string, keys: { string }, message: string, heard: boolean) -> (),
 }
 
 export type PulledHook = Symbol<"pulled">
 export type ClosedHook = Symbol<"closed">
 export type WritingHook = Symbol<"writing">
+
+export type WorldHook = (world: World, hook: RefusedHook, callback: (batch: Batch, message: string) -> ()) -> () -> ()
 
 export type SessionHook =
 	((Session, PulledHook, callback: (truth: Data) -> ()) -> () -> ())
@@ -485,12 +499,40 @@ export type Event =
 	| { kind: "pulled", link: LinkState }
 	| { kind: "closed", link: LinkState, session: SessionInternal }
 
-export type Undo =
-	{ kind: "tag", entity: Entity, id: Entity, present: boolean }
-	| { kind: "component", entity: Entity, id: Entity<any>, previous: any, value: any }
-	| { kind: "pair", entity: Entity, id: Entity, present: boolean }
-	| { kind: "relation", entity: Entity, entry: RelationEntry, previous: Data?, value: Data? }
-	| { kind: "child", entity: Entity, child: ChildKind, previous: Data, value: Data? }
+export type ChildUndo = {
+	kind: "child",
+	entity: Entity,
+	child: ChildKind,
+	previous: Data,
+	value: Data,
+	carried: boolean,
+}
+
+export type Undo = { kind: "tag", entity: Entity, id: Entity, key: string, present: boolean, carried: boolean } | {
+	kind: "component",
+	entity: Entity,
+	entry: SchemaEntry,
+	previous: any,
+	value: any,
+	carried: boolean,
+} | {
+	kind: "relation",
+	entity: Entity,
+	entry: RelationEntry,
+	previous: Data?,
+	value: Data?,
+	carried: boolean,
+} | ChildUndo | {
+	kind: "pair",
+	entity: Entity,
+	id: Entity,
+	present: boolean,
+	child: ChildKind,
+	parent: Entity,
+	stored_id: any,
+} | { kind: "mark", entity: Entity, id: Entity, present: boolean }
+
+export type Touched = { [Entity]: { [string]: boolean } }
 
 export type CaptureEntry = {
 	session: SessionInternal,
@@ -499,10 +541,11 @@ export type CaptureEntry = {
 }
 
 export type Capture = {
+	id: string,
 	delta: boolean,
 	undo: { Undo },
 	entries: { CaptureEntry },
-	children: { [Entity]: boolean },
+	children: { [Entity]: ChildUndo },
 	batch: BatchInternal,
 }
 
@@ -512,7 +555,7 @@ export type Applying = {
 }
 
 export type EntityState = {
-	shadow: { [string]: any },
+	shadow: Data,
 	supplied: { [string]: any },
 	tree: Data?,
 	baseline: Data,
@@ -533,6 +576,9 @@ export type WorldState = {
 	children: ChildIndex,
 	deleting: { [Entity]: boolean },
 	cleanups: { Cleanup },
+	dropped_entities: { Entity },
+	captures: { Capture },
+	hooks: CallbackRegistry,
 	warned: Warned,
 	links: { [Entity]: { [Entity]: string } },
 	link_states: { [Entity]: { [string]: LinkState } },

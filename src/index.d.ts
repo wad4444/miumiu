@@ -59,7 +59,7 @@ declare namespace miumiu {
 	/** Every foreign source the import understands; lapis is the only one. */
 	export type ForeignSource = LapisSource<any>;
 
-	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes; `idle_interval` (default 60) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off. `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `default_scope` marks the one collection that takes every saveable and kind without a `field_of` pair when a world declares several. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). */
+	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes, warned under 6 s (the DataStore write cooldown); `idle_interval` (default 60, never under `pull_interval`) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off. `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `default_scope` marks the one collection that takes every saveable and kind without a `field_of` pair when a world declares several. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). Config is validated at link time: a bad value does not throw at `meta`, it lands as `pair(data_error, collection)` on every entity that links. */
 	export interface CollectionConfig {
 		data_store_service?: Pick<DataStoreService, "GetDataStore">;
 		pull_interval?: number;
@@ -82,7 +82,7 @@ declare namespace miumiu {
 		retry_base: number;
 		commit_store: string;
 		commit_timeout: number;
-		migrations: Migration[];
+		migrations: Migration<any>[];
 		foreign?: ForeignSource;
 		default_scope: boolean;
 		user_ids?: (key: string) => number[];
@@ -130,37 +130,41 @@ declare namespace miumiu {
 		readonly __hook: Args;
 		readonly __name: Name;
 	}
-	/** Fires after a pull adopted something new, with the merged truth in stored form. */
+	/** Fires after a pull adopted something new, with the merged truth in stored form. Runs on the pull thread after the session's lock is released: the entities are updated on the next `step`, so read `truth`, not the world. The one hook that may `sync` again. */
 	export type PulledHook = Hook<[truth: Data], "pulled">;
 	/** Fires once when the session closes, with why: final write done, a newer server took the key, or `close` ran out of budget. */
 	export type ClosedHook = Hook<[closure: Closure], "closed">;
-	/** Fires right before the session writes, while its entities are still linked: snapshots run here. */
+	/** Fires right before the session writes, while its entities are still linked. Snapshots and lazy flushes have already run: a plain write from the callback joins this write, a lazy one the next. Never yield or `sync` in it. */
 	export type WritingHook = Hook<[], "writing">;
 	/** Fires once a batch's group is in every record it touched. Connecting after that fires at once. */
 	export type LandedHook = Hook<[], "landed">;
-	/** Fires once a batch's commit failed: the group was abandoned on every session and the world rolled back (only values the batch still held). Connecting after that fires at once. */
+	/** Fires once a batch's commit failed: the group was dropped from every session and the world rolled back (only values the batch still held). Connecting after that fires at once. A write made in the callback is an ordinary journaled write. */
 	export type RefusedHook = Hook<[message: string], "refused">;
 
+	/** A batch that is no longer pending: `landed`, or `refused` with the message. */
+	export type SettledOutcome = { kind: "landed" } | { kind: "refused"; message: string };
 	/** Where a batch stands: `pending` until its commit finishes, then `landed` or `refused`. */
-	export type Outcome = { kind: "pending" } | { kind: "landed" } | { kind: "refused"; message: string };
+	export type Outcome = { kind: "pending" } | SettledOutcome;
 
-	/** The handle `batch` and `delta` return. The commit runs in the background; hook or await it. */
-	export interface Batch {
+	/** The handle `batch` and `delta` return. The commit runs in the background; hook or await it. `T` is what the function returned. */
+	export interface Batch<T = void> {
 		/** `pending`, `landed` or `refused`. */
 		get_outcome(): Outcome;
+		/** What the function returned, available as soon as `batch` returns. A nested call returns the outer handle, so it reports the outer function's result. */
+		get_result(): T;
 		/** True once landed or refused. */
 		is_settled(): boolean;
 		/** Connect to `landed` or `refused`; fires at once if already settled. Returns a disconnect. Callbacks are pcalled and a throw is warned, never raised. */
 		hook(hook: LandedHook, callback: () => void): () => void;
 		hook(hook: RefusedHook, callback: (message: string) => void): () => void;
-		/** Yields until settled; returns on `landed`, throws the message on `refused`. The durability point for receipts. */
-		await(): void;
+		/** Yields until settled and returns the outcome (`landed`, or `refused` with the message); never throws. The result is the decision: branch on it, never discard it. The durability point for receipts. A refusal warns when nothing hooked `refused` or awaited the batch in the same frame. */
+		await(): SettledOutcome;
 	}
 
 	/** Why a session closed: `clean` after its final write; `refused` when a newer server took the key; `abandoned` when `close` gave up on the final write. Both latter kinds lost the unwritten changes. */
 	export type Closure = { kind: "clean" } | { kind: "refused"; message: string } | { kind: "abandoned"; message: string };
 
-	/** The hook symbols `Session.hook` (`pulled`, `closed`, `writing`) and `Batch.hook` (`landed`, `refused`) take. */
+	/** The hook symbols `Session.hook` (`pulled`, `closed`, `writing`), `Batch.hook` (`landed`, `refused`) and the world-level `hook` (`refused`) take. */
 	export const hooks: {
 		readonly pulled: PulledHook;
 		readonly closed: ClosedHook;
@@ -174,11 +178,11 @@ declare namespace miumiu {
 		/** The stored key this session holds. */
 		get_key(): string;
 		/** Merged truth in stored (serialized) form, including this server's unwritten ops. Read-only: the tables are the session's own. */
-		get_truth(): Data;
+		get_truth(): Readonly<Data>;
 		/** Stamps of the merged truth: per key for `set`/`remove`, per `key/path` for child puts. Read-only. */
-		get_stamps(): Stamps;
-		/** The collection's resolved config. */
-		get_config(): ResolvedCollectionConfig;
+		get_stamps(): Readonly<Stamps>;
+		/** The collection's resolved config, shared with the session: read-only. */
+		get_config(): Readonly<ResolvedCollectionConfig>;
 		/** Why the session closed, once `is_open()` is false. */
 		get_closure(): Closure | undefined;
 		/** False once the session closed for any reason. */
@@ -195,20 +199,22 @@ declare namespace miumiu {
 
 	/** Drain queued link/unlink/load/pull events into the world. Call every Heartbeat. No-op after `close`. Unlink, then `step`, then delete the entity: a root deleted while linked keeps its record, and its owned children are deleted with it on the next `step`. */
 	export function step(world: World): void;
-	/** Unload every session and stop stepping. Yields until every final write lands or `budget` seconds (default 25) pass. Call from `BindToClose`. */
+	/** Unload every session and stop stepping. The first thing it does is detach every link, so write leave-time state before calling it or in a `writing` hook; a saveable write made after it began is dropped. Yields until every final write lands or `budget` seconds (default 25) pass. Call from `BindToClose`. */
 	export function close(world: World, budget?: number): void;
 	/** The open session behind `pair(data_link, collection) = key`, or undefined while loading, failed, unlinked or writing its final record after an unlink. `collection` is the collection tag. */
 	export function get_session(world: World, collection: Entity, key: string): Session | undefined;
 	/** Erase a key in one write: a fresh empty record, every stored key stamped past its old stamp. A loaded key also drops its unwritten changes and lazy marks, puts initials back on every linked entity, deletes its owned children and resets attached ones; a key nobody here holds is wiped straight in the store. Yields; throws if the write fails, keeping everything. */
 	export function wipe(world: World, collection: Entity, key: string): void;
-	/** Every write inside lands as one group, on every key it touches, or none. Runs `fn` now, journals the group and returns without yielding; the commit runs in the background and the returned `Batch` reports it (`await` for receipts). A write `fn` cannot make (guard, unloaded entity, `fn` throwing) throws here and rolls the world back at once; a commit refused later rolls back only the values the batch still holds and fires `refused`. A nested call joins the outer batch and returns the outer handle. A batch that captured no saveable write lands at once; snapshots are evaluated at write time outside any batch. */
-	export function batch(world: World, fn: () => void): Batch;
+	/** Every write inside lands as one group, on every key it touches, or none. Runs `fn` now, journals the group and returns without yielding; the commit runs in the background and the returned `Batch` reports it (`await` for receipts). A write `fn` cannot make (guard, unloaded entity, `fn` throwing) or keys on collections with different commit stores throw here and roll the world back at once; a commit refused later rolls back only the values the batch still holds and fires `refused`. A nested call joins the outer batch and returns the outer handle. A batch that captured no saveable write lands at once; snapshots are evaluated at write time outside any batch. */
+	export function batch<T = void>(world: World, fn: () => T): Batch<T>;
 	/** Like `batch`, but each `set` on a root saveable is diffed against the previous value into `add`/`insert`/`erase`/`put`/`drop`. Build new values from the old ones. A write inside a child is a whole put, never a diff. */
-	export function delta(world: World, fn: () => void): Batch;
+	export function delta<T = void>(world: World, fn: () => T): Batch<T>;
 	/** True for a `Session` returned by `get_session`. */
 	export function is_session(value: unknown): value is Session;
+	/** Connect a world-level `refused` listener: fires for every batch on this world that is refused, after the batch's own hooks, with the handle and the message. Returns a disconnect. One listener here silences the unhooked-refusal warning for every batch. */
+	export function hook(world: World, hook: RefusedHook, callback: (batch: Batch<unknown>, message: string) => void): () => void;
 	/** True for a `Batch` returned by `batch` or `delta`. */
-	export function is_batch(value: unknown): value is Batch;
+	export function is_batch(value: unknown): value is Batch<unknown>;
 	/** Route the library's warnings; omit to restore `warn`. */
 	export function set_warn(sink?: (message: string) => void): void;
 
@@ -236,7 +242,7 @@ declare namespace miumiu {
 	export const pairs: Entity<PairsConfig>;
 	/** Declares a child kind on its tag; see `ChildConfig`. */
 	export const child: Entity<ChildConfig>;
-	/** The id an owned child is stored under; assigned by the library as soon as the entity carries both the kind tag and the pair, in either order, readable by the game. Nil until the first `step` on a child created before it. */
+	/** The id an owned child is stored under; assigned by the library as soon as the entity carries both the kind tag and the pair, in either order, readable by the game. `undefined` until the first `step` on a child created before it. */
 	export const child_id: Entity<string>;
 
 	/** `world.set(e, pair(data_link, c), key)` links an entity to a key and starts the load; `world.remove` unlinks, the final write follows, and the `closed` hook reports it. */

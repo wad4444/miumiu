@@ -90,10 +90,8 @@ return function()
 
 		it("unloads the session even when a removed listener throws during unlink", function()
 			local t = setup({ pull_interval = never })
-			local owns = t.world:entity()
-			t.world:add(owns, jecs.Exclusive)
-			local item = t.world:entity()
-			t.world:set(item, miumiu.child, { via = owns, key = "inventory", mode = "owned" })
+			local kinds = utils.declare_kinds(t.world)
+			local owns, item = kinds.owns, kinds.item
 			local player = utils.link_entity(t, "p1")
 			local sword = t.world:entity()
 			t.world:add(sword, item)
@@ -280,7 +278,7 @@ return function()
 			miumiu.close(t.world, 5)
 			expect(t.backend:dump("p1").data.money).to.equal(2)
 			for index = before + 1, #t.backend.warnings do
-				expect((string.find(t.backend.warnings[index], "on close failed"))).to.equal(nil)
+				expect((string.find(t.backend.warnings[index], "on close failed", 1, true))).to.equal(nil)
 			end
 		end)
 
@@ -327,7 +325,7 @@ return function()
 			miumiu.close(t.world, 0)
 			expect(os.time() - started <= 1).to.equal(true)
 			expect(t.backend.calls.UpdateAsync).to.equal(before + 1)
-			expect((string.find(t.backend.warnings[#t.backend.warnings], "on close failed"))).to.be.ok()
+			expect((string.find(t.backend.warnings[#t.backend.warnings], "on close failed", 1, true))).to.be.ok()
 		end)
 
 		it("close waits for a final write an unlink already started", function()

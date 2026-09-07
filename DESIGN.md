@@ -179,10 +179,11 @@ is declared every leave writes, since the final write evaluates it.
 
 `jecs.meta(battery, miumiu.lazy)` marks a component saveable the library reads at write
 time instead of journaling per write: a write updates the entity, marks the session
-dirty and remembers the key; right after the `writing` hook the session packs each
-remembered key once (a whole-child put under a kind). Unlink, `close` and `sync` flush
-the same way, and an unclaim flushes the attached entity's marks before its reset; a
-deleted entity's marks are dropped. A pending mark is an unwritten change: a supply
+dirty and remembers the key; when `writing` fires, before any callback the game
+connected, the session packs each remembered key once (a whole-child put under a kind).
+Unlink, `close` and `sync` flush the same way, and an unclaim flushes the attached
+entity's marks before its reset; a deleted entity's marks are dropped. A pending mark is an
+unwritten change: a supply
 (the `pulled` event of the write that just flushed, a remote change) leaves a marked
 key alone until the flush, so a per-frame value written between a flush and the next
 `step` is never set back to the flushed one. Only a reset (unclaim, unlink, remote
@@ -364,8 +365,9 @@ end)
   in reverse, nothing journaled, rethrown. A commit that fails after its write started
   undoes the same way, but only the values the batch's own writes still hold (scalars
   compared by value, tables by reference, pairs by their packed dictionary): a key the
-  world wrote again meanwhile keeps that newer value (it journaled on its own), so
-  nothing the rollback does needs journaling. jecs listeners carry no old value, so the
+  world wrote again meanwhile keeps that newer value (it journaled on its own). An undo
+  a later journaled op carried is restored with a journaled corrective write; the rest
+  restore silently. jecs listeners carry no old value, so the
   library keeps a per-entity shadow of the last values it supplied or captured; rollback
   and `delta` diffs read `previous` from it.
 - A write inside `batch` or `delta` to an entity that is not `data_loaded` throws and rolls
@@ -378,11 +380,13 @@ end)
 - `batch` and `delta` return a `Batch` handle as soon as `fn` ran and the group is
   journaled; they never yield. The commit runs in a spawned thread: a pull on the one key,
   or the commit-store dance below. It lands or is refused, whether one key or several;
-  refused means the group is abandoned on every session, the world rolled back (values
-  the batch still holds) and a warning. The handle: `get_outcome` (`pending`, `landed`,
-  `refused` with the message), `is_settled`, `hook(landed | refused)` (fires at once when
-  already settled, pcalled and warned like session hooks), `await` (yields until settled,
-  throws the message on refused: the durability point). A nested `batch` or `delta`
+  refused means the group is dropped from every session, the world rolled back (values
+  the batch still holds) and a warning when nothing hooked or awaited the handle in the
+  same frame. The handle: `get_outcome` (`pending`, `landed`, `refused` with the
+  message), `get_result` (what the function returned), `is_settled`,
+  `hook(landed | refused)` (fires at once when
+  already settled, pcalled and warned like session hooks), `await` (yields until settled
+  and returns the outcome, never throws: the durability point). A nested `batch` or `delta`
   returns the outer handle. Every key in a multi-key batch must share one
   commit store (same `data_store_service`, `commit_store`, `commit_timeout`), otherwise it
   throws before touching storage. A single-key batch whose write throws after reaching
@@ -392,7 +396,7 @@ end)
   record does not hold yet (an initial the entity carried) journals an `init` of the value
   the entity had before the delta, so the record never adds to nothing.
 - `commit_store` writes (`mark`) make one attempt: a retry after a timeout could commit a
-  group the sessions already abandoned.
+  group the sessions already dropped.
 
 ## Record
 
@@ -487,13 +491,15 @@ reference it last supplied per key, so a rejected or unchanged value is not deco
 warned about again. Ops journaled during the yield are replayed on the merged truth
 first, so the entity never loses a write made while the pull was in flight. `pulled`
 fires only when the pull adopted something new and the session is still open, after the
-session's lock is released, so a callback may `sync` again.
+session's lock is released, so a callback may `sync` again; it runs on the pull thread,
+before the next `step` reconciles the entities, so a callback reads the truth it is
+handed, not the world.
 
 A write that fails keeps the unwritten groups; they go out on the next pull. Warned. An
 unlink whose final write fails keeps the session open and retrying; it closes on the
 first pull that leaves nothing unwritten. A shared group the session is awaiting is
 forgotten as soon as a pulled record no longer lists it in `pending`, whoever decided it;
-a group abandoned while its write is in flight is never awaited. A pull that finds a
+a group dropped while its write is in flight is never awaited. A pull that finds a
 record with more migrations applied than this server declares closes the session and
 throws: a newer server owns that key now; the next `step` drops the link, sets
 `pair(data_error, c)` to that reason on every entity and stops journaling for it. Ops
@@ -512,8 +518,13 @@ Multi-key groups need one atomic decision. That is one key in a separate DataSto
 ```
 1. every touched key: pull, writing pending[id]        (the batch's own pulls)
 2. SetAsync(commit_store, id, true)                     the commit point
-3. every touched session applies the group locally; records clear pending on their next pull
+3. records clear pending on their next pull
 ```
+
+A session applies its own shared group locally the moment it journals it, so every
+entity of the key sees the batch's values while the decision is pending; a refusal takes
+the group back from every one of them (the rollback undoes the batch's entities, then
+every touched session re-supplies its entities from the record).
 
 A crash before 2 leaves `pending` entries that time out: any pull after `commit_timeout`
 finds no commit key and drops them. A crash after 2 leaves entries that any pull
@@ -567,9 +578,11 @@ then warns and closes the session as `abandoned` (its `closed` hooks fire; a wri
 in flight may yet land); a game's `BindToClose` has 30, and the budget is per world. A
 final write the record refuses (newer server) is warned about as lost.
 
-`Batch` is the public surface of one `batch`/`delta` call: `get_outcome`, `is_settled`,
-`hook(landed | refused)`, `await`; the commit that settles it is the pull/commit sequence
-above, run in its own thread.
+`Batch` is the public surface of one `batch`/`delta` call: `get_outcome`, `get_result`,
+`is_settled`, `hook(landed | refused)`, `await`; the commit that settles it is the
+pull/commit sequence above, run in its own thread. `miumiu.hook(world, refused, fn)` is
+the world-level listener: every refusal on the world reaches it after the batch's own
+hooks, and one listener there silences the unhooked-refusal warning.
 
 `Session` is the public surface of one key: `get_key`, `get_truth`, `get_stamps`,
 `get_config`, `get_closure`, `is_open`, `is_dirty`, `sync`,
@@ -582,10 +595,12 @@ That is the durability point for a plain write; receipts go through `batch(...):
 (Using it). `get_truth` and the
 `pulled` payload are the stored form (serialized, before guards) and the session's own
 tables: read them, never write them. `writing` fires right before a write, while the
-entities are still linked. The link owns the session's lifetime; there is no public
-`unload`. To learn when a leave's final write landed, take the session before unlinking
-and hook `closed`, which receives the closure: `{ kind = "clean" }`,
-`{ kind = "refused", message }` (a newer server took the key) or
+entities are still linked and after the snapshots and lazy flushes of that write ran: a
+plain write from the callback joins this write, a lazy one the next; never yield or
+`sync` in it (`pulled` is the one hook that may). The link owns the
+session's lifetime; there is no public `unload`. To learn when a leave's final write
+landed, take the session before unlinking and hook `closed`, which receives the closure:
+`{ kind = "clean" }`, `{ kind = "refused", message }` (a newer server took the key) or
 `{ kind = "abandoned", message }` (`close` ran out of budget); the latter two lost the
 unwritten changes. A join is: link, then gate every system that writes on `data_loaded`
 (writes before it are dropped, initials are already on the entity). A leave is: unlink,
@@ -606,12 +621,20 @@ Rules:
   the removal of a component or pair added to an unloaded entity inside `batch`, the
   undo of a rejected child pair or tag, the claim-time supply of an attached child,
   `wipe` and child-id minting. Every one runs under an `applying` mark, which nests;
-  the one deliberate exception is a snapshot write, which runs unmarked so it journals
-  like a game write. A refused batch's rollback of a child compares the child's fields
-  as a whole: when a plain write on the child has run since (its put already carried the
-  batch's values into the record), the batch's fields are restored unmarked so a new
-  put corrects the record. A plain write of the very value a pending batch already set
-  is a no-op and is rolled back with the batch. A child the library spawns, deletes or
+  two deliberate exceptions run unmarked so they journal like a game write: a snapshot
+  write, and a refused batch's restore of an undo a later journaled op carried (a lazy
+  flush, a plain write of the same value, a re-parent put over the child or its subtree
+  mark the undo `carried`), so a corrective write reaches the record. A refused batch's
+  rollback of a child compares the child's fields as a whole: a plain write that changed
+  them since is left alone and only the batch's own fields are repaired. A plain write
+  of the very value a pending batch already set is a no-op and is rolled back with the
+  batch. A kind tag toggled without its pair inside a batch is recorded too, and a pair
+  undo puts the tag and the pair back together, so a move across relations rolls back
+  whole; an unclaim and re-claim inside one batch keep the first claim's baseline;
+  overlapping batches hand their previous values only to captures made after them.
+  After the undo the batch's sessions re-supply every entity of their keys, so a sibling
+  that saw the dropped group and a value the record legitimately holds both converge. A child the
+  library spawns, deletes or
   resets runs under a mark on the whole entity, so a listener on its tag that writes a
   saveable onto it during that spawn is not journaled; write to spawned children from
   `step`'s events instead. `step` never runs
@@ -684,9 +707,10 @@ to reach `data_error`. `pull_interval` bounds how long a write can sit unwritten
 
 ## Using it
 
-- Call `miumiu.step(world)` every Heartbeat. Nothing the library does to the world
-  happens outside a `step`, except a batch's rollback and its `landed`/`refused` hooks,
-  which run on the commit thread between frames.
+- Call `miumiu.step(world)` every Heartbeat. Remote changes reach the world only in a
+  `step`; what happens at write time is the Rules list above (a guard's restore, a
+  rejected pair or tag, claim-time supply, id minting), and a batch's rollback and its
+  `landed`/`refused` hooks run on the commit thread between frames.
 - Call `miumiu.close(world)` from `game:BindToClose`. Budget it under the 30 s the
   callback has.
 - Link on join, unlink on leave: `world:remove(e, link)`, a `step`, then delete the
@@ -721,8 +745,8 @@ to reach `data_error`. `pull_interval` bounds how long a write can sit unwritten
   keys go through the commit store), and remove the old pair or tag before adding the
   new one on a different relation.
 - Receipts: write the receipt and grant the reward in one `batch` (a `delta` inside for
-  the composing keys) and `await` it, `PurchaseGranted` on return, `NotProcessedYet` on
-  throw or when `get_session` is nil. Keep processed receipts as a dictionary (a capped
+  the composing keys) and `await` it, `PurchaseGranted` on `landed`, `NotProcessedYet`
+  on `refused` or when `get_session` is nil. Keep processed receipts as a dictionary (a capped
   array is not a delta), so two servers granting at once compose.
 - `miumiu.wipe(world, c, key)` erases a key in one write: empty record, every stored key
   stamped, version bumped, unwritten groups and lazy marks dropped, the linked entities

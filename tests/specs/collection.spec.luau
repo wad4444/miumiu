@@ -171,7 +171,7 @@ return function()
 			expect(#backend.warnings).to.equal(0)
 			world:set(entity, miumiu.config, { pull_interval = 5 })
 			collection.resolve_config(world, entity)
-			expect((string.find(backend.warnings[1], "write cooldown"))).to.be.ok()
+			expect((string.find(backend.warnings[1], "write cooldown", 1, true))).to.be.ok()
 		end)
 	end)
 

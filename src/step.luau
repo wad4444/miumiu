@@ -1,4 +1,5 @@
 local types = require("./types")
+local callbacks = require("./callbacks")
 local contexts = require("./contexts")
 local datastore = require("./datastore")
 local link = require("./link")
@@ -10,10 +11,12 @@ local util = require("./util")
 
 type World = types.World
 type Entity<T = nil> = types.Entity<T>
+type Callback = types.Callback
 type Context = types.Context
 type Event = types.Event
 type Session = types.Session
 type SessionInternal = types.SessionInternal
+type Symbol = types.Symbol
 type UnloadAttempt = types.UnloadAttempt
 
 local close_budget = 25
@@ -112,6 +115,10 @@ local function unload_until(loaded: SessionInternal, deadline: number)
 	end
 end
 
+local function hook(world: World, hook_symbol: Symbol, callback: Callback): () -> ()
+	return callbacks.connect(state.get(world).hooks, hook_symbol, callback)
+end
+
 local function close(world: World, budget: number?)
 	local world_state = state.get(world)
 	world_state.closed = true
@@ -140,4 +147,5 @@ return table.freeze({
 	get_session = get_session,
 	wipe = wipe,
 	close = close,
+	hook = hook,
 })

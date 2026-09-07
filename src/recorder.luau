@@ -10,20 +10,34 @@ local util = require("./util")
 type World = types.World
 type Entity<T = nil> = types.Entity<T>
 type ChildKind = types.ChildKind
-type EntityState = types.EntityState
 type Named = types.Named
+type RecorderSink = types.RecorderSink
 type RelationEntry = types.RelationEntry
 type Removal = types.Removal
-type RecorderSink = types.RecorderSink
 type Schema = types.Schema
 type SchemaEntry = types.SchemaEntry
 
-local function removing_of(world: World, entity: Entity): { [string]: Removal }
-	return state.entity_state(state.get(world), entity).removing
+local function removing_of(world: World, entity: Entity): { [string]: Removal }?
+	local existing = state.get(world).entities[entity]
+	return if existing then existing.removing else nil
+end
+
+local function forget_entity(world: World, entity: Entity)
+	state.get(world).entities[entity] = nil
+end
+
+local function forget_removing(world: World, entity: Entity, key: string)
+	local removing = removing_of(world, entity)
+	if removing then
+		removing[key] = nil
+	end
 end
 
 local function removed_targets(world: World, entity: Entity, key: string): { [Entity]: boolean }
 	local removing = removing_of(world, entity)
+	if removing == nil then
+		return {}
+	end
 	local existing = removing[key]
 	if existing and existing.kind == "targets" then
 		return existing.targets
@@ -47,17 +61,22 @@ local function watch_pairs(world: World, entry: RelationEntry, named: Named, sin
 		})
 	end
 	local function settled(entity: Entity)
-		removing_of(world, entity)[entry.key] = nil
+		forget_removing(world, entity, entry.key)
 		emit(entity, nil, false)
 	end
 	return {
 		world:added(entry.id, settled),
 		world:changed(entry.id, settled),
 		world:removed(entry.id, function(entity, id, deleted)
+			if deleted then
+				forget_entity(world, entity)
+				emit(entity, nil, true)
+				return
+			end
 			local targets = removed_targets(world, entity, entry.key)
 			targets[jecs.pair_second(world, id)] = true
 			relations.prune(world, entry, entity, targets)
-			emit(entity, targets, deleted == true)
+			emit(entity, targets, false)
 		end),
 	}
 end
@@ -103,7 +122,7 @@ local function watch(world: World, entry: SchemaEntry, named: Named, sink: Recor
 	end
 	return {
 		world:added(entry.id, function(entity, _, value)
-			removing_of(world, entity)[entry.key] = nil
+			forget_removing(world, entity, entry.key)
 			sink({
 				kind = "component",
 				entity = entity,
@@ -114,7 +133,7 @@ local function watch(world: World, entry: SchemaEntry, named: Named, sink: Recor
 			})
 		end),
 		world:changed(entry.id, function(entity, _, value)
-			removing_of(world, entity)[entry.key] = nil
+			forget_removing(world, entity, entry.key)
 			sink({
 				kind = "component",
 				entity = entity,
@@ -125,7 +144,13 @@ local function watch(world: World, entry: SchemaEntry, named: Named, sink: Recor
 			})
 		end),
 		world:removed(entry.id, function(entity, _, deleted)
-			removing_of(world, entity)[entry.key] = { kind = "field" }
+			if deleted then
+				forget_entity(world, entity)
+			end
+			local removing = if deleted then nil else removing_of(world, entity)
+			if removing then
+				removing[entry.key] = { kind = "field" }
+			end
 			sink({
 				kind = "component",
 				entity = entity,
@@ -171,34 +196,31 @@ local function watch_relation(world: World, relation: Entity, kinds: { ChildKind
 	}
 end
 
+local function emit_kind(world: World, kind: ChildKind, entity: Entity, change: "added" | "removed", sink: RecorderSink)
+	local parent = world:target(entity, kind.via, 0)
+	if parent then
+		sink({
+			kind = "relation",
+			entity = entity,
+			child = kind,
+			parent = parent,
+			trigger = kind.tag,
+			change = change,
+			deleted = false,
+		})
+		return
+	end
+	sink({ kind = "mark", entity = entity, child = kind, change = change })
+end
+
 local function watch_kind(world: World, kind: ChildKind, sink: RecorderSink): { () -> () }
 	return {
 		world:added(kind.tag, function(entity)
-			local parent = world:target(entity, kind.via, 0)
-			if parent then
-				sink({
-					kind = "relation",
-					entity = entity,
-					child = kind,
-					parent = parent,
-					trigger = kind.tag,
-					change = "added",
-					deleted = false,
-				})
-			end
+			emit_kind(world, kind, entity, "added", sink)
 		end),
 		world:removed(kind.tag, function(entity, _, deleted)
-			local parent = if deleted then nil else world:target(entity, kind.via, 0)
-			if parent then
-				sink({
-					kind = "relation",
-					entity = entity,
-					child = kind,
-					parent = parent,
-					trigger = kind.tag,
-					change = "removed",
-					deleted = false,
-				})
+			if not deleted then
+				emit_kind(world, kind, entity, "removed", sink)
 			end
 		end),
 	}

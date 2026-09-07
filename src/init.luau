@@ -33,6 +33,7 @@ export type Session = types.Session
 export type Closure = types.Closure
 export type Batch = types.Batch
 export type Outcome = types.Outcome
+export type SettledOutcome = types.SettledOutcome
 export type LandedHook = types.LandedHook
 export type RefusedHook = types.RefusedHook
 export type PulledHook = types.PulledHook
@@ -68,6 +69,7 @@ local miumiu = {
 	delta = batch.delta,
 
 	hooks = hooks,
+	hook = step.hook :: types.WorldHook,
 	is_session = session.is_session,
 	is_batch = handle.is_batch,
 	set_warn = logging.set_warn,

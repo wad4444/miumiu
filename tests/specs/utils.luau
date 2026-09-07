@@ -110,6 +110,8 @@ local timings = {
 	window = 0.1,
 	slow = 0.3,
 	overdue = 1.1,
+	poll = 0.005,
+	patience = 1,
 	retry_attempts = 5,
 	retry_base = 0.005,
 	commit_timeout = 1,
@@ -381,6 +383,24 @@ local function declare_kinds(world: World): Kinds
 	return { owns = owns, item = item, holds = holds, container = container, container_kind = container_kind }
 end
 
+export type Relations = {
+	has_buff: Entity,
+	fire: Entity,
+	ice: Entity,
+}
+
+local function declare_relations(world: World): Relations
+	local has_buff = world:entity()
+	world:set(has_buff, jecs.Name, "has_buff")
+	world:set(has_buff, miumiu.saveable, "buffs")
+	world:add(has_buff, miumiu.pairs)
+	local fire = world:entity()
+	world:set(fire, jecs.Name, "fire")
+	local ice = world:entity()
+	world:set(ice, jecs.Name, "ice")
+	return { has_buff = has_buff, fire = fire, ice = ice }
+end
+
 local function scope(world: World, ids: { Entity<any> }, targets: { Entity })
 	for _, id in ids do
 		for _, target in targets do
@@ -482,12 +502,12 @@ local function add(key: string, delta: number): Op
 end
 
 local function wait_until(condition: () -> boolean, timeout: number?): boolean
-	local remaining = timeout or 1
+	local remaining = timeout or timings.patience
 	while remaining > 0 do
 		if condition() then
 			return true
 		end
-		remaining -= task.wait(0.005)
+		remaining -= task.wait(timings.poll)
 	end
 	return condition()
 end
@@ -504,6 +524,43 @@ local function settle(fixture: Fixture, entity: Entity): boolean
 		miumiu.step(fixture.world)
 		return fixture.world:has(entity, fixture.loaded) or fixture.world:has(entity, fixture.data_error)
 	end)
+end
+
+local function give(fixture: Fixture, kinds: Kinds, owner: Entity, money: number): Entity
+	local entity = fixture.world:entity()
+	fixture.world:add(entity, kinds.item)
+	fixture.world:set(entity, fixture.money, money)
+	fixture.world:add(entity, jecs.pair(kinds.owns, owner))
+	return entity
+end
+
+local function make_container(fixture: Fixture, kinds: Kinds, id: any): Entity
+	local container = fixture.world:entity()
+	fixture.world:add(container, kinds.container)
+	fixture.world:set(container, kinds.container_kind, id)
+	return container
+end
+
+local function id_of(fixture: Fixture, entity: Entity): string
+	return fixture.world:get(entity, miumiu.child_id)
+end
+
+local function items_of(fixture: Fixture, kinds: Kinds, owner: Entity): { [string]: Entity }
+	local found = {}
+	for entity in fixture.world:each(jecs.pair(kinds.owns, owner)) do
+		if fixture.world:has(entity, kinds.item) then
+			found[id_of(fixture, entity)] = entity
+		end
+	end
+	return found
+end
+
+local function count(dictionary: { [any]: any }): number
+	local total = 0
+	for _ in dictionary do
+		total += 1
+	end
+	return total
 end
 
 local function link_entity(fixture: Fixture, key: string, values: { [string]: any }?): Entity
@@ -538,6 +595,7 @@ return table.freeze({
 	declare_saveable = declare_saveable,
 	scope = scope,
 	declare_kinds = declare_kinds,
+	declare_relations = declare_relations,
 	create_fixture = create_fixture,
 	create_set_serdes = create_set_serdes,
 	link_state = link_state,
@@ -546,6 +604,11 @@ return table.freeze({
 	orphans = orphans,
 	other_server = other_server,
 	link_entity = link_entity,
+	give = give,
+	make_container = make_container,
+	id_of = id_of,
+	items_of = items_of,
+	count = count,
 	set = set,
 	remove = remove,
 	add = add,

@@ -79,6 +79,17 @@ local function supply_all(context: Context, link_state: LinkState, loaded: Sessi
 	end)
 end
 
+local function resupply(context: Context, loaded: SessionInternal)
+	for _, by_key in context.world_state.link_states do
+		for _, link_state in by_key do
+			local open = state.open_session(link_state)
+			if open == loaded then
+				supply_all(context, link_state, loaded)
+			end
+		end
+	end
+end
+
 local function forget_orphan(world_state: WorldState, loaded: SessionInternal)
 	local disconnect = world_state.orphans[loaded]
 	if disconnect then
@@ -433,6 +444,13 @@ end
 
 local function run_cleanups(context: Context)
 	local world_state = context.world_state
+	for _, entity in world_state.dropped_entities do
+		local existing = world_state.entities[entity]
+		if existing then
+			existing.dropped = false
+		end
+	end
+	table.clear(world_state.dropped_entities)
 	while #world_state.cleanups > 0 do
 		local cleanups = world_state.cleanups
 		world_state.cleanups = {}
@@ -494,6 +512,7 @@ return table.freeze({
 	on_closed = on_closed,
 	on_pulled = on_pulled,
 	run_cleanups = run_cleanups,
+	resupply = resupply,
 	wipe_key = wipe_key,
 	detach_all = detach_all,
 })

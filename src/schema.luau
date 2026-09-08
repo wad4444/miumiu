@@ -14,7 +14,7 @@ type Fields = types.Fields
 type Named = types.Named
 type Schema = types.Schema
 type SchemaEntry = types.SchemaEntry
-type Scopes = types.Scopes
+type Holders = types.Holders
 
 local frozen_ids = {
 	ids.collection,
@@ -27,6 +27,8 @@ local frozen_ids = {
 	ids.lazy,
 	ids.pairs,
 	ids.child,
+	ids.migrations,
+	ids.from_foreign,
 }
 
 local function resolve_key(world: World, id: Entity): string
@@ -40,13 +42,12 @@ local function resolve_key(world: World, id: Entity): string
 	return key
 end
 
-local function resolve_scopes(world: World, id: Entity): Scopes
-	local targets: { [Entity]: boolean } = {}
-	local found = util.targets_of(world, id, ids.field_of)
-	for _, target in found do
-		targets[target] = true
+local function resolve_holders(world: World, id: Entity): Holders
+	local holders: Holders = {}
+	for _, target in util.targets_of(world, id, ids.field_of) do
+		holders[target] = true
 	end
-	return { unscoped = #found == 0, targets = targets }
+	return holders
 end
 
 local function resolve_targets(world: World, id: Entity): { [Entity]: boolean }?
@@ -70,7 +71,7 @@ local function resolve_targets(world: World, id: Entity): { [Entity]: boolean }?
 	return targets
 end
 
-local function create_relation(world: World, id: Entity, key: string, scopes: Scopes): SchemaEntry
+local function create_relation(world: World, id: Entity, key: string, holders: Holders): SchemaEntry
 	for meta, what in
 		{ [ids.guard] = "a guard", [ids.serdes] = "serdes", [ids.snapshot] = "a snapshot", [ids.lazy] = "lazy" }
 	do
@@ -85,15 +86,15 @@ local function create_relation(world: World, id: Entity, key: string, scopes: Sc
 		has_initial = false,
 		tagged = jecs.is_tag(world, id),
 		targets = resolve_targets(world, id),
-		scopes = scopes,
+		holders = holders,
 	}
 end
 
 local function create_entry(world: World, id: Entity, key: string): SchemaEntry
 	local has_initial = world:has(id, id)
-	local scopes = resolve_scopes(world, id)
+	local holders = resolve_holders(world, id)
 	if world:has(id, ids.pairs) then
-		return create_relation(world, id, key, scopes)
+		return create_relation(world, id, key, holders)
 	end
 	if jecs.is_tag(world, id) then
 		if world:has(id, ids.snapshot) then
@@ -102,7 +103,7 @@ local function create_entry(world: World, id: Entity, key: string): SchemaEntry
 		if world:has(id, ids.lazy) then
 			error(messages.errors.lazy_on_tag(util.describe(world, id)), 0)
 		end
-		return { kind = "tag", id = id, key = key, has_initial = has_initial, scopes = scopes }
+		return { kind = "tag", id = id, key = key, has_initial = has_initial, holders = holders }
 	end
 	return {
 		kind = "component",
@@ -114,7 +115,7 @@ local function create_entry(world: World, id: Entity, key: string): SchemaEntry
 		serdes = world:get(id, ids.serdes),
 		snapshot = world:get(id, ids.snapshot),
 		lazy = world:has(id, ids.lazy),
-		scopes = scopes,
+		holders = holders,
 	}
 end
 
@@ -140,31 +141,29 @@ local function snapshots_of(entries: { SchemaEntry }): { ComponentEntry }
 	return snapshots
 end
 
-local function is_field_of(scopes: Scopes, target: Entity, default: boolean): boolean
-	if scopes.targets[target] then
-		return true
-	end
-	return default and scopes.unscoped
-end
-
-local function kinds_of(kinds: { ChildKind }, target: Entity, default: boolean): { ChildKind }
+local function kinds_of(kinds: { ChildKind }, target: Entity): { ChildKind }
 	local held: { ChildKind } = {}
 	for _, kind in kinds do
-		if is_field_of(kind.scopes, target, default) then
+		if kind.holders[target] then
 			table.insert(held, kind)
 		end
 	end
 	return held
 end
 
-local function fields_of(entries: { SchemaEntry }, kinds: { ChildKind }, target: Entity, default: boolean): Fields
+local function entries_of(entries: { SchemaEntry }, target: Entity): { SchemaEntry }
 	local held: { SchemaEntry } = {}
 	for _, entry in entries do
-		if is_field_of(entry.scopes, target, default) then
+		if entry.holders[target] then
 			table.insert(held, entry)
 		end
 	end
-	return { entries = held, snapshots = snapshots_of(held), kinds = kinds_of(kinds, target, default) }
+	return held
+end
+
+local function fields_of(entries: { SchemaEntry }, kinds: { ChildKind }, target: Entity): Fields
+	local held = entries_of(entries, target)
+	return { entries = held, snapshots = snapshots_of(held), kinds = kinds_of(kinds, target) }
 end
 
 local function create_kind(world: World, tag: Entity, entries: { SchemaEntry }): ChildKind
@@ -186,16 +185,16 @@ local function create_kind(world: World, tag: Entity, entries: { SchemaEntry }):
 	if not jecs.is_tag(world, tag) then
 		error(messages.errors.child_config_invalid(described, reasons.child_tag), 0)
 	end
-	local fields = fields_of(entries, {}, tag, false)
-	local scopes = resolve_scopes(world, tag)
+	local held = entries_of(entries, tag)
+	local holders = resolve_holders(world, tag)
 	if config.mode == "owned" then
 		return {
 			tag = tag,
 			via = config.via,
 			key = config.key,
-			scopes = scopes,
-			entries = fields.entries,
-			snapshots = fields.snapshots,
+			holders = holders,
+			entries = held,
+			snapshots = snapshots_of(held),
 			kinds = {},
 			mode = "owned",
 		}
@@ -207,85 +206,52 @@ local function create_kind(world: World, tag: Entity, entries: { SchemaEntry }):
 		tag = tag,
 		via = config.via,
 		key = config.key,
-		scopes = scopes,
-		entries = fields.entries,
-		snapshots = fields.snapshots,
+		holders = holders,
+		entries = held,
+		snapshots = snapshots_of(held),
 		kinds = {},
 		mode = "attached",
 		id = config.id,
 	}
 end
 
-local function validate_scopes(
-	world: World,
-	entries: { SchemaEntry },
-	kinds: { ChildKind },
-	roots: { [Entity]: Fields }
-)
+local function validate_targets(world: World, entries: { SchemaEntry }, kinds: { ChildKind }, collections: { Entity })
 	local known: { [Entity]: boolean } = {}
-	for collection in roots do
+	for _, collection in collections do
 		known[collection] = true
 	end
 	for _, kind in kinds do
 		known[kind.tag] = true
 	end
-	local function check(id: Entity, scopes: Scopes)
-		for target in scopes.targets do
+	local function check(what: string, id: Entity, holders: Holders)
+		for target in holders do
 			if not known[target] then
-				error(messages.errors.field_of_invalid(util.describe(world, id), util.describe(world, target)), 0)
+				error(messages.errors.field_of_invalid(what, util.describe(world, id), util.describe(world, target)), 0)
 			end
 		end
 	end
 	for _, entry in entries do
-		check(entry.id, entry.scopes)
+		check("saveable", entry.id, entry.holders)
 	end
 	for _, kind in kinds do
-		check(kind.tag, kind.scopes)
+		check("child kind", kind.tag, kind.holders)
 	end
 end
 
-local function resolve_default_root(world: World, collections: { Entity }): Entity?
-	if #collections == 1 then
-		return collections[1]
-	end
-	local found: Entity? = nil
-	for _, collection in collections do
-		local config = world:get(collection, ids.config)
-		if type(config) ~= "table" or not config.default_scope then
-			continue
-		end
-		if found then
-			error(messages.errors.scope_default_twice(util.describe(world, found), util.describe(world, collection)), 0)
-		end
-		found = collection
-	end
-	return found
-end
-
-local function validate_unscoped(
-	world: World,
-	entries: { SchemaEntry },
-	kinds: { ChildKind },
-	roots: { [Entity]: Fields },
-	default_root: Entity?
-)
-	if default_root ~= nil or next(roots) == nil then
-		return
-	end
-	local names: { string } = {}
-	for collection in roots do
-		table.insert(names, util.describe(world, collection))
-	end
-	table.sort(names)
+local function validate_scoped(world: World, entries: { SchemaEntry }, kinds: { ChildKind })
+	local unscoped: { string } = {}
 	for _, entry in entries do
-		if entry.scopes.unscoped then
-			error(messages.errors.scope_required(util.describe(world, entry.id), names), 0)
+		if next(entry.holders) == nil then
+			table.insert(unscoped, `saveable {util.describe(world, entry.id)}`)
 		end
 	end
 	for _, kind in kinds do
-		if kind.scopes.unscoped then
-			error(messages.errors.scope_required(util.describe(world, kind.tag), names), 0)
+		if next(kind.holders) == nil then
+			table.insert(unscoped, `child kind {util.describe(world, kind.tag)}`)
 		end
+	end
+	if #unscoped > 0 then
+		error(messages.errors.scope_required(unscoped), 0)
 	end
 end
 
@@ -340,7 +306,7 @@ local function create_schema(world: World): Schema
 	end)
 
 	for _, kind in kinds do
-		kind.kinds = kinds_of(kinds, kind.tag, true)
+		kind.kinds = kinds_of(kinds, kind.tag)
 	end
 	local collections: { Entity } = {}
 	for collection in world:each(ids.collection) do
@@ -356,13 +322,12 @@ local function create_schema(world: World): Schema
 		end
 		named[name] = entity
 	end
-	local default_root = resolve_default_root(world, collections)
 	local roots: { [Entity]: Fields } = {}
 	for _, collection in collections do
-		roots[collection] = fields_of(entries, kinds, collection, collection == default_root)
+		roots[collection] = fields_of(entries, kinds, collection)
 	end
-	validate_scopes(world, entries, kinds, roots)
-	validate_unscoped(world, entries, kinds, roots, default_root)
+	validate_targets(world, entries, kinds, collections)
+	validate_scoped(world, entries, kinds)
 
 	warn_unguarded(entries)
 	return {
@@ -371,7 +336,6 @@ local function create_schema(world: World): Schema
 		kinds = kinds,
 		kinds_by_relation = kinds_by_relation,
 		roots = roots,
-		default_root = default_root,
 		named = named,
 	}
 end
@@ -399,18 +363,7 @@ local function get(world: World): Schema
 	return built
 end
 
-local function root_of(schema: Schema, collection: Entity): Fields
-	return schema.roots[collection]
-end
-
-local function holds(schema: Schema, scopes: Scopes, collection: Entity): boolean
-	return is_field_of(scopes, collection, collection == schema.default_root)
-end
-
 return table.freeze({
 	create_schema = create_schema,
 	get = get,
-	is_field_of = is_field_of,
-	holds = holds,
-	root_of = root_of,
 })

@@ -95,7 +95,6 @@ local function resolve_config(world: World, collection: Entity): ResolvedCollect
 		commit_timeout = given.commit_timeout or defaults.commit_timeout,
 		migrations = world:get(collection, ids.migrations) or {},
 		foreign = source,
-		default_scope = given.default_scope == true,
 		user_ids = given.user_ids,
 	}
 	validate_config(described, config, given)

@@ -9,7 +9,6 @@ local logging = require("./logging")
 local messages = require("./messages")
 local migrations = require("./migrations")
 local reconcile = require("./reconcile")
-local schema = require("./schema")
 local session = require("./session")
 local state = require("./state")
 local util = require("./util")
@@ -133,7 +132,7 @@ local function load(
 	key: string,
 	link: () -> LinkState
 ): thread
-	local root = schema.root_of(context.schema, collection_entity)
+	local root = context.schema.roots[collection_entity]
 	local migrate = migrations.create_migrate(
 		context.schema,
 		root,
@@ -184,7 +183,7 @@ local function create_link(
 end
 
 local function write_fields(context: Context, entity: Entity, collection_entity: Entity)
-	local root = schema.root_of(context.schema, collection_entity)
+	local root = context.schema.roots[collection_entity]
 	reconcile.snapshot_fields(context, entity, root.snapshots)
 	capture.flush_lazy(context, entity, root.entries)
 end
@@ -213,7 +212,7 @@ local function loaded_phase(context: Context, link_state: LinkState, loaded: Ses
 	local disconnect_pulled = loaded:hook(hooks.pulled, function()
 		table.insert(events, { kind = "pulled", link = link_state })
 	end)
-	local disconnect_writing = loaded:hook(hooks.writing, function()
+	loaded:prepare_with(function()
 		snapshot_all(context, link_state)
 	end)
 	local disconnect_closed = watch_closed(context, link_state, loaded)
@@ -222,7 +221,7 @@ local function loaded_phase(context: Context, link_state: LinkState, loaded: Ses
 		session = loaded,
 		disconnect = function()
 			disconnect_pulled()
-			disconnect_writing()
+			loaded:prepare_with(nil)
 			disconnect_closed()
 		end,
 	}
@@ -264,7 +263,7 @@ local function overlapping_link(context: Context, entity: Entity, collection_ent
 	end
 	local kinds = root.kinds
 	for other in links do
-		for _, kind in schema.root_of(context.schema, other).kinds do
+		for _, kind in context.schema.roots[other].kinds do
 			if table.find(kinds, kind) then
 				return other
 			end
@@ -360,7 +359,7 @@ local function on_unlink(context: Context, entity: Entity, collection_entity: En
 		link_state.entities[entity] = nil
 		if link_state.phase.kind == "loaded" then
 			guard.run(function()
-				reconcile.release_children(context, entity, schema.root_of(context.schema, collection_entity).kinds)
+				reconcile.release_children(context, entity, context.schema.roots[collection_entity].kinds)
 			end)
 		end
 		if next(link_state.entities) == nil then
@@ -402,7 +401,7 @@ local function drop_link(context: Context, link_state: LinkState, err: string?, 
 		forget_link(context, entity, link_state.collection)
 		mark(context, entity, link_state.collection, "none", err)
 		if release then
-			reconcile.release_children(context, entity, schema.root_of(context.schema, link_state.collection).kinds)
+			reconcile.release_children(context, entity, context.schema.roots[link_state.collection].kinds)
 		end
 	end)
 end
@@ -423,8 +422,10 @@ local function on_closed(context: Context, link_state: LinkState, closed: Sessio
 		drop_link(context, link_state, nil, false)
 	elseif phase.kind == "loaded" then
 		phase.disconnect()
-		local closure = closed:get_closure() :: RefusedClosure
-		drop_link(context, link_state, closure.message, true)
+		local status = closed:get_status()
+		if status.kind == "closed" then
+			drop_link(context, link_state, (status.closure :: RefusedClosure).message, true)
+		end
 	end
 end
 

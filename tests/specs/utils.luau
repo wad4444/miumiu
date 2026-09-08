@@ -81,7 +81,6 @@ export type Overrides = {
 	commit_store: string?,
 	commit_timeout: number?,
 	migrations: { Migration }?,
-	default_scope: boolean?,
 	user_ids: ((key: string) -> { number })?,
 }
 
@@ -281,7 +280,6 @@ local function create_config(backend: Backend, overrides: Overrides?): ResolvedC
 		commit_timeout = given.commit_timeout or timings.commit_timeout,
 		migrations = given.migrations or {},
 		foreign = nil,
-		default_scope = given.default_scope == true,
 		user_ids = given.user_ids,
 	}
 end
@@ -343,13 +341,26 @@ local function create_collection(world: World, backend: Backend, overrides: Over
 		retry_base = config.retry_base,
 		commit_store = config.commit_store,
 		commit_timeout = config.commit_timeout,
-		default_scope = config.default_scope,
 		user_ids = config.user_ids,
 	})
 	return collection
 end
 
-local function declare_saveable(world: World, kind: "component" | "tag", key: string?, name: string?): Entity<any>
+local function scope(world: World, ids: { Entity<any> }, targets: { Entity })
+	for _, id in ids do
+		for _, target in targets do
+			world:add(id, jecs.pair(miumiu.field_of, target))
+		end
+	end
+end
+
+local function declare_saveable(
+	world: World,
+	kind: "component" | "tag",
+	key: string?,
+	targets: { Entity },
+	name: string?
+): Entity<any>
 	local id = if kind == "component" then world:component() else world:entity()
 	world:set(id, jecs.Name, name or key or "unnamed")
 	if key then
@@ -357,6 +368,7 @@ local function declare_saveable(world: World, kind: "component" | "tag", key: st
 	else
 		world:add(id, miumiu.saveable)
 	end
+	scope(world, { id }, targets)
 	return id
 end
 
@@ -368,7 +380,7 @@ export type Kinds = {
 	container_kind: Entity<string>,
 }
 
-local function declare_kinds(world: World): Kinds
+local function declare_kinds(world: World, root: Entity): Kinds
 	local owns = world:entity()
 	world:add(owns, jecs.Exclusive)
 	local item = world:entity()
@@ -380,6 +392,7 @@ local function declare_kinds(world: World): Kinds
 	local container = world:entity()
 	world:set(container, jecs.Name, "container")
 	world:set(container, miumiu.child, { via = holds, key = "containers", mode = "attached", id = container_kind })
+	scope(world, { item, container }, { root })
 	return { owns = owns, item = item, holds = holds, container = container, container_kind = container_kind }
 end
 
@@ -389,24 +402,17 @@ export type Relations = {
 	ice: Entity,
 }
 
-local function declare_relations(world: World): Relations
+local function declare_relations(world: World, targets: { Entity }): Relations
 	local has_buff = world:entity()
 	world:set(has_buff, jecs.Name, "has_buff")
 	world:set(has_buff, miumiu.saveable, "buffs")
 	world:add(has_buff, miumiu.pairs)
+	scope(world, { has_buff }, targets)
 	local fire = world:entity()
 	world:set(fire, jecs.Name, "fire")
 	local ice = world:entity()
 	world:set(ice, jecs.Name, "ice")
 	return { has_buff = has_buff, fire = fire, ice = ice }
-end
-
-local function scope(world: World, ids: { Entity<any> }, targets: { Entity })
-	for _, id in ids do
-		for _, target in targets do
-			world:add(id, jecs.pair(miumiu.field_of, target))
-		end
-	end
 end
 
 local function anything(): boolean
@@ -417,12 +423,12 @@ local function create_fixture(overrides: Overrides?): Fixture
 	local backend = create_backend()
 	local world = jecs.world()
 	table.insert(live_worlds, world)
-	local money = declare_saveable(world, "component", "money")
-	world:set(money, miumiu.guard, anything)
-	local items = declare_saveable(world, "component", "items")
-	world:set(items, miumiu.guard, anything)
-	local tutorial = declare_saveable(world, "tag", "tutorial")
 	local player_data = create_collection(world, backend, overrides)
+	local money = declare_saveable(world, "component", "money", { player_data })
+	world:set(money, miumiu.guard, anything)
+	local items = declare_saveable(world, "component", "items", { player_data })
+	world:set(items, miumiu.guard, anything)
+	local tutorial = declare_saveable(world, "tag", "tutorial", { player_data })
 	return {
 		backend = backend,
 		world = world,

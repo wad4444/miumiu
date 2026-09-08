@@ -2,16 +2,18 @@ local types = require("./types")
 local symbol = require("./symbol")
 
 type MutexInternal = types.MutexInternal
+type MutexPhase = types.MutexPhase
 
 local mutex_symbol = symbol.create_symbol("Mutex")
 
 local function lock(self: MutexInternal)
 	local values = self.internal_values
-	if values.closed then
-		error(values.closed, 0)
+	local phase = values.phase
+	if phase.kind == "closed" then
+		error(phase.reason, 0)
 	end
-	if not values.locked then
-		values.locked = true
+	if phase.kind == "free" then
+		values.phase = { kind = "locked" }
 		return
 	end
 
@@ -34,14 +36,16 @@ end
 local function unlock(self: MutexInternal)
 	local waiter = next_waiter(self)
 	if waiter == nil then
-		self.internal_values.locked = false
+		if self.internal_values.phase.kind == "locked" then
+			self.internal_values.phase = { kind = "free" }
+		end
 		return
 	end
 	task.spawn(waiter, true)
 end
 
 local function close(self: MutexInternal, reason: string)
-	self.internal_values.closed = reason
+	self.internal_values.phase = { kind = "closed", reason = reason }
 	local waiters = table.clone(self.internal_waiters)
 	table.clear(self.internal_waiters)
 	for _, waiter in waiters do
@@ -67,8 +71,7 @@ end
 local template = {
 	symbol = mutex_symbol,
 	internal_values = {
-		locked = false,
-		closed = nil :: string?,
+		phase = { kind = "free" } :: MutexPhase,
 	},
 	internal_waiters = {},
 	lock = lock,
@@ -79,7 +82,7 @@ local template = {
 
 local meta = {
 	__tostring = function(self: MutexInternal)
-		return `Mutex({if self.internal_values.locked then "locked" else "free"})`
+		return `Mutex({self.internal_values.phase.kind})`
 	end,
 }
 

@@ -19,15 +19,15 @@ type Group = types.Group
 type Landed = types.Landed
 type Landing = types.Landing
 type Merge = types.Merge
-type MergedPull = types.MergedPull
 type Migrate = types.Migrate
 type Migrated = types.Migrated
 type Mutex = types.Mutex
 type Op = types.Op
 type Pending = types.Pending
-type PullResult = types.PullResult
+type Pull = types.Pull
 type Resolution = types.Resolution
 type ResolvedCollectionConfig = types.ResolvedCollectionConfig
+type SessionStatus = types.SessionStatus
 type RetryConfig = types.RetryConfig
 type SessionInternal = types.SessionInternal
 type Stamps = types.Stamps
@@ -46,18 +46,17 @@ local function state_of(record: StoredRecord): State
 end
 
 local function validate_open(self: SessionInternal)
-	if not self.internal_values.open then
+	if self.internal_values.status.kind == "closed" then
 		error(messages.errors.session_closed(self.internal_values.key), 0)
 	end
 end
 
 local function close(self: SessionInternal, closure: Closure)
 	local values = self.internal_values
-	if not values.open then
+	if values.status.kind == "closed" then
 		return
 	end
-	values.open = false
-	values.closure = closure
+	values.status = { kind = "closed", closure = closure }
 	self.internal_mutex:close(messages.errors.session_closed(values.key))
 	callbacks.fire(self.internal_hooks, hooks.closed, self, closure)
 end
@@ -74,8 +73,8 @@ local function get_config(self: SessionInternal): ResolvedCollectionConfig
 	return self.internal_collection.config
 end
 
-local function get_closure(self: SessionInternal): Closure?
-	return self.internal_values.closure
+local function get_status(self: SessionInternal): SessionStatus
+	return self.internal_values.status
 end
 
 local function get_pulls(self: SessionInternal): number
@@ -112,7 +111,7 @@ local function get_stamps(self: SessionInternal): Stamps
 end
 
 local function is_open(self: SessionInternal): boolean
-	return self.internal_values.open
+	return self.internal_values.status.kind ~= "closed"
 end
 
 local function is_dirty(self: SessionInternal): boolean
@@ -394,25 +393,6 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 	}
 end
 
-local function with_written(merged: Merge, record: StoredRecord?, written: boolean): PullResult
-	if merged.kind == "newer" then
-		return {
-			kind = "newer",
-			message = merged.message,
-			groups = merged.groups,
-			resolution = merged.resolution,
-			written = written,
-		}
-	end
-	return {
-		kind = "merged",
-		record = record,
-		groups = merged.groups,
-		resolution = merged.resolution,
-		written = written,
-	}
-end
-
 local function user_ids_of(collection: CollectionState, key: string): { number }?
 	local user_ids = collection.config.user_ids
 	if user_ids == nil then
@@ -421,7 +401,7 @@ local function user_ids_of(collection: CollectionState, key: string): { number }
 	return user_ids(key)
 end
 
-local function run_update(self: SessionInternal, retry: RetryConfig): PullResult
+local function run_update(self: SessionInternal, retry: RetryConfig): Pull
 	local collection = self.internal_collection
 	local merged: Merge? = nil
 	local result = datastore.update_async(collection.store, self.internal_values.key, function(old: StoredRecord?)
@@ -432,14 +412,14 @@ local function run_update(self: SessionInternal, retry: RetryConfig): PullResult
 		end
 		return nil
 	end, retry, user_ids_of(collection, self.internal_values.key))
-	return with_written(merged :: Merge, result.value, result.written)
+	return { merge = merged :: Merge, record = result.value, written = result.written }
 end
 
 local function is_idle(self: SessionInternal): boolean
 	return #self.internal_unwritten == 0 and self.internal_seed == nil and not self.internal_values.touched
 end
 
-local function run_read(self: SessionInternal, retry: RetryConfig): PullResult?
+local function run_read(self: SessionInternal, retry: RetryConfig): Pull?
 	local collection = self.internal_collection
 	local record: StoredRecord? = datastore.get_async(collection.store, self.internal_values.key, retry)
 	local declared = #collection.config.migrations
@@ -450,10 +430,10 @@ local function run_read(self: SessionInternal, retry: RetryConfig): PullResult?
 	if merged.kind == "merged" then
 		return nil
 	end
-	return with_written(merged, record, false)
+	return { merge = merged, record = record, written = false }
 end
 
-local function adopt(self: SessionInternal, pull: MergedPull): boolean
+local function adopt(self: SessionInternal, pull: Pull): boolean
 	local values = self.internal_values
 	local record = pull.record
 	forget_state(self)
@@ -469,21 +449,22 @@ local function adopt(self: SessionInternal, pull: MergedPull): boolean
 	end
 
 	self.internal_seed = nil
-	await_shared(self, forget_written(self, pull.groups))
+	await_shared(self, forget_written(self, pull.merge.groups))
 	local adopted = pull.written or not same_record(self, record)
 	if adopted then
 		self.internal_base = state_of(record)
 		values.version = record.version or 0
 		values.written = record.written
 	end
-	forget_settled(self, record, pull.resolution.decided)
+	forget_settled(self, record, pull.merge.resolution.decided)
 	return adopted
 end
 
-local function fetch_unknown(self: SessionInternal, pull: MergedPull): boolean
-	local pending = pull.resolution.pending
+local function fetch_unknown(self: SessionInternal, pull: Pull): boolean
+	local resolution = pull.merge.resolution
+	local pending = resolution.pending
 	local any_decided = false
-	for _, id in pull.resolution.unknown do
+	for _, id in resolution.unknown do
 		local entry = pending[id]
 		if commit.fetch(self.internal_collection.config, id, entry.created) ~= "undecided" then
 			any_decided = true
@@ -492,10 +473,11 @@ local function fetch_unknown(self: SessionInternal, pull: MergedPull): boolean
 	return any_decided
 end
 
-local function accept(self: SessionInternal, pull: PullResult): MergedPull
-	if pull.kind == "newer" then
-		close(self, { kind = "refused", message = pull.message })
-		error(pull.message, 0)
+local function accept(self: SessionInternal, pull: Pull): Pull
+	local merge = pull.merge
+	if merge.kind == "newer" then
+		close(self, { kind = "refused", message = merge.message })
+		error(merge.message, 0)
 	end
 	return pull
 end
@@ -511,7 +493,7 @@ local function pull_now(self: SessionInternal, retry: RetryConfig): boolean
 	end
 	forget_state(self)
 
-	if self.internal_values.closing and #self.internal_unwritten == 0 then
+	if self.internal_values.status.kind == "closing" and #self.internal_unwritten == 0 then
 		close(self, { kind = "clean" })
 	end
 	return adopted
@@ -519,16 +501,21 @@ end
 
 local function pull_with(self: SessionInternal, retry: RetryConfig): boolean
 	validate_open(self)
-	if not is_idle(self) or self.internal_values.closing then
+	local values = self.internal_values
+	if not is_idle(self) or values.status.kind == "closing" then
+		local prepare = values.prepare
+		if prepare then
+			callbacks.invoke(hooks.writing, self, prepare)
+		end
 		callbacks.fire(self.internal_hooks, hooks.writing, self)
-		self.internal_values.touched = false
+		values.touched = false
 	end
 	local adopted = false
 	self.internal_mutex:with(function()
 		adopted = pull_now(self, retry)
-		self.internal_values.pulls += 1
+		values.pulls += 1
 	end)
-	if adopted and self.internal_values.open then
+	if adopted and values.status.kind ~= "closed" then
 		callbacks.fire(self.internal_hooks, hooks.pulled, self, get_truth(self))
 	end
 	return adopted
@@ -539,8 +526,8 @@ local function sync(self: SessionInternal): boolean
 end
 
 local function is_closed_clean(self: SessionInternal): boolean
-	local closure = self.internal_values.closure
-	return closure ~= nil and closure.kind == "clean" and #self.internal_unwritten == 0
+	local status = self.internal_values.status
+	return status.kind == "closed" and status.closure.kind == "clean" and #self.internal_unwritten == 0
 end
 
 local function unload(self: SessionInternal, retry: RetryConfig?)
@@ -549,9 +536,9 @@ local function unload(self: SessionInternal, retry: RetryConfig?)
 		close(self, { kind = "clean" })
 		return
 	end
-	self.internal_values.closing = true
+	self.internal_values.status = { kind = "closing" }
 	local ok, err = pcall(pull_with, self, retry or self.internal_collection.config)
-	if ok or is_closed_clean(self) or not self.internal_values.closing then
+	if ok or is_closed_clean(self) or self.internal_values.status.kind == "open" then
 		return
 	end
 	error(err, 0)
@@ -559,7 +546,11 @@ end
 
 local function reopen(self: SessionInternal)
 	validate_open(self)
-	self.internal_values.closing = false
+	self.internal_values.status = { kind = "open" }
+end
+
+local function prepare_with(self: SessionInternal, fn: (() -> ())?)
+	self.internal_values.prepare = fn
 end
 
 local function wiped_record(old: StoredRecord?, declared: number): StoredRecord
@@ -621,13 +612,12 @@ local template = {
 	symbol = session_symbol,
 	internal_values = {
 		key = "",
-		open = true,
-		closing = false,
-		closure = nil :: Closure?,
+		status = { kind = "open" } :: SessionStatus,
 		version = 0,
 		written = nil :: string?,
 		pulls = 0,
 		touched = false,
+		prepare = nil :: (() -> ())?,
 	},
 	internal_collection = (nil :: any) :: CollectionState,
 	internal_base = empty_state(),
@@ -644,7 +634,7 @@ local template = {
 	get_truth = get_truth,
 	get_stamps = get_stamps,
 	get_config = get_config,
-	get_closure = get_closure,
+	get_status = get_status,
 	get_state = get_state,
 	get_pulls = get_pulls,
 	is_open = is_open,
@@ -658,6 +648,7 @@ local template = {
 	discard = discard,
 	wipe = wipe,
 	reopen = reopen,
+	prepare_with = prepare_with,
 	hook = hook,
 }
 

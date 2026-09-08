@@ -37,7 +37,7 @@ src/migrations.luau   scratch-world migrations
 src/foreign/          adapters for importing from other libraries (lapis.luau)
 src/listeners.luau    data_link listeners → events; install/uninstall
 src/link.luau         link lifecycle: link/unlink/loaded/load_failed/closed/pulled handlers, cleanups, get_session, wipe_key, detach_all, resupply
-src/step.luau         the event loop, get_session, wipe, close
+src/step.luau         the event loop, get_session, wipe, close, the world-level hook
 src/batch.luau        batch/delta: capture, background commit (single or shared), rollback
 src/handle.luau       Batch: the handle batch/delta return (outcome, result via hold/get_result, landed/refused hooks, await; cake-style class)
 src/index.d.ts        the roblox-ts surface

@@ -10,7 +10,6 @@ local ops = require("./ops")
 local reconcile = require("./reconcile")
 local recorder = require("./recorder")
 local relations = require("./relations")
-local schema = require("./schema")
 local state = require("./state")
 local util = require("./util")
 
@@ -31,19 +30,19 @@ type Op = types.Op
 type Owner = types.Owner
 type RelationWrite = types.RelationWrite
 type SchemaEntry = types.SchemaEntry
-type Scopes = types.Scopes
+type Holders = types.Holders
 type SessionInternal = types.SessionInternal
 type SplitPath = types.SplitPath
 type Undo = types.Undo
 type WorldState = types.WorldState
 type Write = types.Write
 
-local function root_owner(context: Context, entity: Entity, scopes: Scopes): Owner
+local function root_owner(context: Context, entity: Entity, holders: Holders): Owner
 	local world_state = context.world_state
 	local sessions: { SessionInternal } = {}
 	local unsaved = true
 	for collection, key in world_state.links[entity] do
-		if not schema.holds(context.schema, scopes, collection) then
+		if not holders[collection] then
 			continue
 		end
 		unsaved = false
@@ -61,17 +60,17 @@ end
 local function owner_of(context: Context, entity: Entity, entry: SchemaEntry): Owner
 	local world_state = context.world_state
 	if world_state.links[entity] then
-		return root_owner(context, entity, entry.scopes)
+		return root_owner(context, entity, entry.holders)
 	end
 	local held = children.child_of(world_state.children, entity)
-	if held and not schema.is_field_of(entry.scopes, held.kind.tag, false) then
+	if held and not entry.holders[held.kind.tag] then
 		return { kind = "unsaved" }
 	end
 	local ancestry = children.ancestry(world_state, entity)
 	if not ancestry then
 		return { kind = "root", sessions = {} }
 	end
-	local root = root_owner(context, ancestry.root, ancestry.kind.scopes)
+	local root = root_owner(context, ancestry.root, ancestry.kind.holders)
 	if root.kind == "unsaved" then
 		return root
 	end
@@ -94,20 +93,20 @@ local function held_kind_of(context: Context, entity: Entity): ChildKind?
 end
 
 local function parent_holds(context: Context, kind: ChildKind, parent: Entity): boolean
+	local links = context.world_state.links[parent]
+	if links then
+		for collection in links do
+			if kind.holders[collection] then
+				return true
+			end
+		end
+		return false
+	end
 	local parent_kind = held_kind_of(context, parent)
 	if parent_kind then
-		return schema.is_field_of(kind.scopes, parent_kind.tag, true)
+		return kind.holders[parent_kind.tag] == true
 	end
-	local links = context.world_state.links[parent]
-	if not links then
-		return true
-	end
-	for collection in links do
-		if schema.holds(context.schema, kind.scopes, collection) then
-			return true
-		end
-	end
-	return false
+	return true
 end
 
 local function warn_unsaved(context: Context, write: ComponentWrite)
@@ -128,7 +127,7 @@ end
 local function warn_unheld(context: Context, write: RelationWrite)
 	local world = context.world
 	local parent_kind = held_kind_of(context, write.parent)
-	local holder = if parent_kind then parent_kind.tag else write.parent
+	local holder = if parent_kind and not context.world_state.links[write.parent] then parent_kind.tag else write.parent
 	logging.warn_once(
 		context.world_state.warned,
 		`{write.child.tag}/{holder}`,
@@ -584,7 +583,7 @@ local function emit_child(context: Context, ancestry: Ancestry?, op_for: (Ancest
 	if not ancestry then
 		return
 	end
-	local sessions = sessions_of(root_owner(context, ancestry.root, ancestry.kind.scopes))
+	local sessions = sessions_of(root_owner(context, ancestry.root, ancestry.kind.holders))
 	if #sessions == 0 then
 		return
 	end
@@ -600,9 +599,9 @@ local function emit_child(context: Context, ancestry: Ancestry?, op_for: (Ancest
 	journal_ops(sessions, { op }, coalesce)
 end
 
-local function shallow_root(context: Context, root: Entity): boolean
+local function shallow_root(context: Context, root: Entity, kind: ChildKind): boolean
 	for collection in context.world_state.links[root] do
-		if context.world:has(root, jecs.pair(ids.data_shallow, collection)) then
+		if kind.holders[collection] and context.world:has(root, jecs.pair(ids.data_shallow, collection)) then
 			return true
 		end
 	end
@@ -614,8 +613,8 @@ local function supply_claimed(context: Context, entity: Entity, kind: ChildKind)
 	if not ancestry then
 		return
 	end
-	local sessions = sessions_of(root_owner(context, ancestry.root, ancestry.kind.scopes))
-	if #sessions == 0 or shallow_root(context, ancestry.root) then
+	local sessions = sessions_of(root_owner(context, ancestry.root, ancestry.kind.holders))
+	if #sessions == 0 or shallow_root(context, ancestry.root, ancestry.kind) then
 		return
 	end
 	local split = split_path(ancestry)
@@ -668,7 +667,7 @@ local function on_detached(context: Context, write: RelationWrite)
 	end
 	if write.child.mode == "attached" then
 		local held = (previous ~= nil and world_state.deleting[write.parent])
-			or (ancestry ~= nil and #sessions_of(root_owner(context, ancestry.root, ancestry.kind.scopes)) > 0)
+			or (ancestry ~= nil and #sessions_of(root_owner(context, ancestry.root, ancestry.kind.holders)) > 0)
 		if not write.deleted and held then
 			table.insert(world_state.cleanups, { kind = "reset", entity = write.entity, child = write.child })
 		end
@@ -757,6 +756,19 @@ local function on_attached(context: Context, write: RelationWrite)
 		undo_trigger(context, write)
 		error(id, 0)
 	end
+	local taken = children.children_of(index, write.parent, write.child.key)[id]
+	if taken ~= nil and taken ~= write.entity then
+		undo_trigger(context, write)
+		error(
+			messages.errors.child_id_taken(
+				util.describe(context.world, write.entity),
+				children.describe_kind(context.world, write.child),
+				id,
+				util.describe(context.world, taken)
+			),
+			0
+		)
+	end
 	children.record(index, write.entity, write.child, write.parent, id)
 	local existing = world_state.entities[write.entity]
 	local was_dropped = existing ~= nil and existing.dropped
@@ -785,7 +797,7 @@ local function on_attached(context: Context, write: RelationWrite)
 	end
 	if
 		world_state.capture
-		and (ancestry == nil or #sessions_of(root_owner(context, ancestry.root, ancestry.kind.scopes)) == 0)
+		and (ancestry == nil or #sessions_of(root_owner(context, ancestry.root, ancestry.kind.holders)) == 0)
 	then
 		reject_unloaded(context, write)
 	end
@@ -866,6 +878,18 @@ local function index_existing(context: Context)
 				messages.warnings.child_unnamed_existing(
 					util.describe(world, entity),
 					children.describe_kind(world, kind)
+				)
+			)
+			continue
+		end
+		local taken = children.children_of(world_state.children, existing.parent, kind.key)[id]
+		if taken ~= nil then
+			logging.warn(
+				messages.warnings.child_id_taken_existing(
+					util.describe(world, entity),
+					children.describe_kind(world, kind),
+					id,
+					util.describe(world, taken)
 				)
 			)
 			continue

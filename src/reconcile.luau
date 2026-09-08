@@ -7,7 +7,6 @@ local logging = require("./logging")
 local messages = require("./messages")
 local ops = require("./ops")
 local relations = require("./relations")
-local schema = require("./schema")
 local state = require("./state")
 local util = require("./util")
 
@@ -152,7 +151,7 @@ end
 
 local function apply_initials(context: Context, entity: Entity, collection: Entity)
 	local world, world_state = context.world, context.world_state
-	for _, entry in schema.root_of(context.schema, collection).entries do
+	for _, entry in context.schema.roots[collection].entries do
 		if not entry.has_initial or world:has(entity, entry.id) then
 			continue
 		end
@@ -184,6 +183,44 @@ end
 local function restore_fields(context: Context, entity: Entity, kind: ChildKind, data: Data)
 	local entity_state = state.entity_state(context.world_state, entity)
 	apply(context, entity, kind.entries, entity_state, { truth = data, stamps = {} }, true)
+end
+
+local function rewrite_entry(context: Context, entity: Entity, entry: SchemaEntry, stored: any)
+	local world = context.world
+	if entry.kind == "tag" then
+		if stored == true then
+			world:add(entity, entry.id)
+		else
+			world:remove(entity, entry.id)
+		end
+	elseif entry.kind == "relation" then
+		relations.apply(world, entry, entity, context.schema.named, stored or {}, context.world_state.warned)
+	elseif stored == nil then
+		world:remove(entity, entry.id)
+	else
+		world:set(entity, entry.id, codec.runtime_form(entry, stored))
+	end
+end
+
+local function repair_fields(context: Context, entity: Entity, kind: ChildKind, previous: Data, value: Data)
+	local current = children.pack_fields_of(context, entity, kind)
+	local entries: { SchemaEntry } = kind.entries
+	for _, entry in entries do
+		local key = entry.key
+		if ops.deep_equal(current[key], value[key]) and not ops.deep_equal(value[key], previous[key]) then
+			rewrite_entry(context, entity, entry, previous[key])
+		end
+	end
+end
+
+local function rewrite_fields(context: Context, entity: Entity, kind: ChildKind, previous: Data)
+	local current = children.pack_fields_of(context, entity, kind)
+	local entries: { SchemaEntry } = kind.entries
+	for _, entry in entries do
+		if not ops.deep_equal(current[entry.key], previous[entry.key]) then
+			rewrite_entry(context, entity, entry, previous[entry.key])
+		end
+	end
 end
 
 local function record_baseline(context: Context, entity: Entity, kind: ChildKind)
@@ -324,7 +361,7 @@ local function reconcile(context: Context, entity: Entity, known: State, collect
 		return
 	end
 	local entity_state = state.entity_state(context.world_state, entity)
-	local root = schema.root_of(context.schema, collection)
+	local root = context.schema.roots[collection]
 	local ok, err = pcall(apply, context, entity, root.entries, entity_state, known, false)
 	entity_state.shadow = state.read_values(context, entity, context.schema.entries)
 	if not ok then
@@ -337,9 +374,11 @@ local function reconcile(context: Context, entity: Entity, known: State, collect
 end
 
 local function wipe_entity(context: Context, entity: Entity, collection: Entity)
-	local root = schema.root_of(context.schema, collection)
+	local root = context.schema.roots[collection]
 	local entity_state = state.entity_state(context.world_state, entity)
-	table.clear(entity_state.lazy)
+	for _, entry in root.entries do
+		entity_state.lazy[entry.key] = nil
+	end
 	release_children(context, entity, root.kinds)
 	apply(context, entity, root.entries, entity_state, { truth = {}, stamps = {} }, true)
 	apply_initials(context, entity, collection)
@@ -381,6 +420,8 @@ return table.freeze({
 	record_baseline = record_baseline,
 	record_baselines = record_baselines,
 	restore_fields = restore_fields,
+	repair_fields = repair_fields,
+	rewrite_fields = rewrite_fields,
 	refresh_shadows = refresh_shadows,
 	reconcile = reconcile,
 	supply_child = supply_child,

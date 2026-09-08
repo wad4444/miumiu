@@ -59,7 +59,7 @@ declare namespace miumiu {
 	/** Every foreign source the import understands; lapis is the only one. */
 	export type ForeignSource = LapisSource<any>;
 
-	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes, warned under 6 s (the DataStore write cooldown); `idle_interval` (default 60, never under `pull_interval`) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off. `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `default_scope` marks the one collection that takes every saveable and kind without a `field_of` pair when a world declares several. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). Config is validated at link time: a bad value does not throw at `meta`, it lands as `pair(data_error, collection)` on every entity that links. */
+	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes, warned under 6 s (the DataStore write cooldown); `idle_interval` (default 60, never under `pull_interval`) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off. `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). Config is validated at link time: a bad value does not throw at `meta`, it lands as `pair(data_error, collection)` on every entity that links. */
 	export interface CollectionConfig {
 		data_store_service?: Pick<DataStoreService, "GetDataStore">;
 		pull_interval?: number;
@@ -68,7 +68,6 @@ declare namespace miumiu {
 		retry_base?: number;
 		commit_store?: string;
 		commit_timeout?: number;
-		default_scope?: boolean;
 		user_ids?: (key: string) => number[];
 	}
 
@@ -84,7 +83,6 @@ declare namespace miumiu {
 		commit_timeout: number;
 		migrations: Migration<any>[];
 		foreign?: ForeignSource;
-		default_scope: boolean;
 		user_ids?: (key: string) => number[];
 	}
 
@@ -114,7 +112,7 @@ declare namespace miumiu {
 	/** `owned` children live in the record; `attached` ones outlive it and are supplied from it while claimed. */
 	export type ChildMode = "owned" | "attached";
 
-	/** `meta(kind_tag, miumiu.child, config)`: entities carrying `kind_tag` and `pair(via, parent)` are stored under `key` on the parent, with the saveables that are `field_of` the kind (nested kinds come along on their own). `via` must be marked `Exclusive`, and an entity is a child under one relation at a time. Owned children live and die with the record and get their id in `child_id`; attached ones outlive it, keep their state in the record and are named by the value of `id`. */
+	/** `meta(kind_tag, miumiu.child, config)`: entities carrying `kind_tag` and `pair(via, parent)` are stored under `key` on the parent, with the saveables that are `field_of` the kind and the kinds that are `field_of` it. The kind tag itself needs at least one `pair(field_of, collection or kind)` saying where it nests. `via` must be marked `Exclusive`, and an entity is a child under one relation at a time. Owned children live and die with the record and get their id in `child_id`; attached ones outlive it, keep their state in the record and are named by the value of `id`. */
 	export type ChildConfig =
 		| { via: Entity; key: string; mode: "owned" }
 		| { via: Entity; key: string; mode: "attached"; id: Entity<string | number> };
@@ -134,6 +132,8 @@ declare namespace miumiu {
 	export type PulledHook = Hook<[truth: Data], "pulled">;
 	/** Fires once when the session closes, with why: final write done, a newer server took the key, or `close` ran out of budget. */
 	export type ClosedHook = Hook<[closure: Closure], "closed">;
+	/** What `Session.get_status()` returns. */
+	export type SessionStatus = { kind: "open" } | { kind: "closing" } | { kind: "closed"; closure: Closure };
 	/** Fires right before the session writes, while its entities are still linked. Snapshots and lazy flushes have already run: a plain write from the callback joins this write, a lazy one the next. Never yield or `sync` in it. */
 	export type WritingHook = Hook<[], "writing">;
 	/** Fires once a batch's group is in every record it touched. Connecting after that fires at once. */
@@ -183,8 +183,8 @@ declare namespace miumiu {
 		get_stamps(): Readonly<Stamps>;
 		/** The collection's resolved config, shared with the session: read-only. */
 		get_config(): Readonly<ResolvedCollectionConfig>;
-		/** Why the session closed, once `is_open()` is false. */
-		get_closure(): Closure | undefined;
+		/** `open`, `closing` while the final write of an unlink runs, or `closed` with why. */
+		get_status(): SessionStatus;
 		/** False once the session closed for any reason. */
 		is_open(): boolean;
 		/** True while ops are journaled but not yet written, including while a write is in flight. */
@@ -228,7 +228,7 @@ declare namespace miumiu {
 	export const from_foreign: Entity<ForeignSource>;
 	/** `meta(id, miumiu.saveable, "key")`: the stored key of a component or tag. Never changes once shipped. */
 	export const saveable: Entity<string>;
-	/** `meta(id, pair(miumiu.field_of, target))` scopes a saveable or a child kind to a collection's root or to another kind. With one collection a saveable without any `field_of` pair lives on its root and on no kind, a kind without any nests under the root and every kind; with pairs either lives exactly where they point. Once a world declares several collections every saveable and kind needs a pair, unless one collection sets `default_scope`. */
+	/** `meta(id, pair(miumiu.field_of, target))` scopes a saveable or a child kind to a collection's root or to another kind. Every saveable and every kind needs at least one pair and lives exactly where its pairs point; one without any fails the schema build. */
 	export const field_of: Tag;
 	/** `meta(component, miumiu.guard, check)`; see `Guard`. */
 	export const guard: Entity<Guard>;

@@ -37,9 +37,9 @@ local errors = table.freeze({
 	saveable_key_invalid = function(id: unknown, key: string)
 		return prefixed(`saveable {id} stores under "{key}": a key cannot contain /`)
 	end,
-	field_of_invalid = function(id: unknown, target: unknown)
+	field_of_invalid = function(what: string, id: unknown, target: unknown)
 		return prefixed(
-			`saveable {id} is a field of {target}, which is neither a collection nor a child kind: pair(miumiu.field_of, x) takes a collection entity or a kind tag`
+			`{what} {id} is a field of {target}, which is neither a collection nor a child kind: pair(miumiu.field_of, x) takes a collection entity or a kind tag`
 		)
 	end,
 	duplicate_key = function(first: unknown, second: unknown, key: string)
@@ -47,7 +47,7 @@ local errors = table.freeze({
 	end,
 	schema_frozen = function(id: unknown)
 		return prefixed(
-			`saveable {id} changed after the schema was built: declare every saveable before the first step`
+			`{id} changed after the schema was built: declare every saveable, collection, kind and config before the first step, link or batch`
 		)
 	end,
 	not_a_collection = function(entity: unknown)
@@ -101,9 +101,9 @@ local errors = table.freeze({
 			`entity {entity} cannot link to {collection} while linked to {other}: both hold a child kind and would each delete the other's children; scope the kind to one collection with pair(miumiu.field_of, collection)`
 		)
 	end,
-	scope_required = function(id: unknown, collections: { string })
+	scope_required = function(unscoped: { string })
 		return prefixed(
-			`{id} has no field_of pair and this world declares several collections ({table.concat(collections, ", ")}): pair(miumiu.field_of, collection) picks where it lives`
+			`no field_of pair on {table.concat(unscoped, ", ")}: meta(id, pair(miumiu.field_of, collection or kind)) picks where each lives`
 		)
 	end,
 	batch_expired = function(id: string)
@@ -159,6 +159,11 @@ local errors = table.freeze({
 			`entity {entity} is already a child of kind {other} and cannot also be one of kind {tag}: an entity is a child under one relation at a time`
 		)
 	end,
+	child_id_taken = function(entity: unknown, tag: unknown, id: string, other: unknown)
+		return prefixed(
+			`child {entity} of kind {tag} cannot take the id "{id}": {other} already holds it under the same parent`
+		)
+	end,
 	child_kinds_ambiguous = function(entity: unknown, first: unknown, second: unknown)
 		return prefixed(`entity {entity} carries the kind tags {first} and {second} on one relation: keep one`)
 	end,
@@ -176,11 +181,6 @@ local errors = table.freeze({
 	end,
 	bad_user_ids = function(collection: unknown)
 		return prefixed(`collection {collection}: user_ids must be a function of the key returning a list of user ids`)
-	end,
-	scope_default_twice = function(first: unknown, second: unknown)
-		return prefixed(
-			`collections {first} and {second} both set default_scope; only one collection can take the unscoped saveables`
-		)
 	end,
 	link_key_invalid = function(entity: unknown, collection: unknown)
 		return prefixed(
@@ -255,6 +255,11 @@ local warnings = table.freeze({
 	child_unnamed_existing = function(entity: unknown, tag: unknown)
 		return prefixed(
 			`attached child {entity} of kind {tag} existed before the first step without an id and is not indexed: set its id component before the pair`
+		)
+	end,
+	child_id_taken_existing = function(entity: unknown, tag: unknown, id: string, other: unknown)
+		return prefixed(
+			`child {entity} of kind {tag} existed before the first step with the id "{id}" that {other} already holds under the same parent and is not indexed`
 		)
 	end,
 	child_indexing_failed = function(entity: unknown, err: unknown)

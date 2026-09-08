@@ -226,7 +226,7 @@ local function create_migration_context(
 			key = stored_key,
 			has_initial = false,
 			initial = nil,
-			scopes = { unscoped = false, targets = {} },
+			holders = {},
 		}, scratch.named, scratch.sink)
 		scratch.recording = false
 		world:set(entity, id, data[stored_key])

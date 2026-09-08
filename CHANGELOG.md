@@ -13,6 +13,21 @@ children that saw the group flip back with it; an entity unlinked or rejected me
 keeps no state. A batch over collections with different commit stores throws from
 `batch` itself. `README.md`, `DESIGN.md` and this file ship in both packages.
 
+Every saveable and every child kind now needs at least one `pair(miumiu.field_of,
+target)`; the default root and `config.default_scope` are gone, and a schema build
+with an unscoped id fails listing every one. A `batch` or `delta` before the first `step`
+installs the listeners itself, so its writes are captured and an unloaded entity throws
+as documented. `Session:get_closure()` is replaced by `get_status()`, which returns
+`{ kind = "open" }`, `{ kind = "closing" }` or `{ kind = "closed", closure }`.
+Snapshots and lazy flushes run before the game's `writing` hooks after a relink too. A
+second child with an id another child of the same kind already holds under the parent
+throws and takes the pair back instead of corrupting the index; a linked entity that
+also carries a kind tag holds its children through its link; a claim is supplied from
+the collection that holds the kind even when another link of the root is shallow; a
+wipe drops only the lazy marks of the wiped collection; a rollback whose restore made a
+listener throw still refreshes shadows and resupplies before rethrowing. `migrations`
+and `from_foreign` freeze with the schema.
+
 ## 0.1.0 (2026-09-07)
 
 First release candidate. Lockless sessions on jecs 0.11.

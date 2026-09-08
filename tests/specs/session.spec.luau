@@ -739,8 +739,10 @@ return function()
 			end).to.throw("newer server")
 			expect(loaded:is_open()).to.equal(false)
 			expect(closed).to.equal(true)
-			local closure = loaded:get_closure()
-			assert(closure and closure.kind == "refused")
+			local status = loaded:get_status()
+			assert(status.kind == "closed")
+			local closure = status.closure
+			assert(closure.kind == "refused")
 			expect((string.find(closure.message, "newer server", 1, true))).to.be.ok()
 		end)
 

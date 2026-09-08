@@ -37,6 +37,7 @@ jecs.meta(player_data, miumiu.config, { pull_interval = 15, idle_interval = 60 }
 
 local money = jecs.component() :: jecs.Entity<number>
 jecs.meta(money, miumiu.saveable, "money")
+jecs.meta(money, jecs.pair(miumiu.field_of, player_data))
 jecs.meta(money, money, 0)
 jecs.meta(money, miumiu.guard, function(value)
 	return type(value) == "number"
@@ -44,6 +45,7 @@ end)
 
 local tutorial_done = jecs.tag()
 jecs.meta(tutorial_done, miumiu.saveable, "tutorial")
+jecs.meta(tutorial_done, jecs.pair(miumiu.field_of, player_data))
 
 local world = jecs.world()
 ```
@@ -53,9 +55,12 @@ Ids come from `jecs.component()` / `jecs.tag()` and are described with `jecs.met
 again. Require miumiu before that too, its own ids are named the same way. Ids made with
 `world:component()` after the fact take `world:set(id, miumiu.saveable, "money")`
 instead; every miumiu meta (`config`, `migrations`, `from_foreign`, `snapshot`, ...) may
-be `world:set` the same way, any time before the first `step` or link. `miumiu.saveable`
-gives a component or tag its stored key. The component set on itself is its initial
-value. A guard rejects bad writes and skips bad stored values.
+be `world:set` the same way, and the tags (`lazy`, `pairs`, a `field_of` pair) `world:add`,
+any time before the first `step`, link or `batch`. `miumiu.saveable`
+gives a component or tag its stored key, `pair(miumiu.field_of, player_data)` puts it on
+that collection's record; a saveable without a `field_of` pair fails the schema build.
+The component set on itself is its initial value. A guard rejects bad writes and skips
+bad stored values.
 Everything is declared before the first `miumiu.step` (or `batch`, `delta`, `wipe`); the
 schema freezes there.
 
@@ -68,7 +73,6 @@ schema freezes there.
 | `retry_attempts`, `retry_base` | 5, 1 | storage retries and their base delay, doubling |
 | `commit_store`, `commit_timeout` | `"miumiu_commits"`, 300 | the store and window multi-key batches commit through |
 | `data_store_service` | `DataStoreService` | swap in a mock for tests |
-| `default_scope` | `false` | with several collections, the one that takes unscoped saveables |
 | `user_ids` | none | `function(key)` returning the user ids every write and wipe of that key carries |
 
 Config is checked when a key links, not at `meta`: a bad value lands as
@@ -159,7 +163,8 @@ instead (Receipts).
 
 The session behind a key is `miumiu.get_session(world, player_data, key)`: `get_key()`,
 `get_truth()` and `get_stamps()` (the stored form, read-only), `get_config()`,
-`is_open()`, `is_dirty()`, `sync()`, `get_closure()` once closed, and
+`is_open()`, `is_dirty()`, `sync()`, `get_status()` (`open`, `closing`, or `closed` with
+the closure), and
 `hook(miumiu.hooks.pulled | closed | writing, fn)`. `is_dirty()` stays true while a
 write is in flight. `miumiu.is_session(value)` and `miumiu.is_batch(value)` tell a
 session or a batch handle from anything else.
@@ -228,6 +233,7 @@ jecs.meta(owner_link, jecs.Exclusive)
 
 local tool = jecs.tag()
 jecs.meta(tool, miumiu.child, { via = owner_link, key = "inventory", mode = "owned" })
+jecs.meta(tool, jecs.pair(miumiu.field_of, player_data))
 
 local part_id = jecs.component() :: jecs.Entity<string>
 jecs.meta(part_id, miumiu.saveable, "part_id")
@@ -238,12 +244,12 @@ The kind tag is the persistence marker: give it only to entities that belong in 
 record, and keep a transient variant (a ghost golem, a preview part) on a tag of its
 own. Any entity with `tool` and `pair(owner_link, player)` is stored under `inventory`, keyed
 by an id the library mints into `miumiu.child_id`, with the saveables that are
-`field_of` the kind. A saveable with no `field_of` pair lives on the collection's root
-(with several collections, the one marked `default_scope`) and on no kind; with pairs it
-lives exactly where they point, so `money` on both the player and its tools is
-`pair(field_of, player_data)` plus `pair(field_of, tool)`. Kinds scope the same way:
-`jecs.meta(part, jecs.pair(miumiu.field_of, tool))` nests parts under tools only, and a
-kind with no pair nests under that root and every kind. The relation must be
+`field_of` the kind. A saveable lives exactly where its `field_of` pairs point, so
+`money` on both the player and its tools is `pair(field_of, player_data)` plus
+`pair(field_of, tool)`. Kinds scope the same way: `jecs.meta(tool,
+jecs.pair(miumiu.field_of, player_data))` puts tools on the player's record and
+`jecs.meta(part, jecs.pair(miumiu.field_of, tool))` nests parts under tools only. A
+saveable or kind with no pair fails the schema build. The relation must be
 `Exclusive`, and an entity is a child under one relation at a time. Write to it like any
 entity; it lands in the player's record. Remove the pair or delete the entity and it
 leaves the record. Loading spawns the entities back, with initials for anything the
@@ -257,8 +263,7 @@ the entity back to what it carried at claim time on the next step, so the next o
 starts from theirs. Claiming records that baseline for the whole attached subtree, so a
 shelf attached to a plot resets with the plot. Plots, zones and shelves can share one
 kind tag: the `id` value (`"plot"`, `"zone_3"`) tells them apart in the record, and
-`field_of` on the kind decides what they store. With two or more collections in one
-world every saveable and kind needs a `field_of` pair.
+the saveables that are `field_of` the kind decide what they store.
 
 Values that only make sense at write time are snapshots:
 
@@ -298,6 +303,7 @@ world like every other declaration:
 ```luau
 local has_buff = jecs.tag()
 jecs.meta(has_buff, miumiu.saveable, "buffs")
+jecs.meta(has_buff, jecs.pair(miumiu.field_of, player_data))
 jecs.meta(has_buff, miumiu.pairs)
 
 local fire = jecs.tag()
@@ -324,6 +330,7 @@ A component relation stores the pair's value. A timed buff:
 ```luau
 local buff = jecs.component() :: jecs.Entity<{ multiplier: number, expires_at: number }>
 jecs.meta(buff, miumiu.saveable, "buffs")
+jecs.meta(buff, jecs.pair(miumiu.field_of, player_data))
 jecs.meta(buff, miumiu.pairs, { targets = { oil_buff, cell_buff } })
 ```
 
@@ -386,6 +393,7 @@ per write cycle.
 
 ```luau
 jecs.meta(battery, miumiu.saveable, "battery")
+jecs.meta(battery, jecs.pair(miumiu.field_of, player_data))
 jecs.meta(battery, miumiu.lazy)
 ```
 
@@ -641,6 +649,7 @@ meta(player_data, miumiu.collection, "PlayerData");
 
 const money = component<number>();
 meta(money, miumiu.saveable, "money");
+meta(money, pair(miumiu.field_of, player_data));
 meta(money, money, 0);
 ```
 

@@ -284,7 +284,7 @@ return function()
 
 		it("warns and skips a stored value a migration cannot deserialize", function()
 			local t = setup({ pull_interval = never })
-			local codes = utils.declare_saveable(t.world, "component", "codes")
+			local codes = utils.declare_saveable(t.world, "component", "codes", { t.player_data })
 			t.world:set(codes, miumiu.guard, function(value)
 				return type(value) == "table"
 			end)

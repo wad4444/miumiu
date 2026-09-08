@@ -2,7 +2,6 @@ local types = require("./types")
 local callbacks = require("./callbacks")
 local capture = require("./capture")
 local children = require("./children")
-local codec = require("./codec")
 local commit = require("./commit")
 local contexts = require("./contexts")
 local handle = require("./handle")
@@ -10,6 +9,7 @@ local hooks = require("./hooks")
 local ids = require("./ids")
 local jecs = require("./dependencies/jecs")
 local link = require("./link")
+local listeners = require("./listeners")
 local logging = require("./logging")
 local messages = require("./messages")
 local ops = require("./ops")
@@ -57,44 +57,6 @@ local function is_carried(undo: Undo): boolean
 	return undo.carried
 end
 
-local function restore_entry(context: Context, entity: Entity, entry: SchemaEntry, stored: any)
-	local world = context.world
-	if entry.kind == "tag" then
-		if stored == true then
-			world:add(entity, entry.id)
-		else
-			world:remove(entity, entry.id)
-		end
-	elseif entry.kind == "relation" then
-		relations.apply(world, entry, entity, context.schema.named, stored or {}, context.world_state.warned)
-	elseif stored == nil then
-		world:remove(entity, entry.id)
-	else
-		world:set(entity, entry.id, codec.runtime_form(entry, stored))
-	end
-end
-
-local function repair_child(context: Context, entity: Entity, kind: ChildKind, previous: Data, value: Data)
-	local current = children.pack_fields_of(context, entity, kind)
-	local entries: { SchemaEntry } = kind.entries
-	for _, entry in entries do
-		local key = entry.key
-		if ops.deep_equal(current[key], value[key]) and not ops.deep_equal(value[key], previous[key]) then
-			restore_entry(context, entity, entry, previous[key])
-		end
-	end
-end
-
-local function rewrite_child(context: Context, entity: Entity, kind: ChildKind, previous: Data)
-	local current = children.pack_fields_of(context, entity, kind)
-	local entries: { SchemaEntry } = kind.entries
-	for _, entry in entries do
-		if not ops.deep_equal(current[entry.key], previous[entry.key]) then
-			restore_entry(context, entity, entry, previous[entry.key])
-		end
-	end
-end
-
 local function undo_one(context: Context, undo: Undo, carried: boolean)
 	local world = context.world
 	if undo.kind == "pair" then
@@ -130,7 +92,7 @@ local function undo_one(context: Context, undo: Undo, carried: boolean)
 	end
 	if undo.kind == "child" then
 		if carried then
-			rewrite_child(context, undo.entity, undo.child, undo.previous)
+			reconcile.rewrite_fields(context, undo.entity, undo.child, undo.previous)
 		else
 			reconcile.restore_fields(context, undo.entity, undo.child, undo.previous)
 		end
@@ -188,9 +150,8 @@ local function collect_keys(touched: Touched, undo: Undo)
 	end
 end
 
-local function undo_all(context: Context, captured: Capture): Touched
+local function undo_all(context: Context, captured: Capture, touched: Touched)
 	local world, world_state = context.world, context.world_state
-	local touched: Touched = {}
 	local first_error: any = nil
 	for index = #captured.undo, 1, -1 do
 		local undo = captured.undo[index]
@@ -199,7 +160,8 @@ local function undo_all(context: Context, captured: Capture): Touched
 		end
 		if not still_ours(context, undo) then
 			if undo.kind == "child" then
-				local ok, err = pcall(repair_child, context, undo.entity, undo.child, undo.previous, undo.value)
+				local ok, err =
+					pcall(reconcile.repair_fields, context, undo.entity, undo.child, undo.previous, undo.value)
 				if not ok and first_error == nil then
 					first_error = err
 				end
@@ -222,7 +184,6 @@ local function undo_all(context: Context, captured: Capture): Touched
 	if first_error ~= nil then
 		error(first_error, 0)
 	end
-	return touched
 end
 
 local function inherit_field(mine_previous: Data, mine_value: Data, other_previous: Data, key: string)
@@ -305,7 +266,9 @@ local function rollback(context: Context, captured: Capture)
 		return
 	end
 	disinherit(context, captured)
-	for entity, keys in undo_all(context, captured) do
+	local touched: Touched = {}
+	local ok, err = pcall(undo_all, context, captured, touched)
+	for entity, keys in touched do
 		local existing = world_state.entities[entity]
 		if existing then
 			existing.shadow = state.read_values(context, entity, context.schema.entries)
@@ -317,6 +280,9 @@ local function rollback(context: Context, captured: Capture)
 	end
 	for _, entry in open_entries(captured.entries) do
 		link.resupply(context, entry.session)
+	end
+	if not ok then
+		error(err, 0)
 	end
 end
 
@@ -375,9 +341,9 @@ local function fail(context: Context, captured: Capture, id: string, err: unknow
 	abandon_all(captured.entries, id)
 	try_rollback(context, captured, id)
 	forget_capture(context, captured)
-	local listeners = context.world_state.hooks[hooks.refused]
+	local heard = context.world_state.hooks[hooks.refused]
 	local message = tostring(err)
-	captured.batch:refuse(id, keys_of(captured.entries), message, listeners ~= nil and #listeners > 0)
+	captured.batch:refuse(id, keys_of(captured.entries), message, heard ~= nil and #heard > 0)
 	callbacks.fire(context.world_state.hooks, hooks.refused, captured.batch, captured.batch, message)
 end
 
@@ -465,6 +431,7 @@ local function run(world: World, fn: () -> any, is_delta: boolean): Batch
 	end
 
 	local context = contexts.create_context(world)
+	listeners.install(context)
 	local captured: Capture = {
 		id = util.create_guid(),
 		delta = is_delta,

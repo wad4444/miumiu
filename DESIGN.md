@@ -12,7 +12,7 @@ any time; everything converges.
 |---|---|---|
 | collection | `jecs.meta(c, miumiu.collection, "store name")` | one named DataStore; `meta(c, miumiu.config, { ... })` for the rest |
 | saveable | `jecs.meta(id, miumiu.saveable, "key")` | a component or tag stored under `key`; the key is the stored identity and never follows a rename |
-| field | `jecs.meta(id, pair(miumiu.field_of, c or kind))` | where a saveable lives; none means the default root (the only collection, or the one marked `default_scope`) |
+| field | `jecs.meta(id, pair(miumiu.field_of, c or kind))` | where a saveable lives; every saveable and kind needs at least one |
 | linked entity | `world:set(e, pair(miumiu.data_link, c), key)` | one stored key; pulls while linked, whether it is "your" player, another server's, or nobody's |
 
 There is one kind of link, plus `pair(miumiu.data_shallow, c)` on the entity to load
@@ -51,6 +51,8 @@ jecs.meta(tool, miumiu.child, { via = owner_link, key = "inventory", mode = "own
 jecs.meta(part, miumiu.child, { via = part_link, key = "parts", mode = "owned" })
 jecs.meta(plot, miumiu.child, { via = owner_link, key = "containers", mode = "attached", id = plot_kind })
 
+jecs.meta(tool, jecs.pair(miumiu.field_of, player_data))
+jecs.meta(plot, jecs.pair(miumiu.field_of, player_data))
 jecs.meta(durability, jecs.pair(miumiu.field_of, tool))
 jecs.meta(part_id, jecs.pair(miumiu.field_of, tool))
 jecs.meta(part_id, jecs.pair(miumiu.field_of, part))
@@ -64,16 +66,14 @@ followed by an addition. An entity is a child under one relation at a time, and 
 one kind tag per relation; both are errors at the `world:add`. Its stored form is the
 saveables that are `field_of` the kind plus its own children, so kinds nest to any depth
 and a tool does not carry the player's forty fields. `field_of` is a relation from a
-saveable to a collection entity or a kind tag: a saveable with no `field_of` pair is a
-field of the default root (the only collection, or the one marked `default_scope`) and
-of no kind; with pairs it is a field of exactly those targets, and a target that is
-neither fails the schema build. Kinds use the same relation: a kind with no `field_of`
-pair nests under the default root and every kind, one with pairs nests exactly there.
-Initials, guards, serdes and snapshots follow the scope. Once a world declares two or
-more collections every saveable and every kind needs a `field_of` pair, because a
-saveable on every root would put the player's initials on a server record; the schema
-build refuses an unscoped one unless exactly one collection sets `default_scope` in its
-config, which then is the default root. Entities on the relation without a
+saveable to a collection entity or a kind tag: a saveable is a field of exactly the
+targets its pairs name, a target that is neither fails the schema build, and so does a
+saveable with no pair at all. Kinds use the same relation and the same rule: a kind
+nests exactly under the roots and kinds its pairs name. Initials, guards, serdes and
+snapshots follow the scope. There is no default root: a saveable on every root would
+put the player's initials on a server record, and a kind under every kind would nest
+where nobody asked, so the build lists every unscoped id and stops. A saveable may name
+several collections; *Lifecycle* says what a write does then. Entities on the relation without a
 kind tag are not saved. A write of a saveable on an entity that does not hold it (a
 kind-only field on the root, a root-only field on a child, a field of another
 collection) journals nothing, inside `batch` as well, and warns once per saveable and
@@ -95,8 +95,13 @@ Two modes, decided by who owns the entity:
 
 - `owned`: the entity belongs to the record. The library mints its id into
   `miumiu.child_id` on first capture (children that exist before the first `step` get
-  theirs then, whenever their parent carries a kind tag that holds the kind or no kind
-  tag at all; a parent's own pair may come later). Removing the pair or deleting the
+  theirs then, whenever their parent holds the kind: a linked parent through a linked
+  collection the kind is a field of, an unlinked one through its own kind tag or, with
+  no kind tag, always; a parent's own pair may come later). A linked parent is a root
+  for its children even when it carries a kind tag itself, matching where a write on it
+  goes. Two children of one kind under one parent cannot share an id: the second claim
+  throws and takes the pair back, a second existing one is skipped with a warning.
+  Removing the pair or deleting the
   entity drops it from the record; loading spawns it; a remote drop deletes it, and its
   owned descendants with it. Re-parenting under a different owner is a drop on one
   record and a put on the other (the Exclusive
@@ -279,7 +284,7 @@ loaded fresh with one read.
 ```
 
 Captured by `world:added` / `world:changed` / `world:removed` listeners on every saveable
-id, installed per world by the first `step`. A write on an entity that is not `data_loaded` is
+id, installed per world by the first `step`, `batch` or `delta`. A write on an entity that is not `data_loaded` is
 not journaled. Reconciliation writes (below) are not journaled either.
 
 - Outside `delta`: components map `world:set` → `set`, `world:remove` → `remove`; tags map
@@ -585,7 +590,7 @@ the world-level listener: every refusal on the world reaches it after the batch'
 hooks, and one listener there silences the unhooked-refusal warning.
 
 `Session` is the public surface of one key: `get_key`, `get_truth`, `get_stamps`,
-`get_config`, `get_closure`, `is_open`, `is_dirty`, `sync`,
+`get_config`, `get_status`, `is_open`, `is_dirty`, `sync`,
 `hook(pulled | closed | writing)`; README lists the same nine. `sync` is "pull now":
 rebase, write, adopt. It returns only once every change journaled before the call is in
 the record, and throws otherwise
@@ -605,12 +610,14 @@ landed, take the session before unlinking and hook `closed`, which receives the 
 unwritten changes. A join is: link, then gate every system that writes on `data_loaded`
 (writes before it are dropped, initials are already on the entity). A leave is: unlink,
 `step`, delete; deleting first still lands the journaled writes but loses snapshots and
-pending lazy values. `get_closure` returns the same once closed.
+pending lazy values. `get_status` is `{ kind = "open" }`, `{ kind = "closing" }` while
+the final write runs, or `{ kind = "closed", closure }` with the same closure.
 
 An entity linked to several collections journals a saveable write into each collection
-that holds the saveable (`field_of`); an unscoped saveable is held by all of them, and a
-remote change one collection supplies is not journaled into the other, so scope shared
-saveables to one collection. `world:clear(entity)` removes
+that holds the saveable (`field_of`), so a saveable that is a field of both roots lands
+in both records; a remote change one collection supplies is not journaled into the
+other, so scope a saveable to one collection unless both records may drift apart.
+`world:clear(entity)` removes
 every component with the ordinary `removed` hook, so unlike `world:delete` it journals a
 `remove` per saveable and wipes the record.
 
@@ -649,7 +656,9 @@ Rules:
   the entity is still marked `data_loaded`, the shadow is refreshed, and `step` rethrows the
   first error afterwards.
 - The schema (every id carrying `saveable`) is built once per world on first use, then
-  frozen. Adding, changing or removing `saveable` after that throws.
+  frozen. Adding, changing or removing `saveable`, `collection`, `config`, `migrations`,
+  `from_foreign`, `field_of`, `guard`, `serdes`, `snapshot`, `lazy`, `pairs` or `child`
+  after that throws.
 - A failed write never loses ops. A failed load never writes.
 - The module loads on the client. Only `datastore.luau` calls DataStoreService, and only
   from inside functions.
@@ -690,11 +699,9 @@ Rules:
 | `retry_attempts`, `retry_base` | 5, 1 |
 | `commit_store` | `"miumiu_commits"` |
 | `commit_timeout` | 300 |
-| `default_scope` | `false` |
 | `user_ids` | none |
 
-`default_scope` marks the collection that takes unscoped saveables and kinds when a
-world declares several; two collections setting it fail the schema build. `user_ids`,
+`user_ids`,
 a function of the key, returns the user ids every `UpdateAsync` and wipe of that key
 carries (the DataStore GDPR association); it must be a function or absent.
 `pull_interval` and `commit_timeout` must be positive, `idle_interval` at least

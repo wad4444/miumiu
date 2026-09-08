@@ -114,10 +114,7 @@ export type SyncKind = "guard" | "serialize" | "deserialize" | "migration" | "sn
 
 export type Snapshot = (world: World, entity: Entity) -> any
 
-export type Scopes = {
-	unscoped: boolean,
-	targets: { [Entity]: boolean },
-}
+export type Holders = { [Entity]: boolean }
 
 export type ComponentEntry = {
 	kind: "component",
@@ -129,7 +126,7 @@ export type ComponentEntry = {
 	serdes: Serdes?,
 	snapshot: Snapshot?,
 	lazy: boolean,
-	scopes: Scopes,
+	holders: Holders,
 }
 
 export type TagEntry = {
@@ -137,7 +134,7 @@ export type TagEntry = {
 	id: Entity,
 	key: string,
 	has_initial: boolean,
-	scopes: Scopes,
+	holders: Holders,
 }
 
 export type PairsConfig = {
@@ -151,7 +148,7 @@ export type RelationEntry = {
 	has_initial: false,
 	tagged: boolean,
 	targets: { [Entity]: boolean }?,
-	scopes: Scopes,
+	holders: Holders,
 }
 
 export type SchemaEntry = ComponentEntry | TagEntry | RelationEntry
@@ -177,7 +174,7 @@ export type ChildKind =
 		tag: Entity,
 		via: Entity,
 		key: string,
-		scopes: Scopes,
+		holders: Holders,
 		entries: { SchemaEntry },
 		snapshots: { ComponentEntry },
 		kinds: { ChildKind },
@@ -187,7 +184,7 @@ export type ChildKind =
 		tag: Entity,
 		via: Entity,
 		key: string,
-		scopes: Scopes,
+		holders: Holders,
 		entries: { SchemaEntry },
 		snapshots: { ComponentEntry },
 		kinds: { ChildKind },
@@ -201,7 +198,6 @@ export type Schema = {
 	kinds: { ChildKind },
 	kinds_by_relation: { [Entity]: { ChildKind } },
 	roots: { [Entity]: Fields },
-	default_root: Entity?,
 	named: Named,
 }
 
@@ -327,7 +323,6 @@ export type CollectionConfig = {
 	retry_base: number?,
 	commit_store: string?,
 	commit_timeout: number?,
-	default_scope: boolean?,
 	user_ids: ((key: string) -> { number })?,
 }
 
@@ -342,7 +337,6 @@ export type ResolvedCollectionConfig = {
 	commit_timeout: number,
 	migrations: { Migration },
 	foreign: ForeignSource?,
-	default_scope: boolean,
 	user_ids: ((key: string) -> { number })?,
 }
 
@@ -358,17 +352,19 @@ export type Mutex = {
 	with: (Mutex, fn: () -> ()) -> (),
 }
 
+export type MutexPhase = { kind: "free" } | { kind: "locked" } | { kind: "closed", reason: string }
+
 export type MutexInternal = Mutex & {
 	symbol: Symbol,
 	internal_values: {
-		locked: boolean,
-		closed: string?,
+		phase: MutexPhase,
 	},
 	internal_waiters: { thread },
 }
 
 export type RefusedClosure = { kind: "refused", message: string }
 export type Closure = { kind: "clean" } | RefusedClosure | { kind: "abandoned", message: string }
+export type SessionStatus = { kind: "open" } | { kind: "closing" } | { kind: "closed", closure: Closure }
 
 export type LandedHook = Symbol<"landed">
 export type RefusedHook = Symbol<"refused">
@@ -418,7 +414,7 @@ export type Session = {
 	get_truth: (Session) -> Data,
 	get_stamps: (Session) -> Stamps,
 	get_config: (Session) -> ResolvedCollectionConfig,
-	get_closure: (Session) -> Closure?,
+	get_status: (Session) -> SessionStatus,
 	is_open: (Session) -> boolean,
 	is_dirty: (Session) -> boolean,
 	sync: (Session) -> boolean,
@@ -430,29 +426,22 @@ export type Merge =
 	| { kind: "unchanged", groups: { Group }, resolution: Resolution }
 	| { kind: "merged", record: StoredRecord, groups: { Group }, resolution: Resolution }
 
-export type MergedPull = {
-	kind: "merged",
+export type Pull = {
+	merge: Merge,
 	record: StoredRecord?,
-	groups: { Group },
-	resolution: Resolution,
 	written: boolean,
 }
-
-export type PullResult =
-	{ kind: "newer", message: string, groups: { Group }, resolution: Resolution, written: boolean }
-	| MergedPull
 
 export type SessionInternal = Session & {
 	symbol: Symbol,
 	internal_values: {
 		key: string,
-		open: boolean,
-		closing: boolean,
-		closure: Closure?,
+		status: SessionStatus,
 		version: number,
 		written: string?,
 		pulls: number,
 		touched: boolean,
+		prepare: (() -> ())?,
 	},
 	internal_collection: CollectionState,
 	internal_base: State,
@@ -469,6 +458,7 @@ export type SessionInternal = Session & {
 	get_pulls: (SessionInternal) -> number,
 	wipe: (SessionInternal) -> (),
 	reopen: (SessionInternal) -> (),
+	prepare_with: (SessionInternal, fn: (() -> ())?) -> (),
 	journal: (SessionInternal, group: Group) -> (),
 	touch: (SessionInternal) -> (),
 	abandon: (SessionInternal, id: string) -> (),
@@ -549,10 +539,7 @@ export type Capture = {
 	batch: BatchInternal,
 }
 
-export type Applying = {
-	entity: Entity,
-	id: Entity<any>?,
-}
+export type Applying = { kind: "entity", entity: Entity } | { kind: "field", entity: Entity, id: Entity<any> }
 
 export type EntityState = {
 	shadow: Data,

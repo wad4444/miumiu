@@ -28,16 +28,17 @@ return function()
 
 	local function declare(t: Fixture): Relations
 		local world = t.world
-		local relations = utils.declare_relations(world)
+		local relations = utils.declare_relations(world, {})
 		local has_buff, fire, ice = relations.has_buff, relations.fire, relations.ice
 		local stack = world:component()
 		world:set(stack, jecs.Name, "stack")
 		world:set(stack, miumiu.saveable, "stacks")
 		world:add(stack, miumiu.pairs)
-		local kinds = utils.declare_kinds(world)
+		local kinds = utils.declare_kinds(world, t.player_data)
 		local owns, item, holds, plot, plot_kind =
 			kinds.owns, kinds.item, kinds.holds, kinds.container, kinds.container_kind
 		utils.scope(world, { has_buff }, { item, plot, t.player_data })
+		utils.scope(world, { stack }, { t.player_data })
 		utils.scope(world, { t.items }, { item })
 		return {
 			has_buff = has_buff,
@@ -289,7 +290,7 @@ return function()
 			}
 			for _, extra in extras do
 				local bare = jecs.world()
-				local relation = utils.declare_saveable(bare, "component", "buffs")
+				local relation = utils.declare_saveable(bare, "component", "buffs", {})
 				bare:add(relation, miumiu.pairs)
 				if extra.value == nil then
 					bare:add(relation, extra.id)
@@ -353,7 +354,7 @@ return function()
 	end)
 
 	describe("regressions", function()
-		it("keeps pairs to two targets that share a name and warn once per name", function()
+		it("keeps pairs to two targets that share a name and warns once per name", function()
 			local t, r = setup()
 			local a = t.world:entity()
 			t.world:set(a, jecs.Name, "twin")
@@ -420,7 +421,7 @@ return function()
 			expect(schema.get(t.world).named["miumiu.legacy.luck"]).to.equal(nil)
 		end)
 
-		it("stores only the targets a pairs config lists and reject a bad list", function()
+		it("stores only the targets a pairs config lists and rejects a bad list", function()
 			local t = utils.create_fixture({ pull_interval = never })
 			local r = declare(t)
 			t.world:set(r.has_buff, miumiu.pairs, { targets = { r.fire } })
@@ -444,7 +445,7 @@ return function()
 			expect(t.world:has(player, jecs.pair(r.has_buff, r.ice))).to.equal(true)
 			for _, config in { { targets = 5 }, { targets = { "fire" } } } do
 				local bare = jecs.world()
-				local relation = utils.declare_saveable(bare, "tag", "buffs")
+				local relation = utils.declare_saveable(bare, "tag", "buffs", {})
 				bare:set(relation, miumiu.pairs, config)
 				expect(function()
 					schema.create_schema(bare)

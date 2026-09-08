@@ -45,7 +45,9 @@ end
 
 local function with_applying(world_state: WorldState, entity: Entity, id: Entity<any>?, fn: () -> ())
 	local previous = world_state.applying
-	world_state.applying = { entity = entity, id = id }
+	world_state.applying = if id == nil
+		then { kind = "entity", entity = entity }
+		else { kind = "field", entity = entity, id = id }
 	local ok, err = pcall(fn)
 	world_state.applying = previous
 	if not ok then
@@ -55,7 +57,10 @@ end
 
 local function is_applying(world_state: WorldState, entity: Entity, id: Entity<any>): boolean
 	local applying = world_state.applying
-	return applying ~= nil and applying.entity == entity and (applying.id == nil or applying.id == id)
+	if applying == nil or applying.entity ~= entity then
+		return false
+	end
+	return applying.kind == "entity" or applying.id == id
 end
 
 local function entity_state(world_state: WorldState, entity: Entity): EntityState

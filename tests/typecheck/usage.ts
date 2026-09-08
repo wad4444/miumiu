@@ -13,7 +13,6 @@ import miumiu, {
 const config: CollectionConfig = {
 	pull_interval: 15,
 	idle_interval: 60,
-	default_scope: true,
 	user_ids: (key) => {
 		const id = tonumber(key);
 		return id === undefined ? [] : [id];
@@ -75,8 +74,10 @@ meta(money, miumiu.guard, is_number);
 
 export const processed_receipts = component<Map<string, number>>();
 meta(processed_receipts, miumiu.saveable, "processed_receipts");
+meta(processed_receipts, pair(miumiu.field_of, player_data));
 export const redeemed_codes = component<Set<string>>();
 meta(redeemed_codes, miumiu.saveable, "redeemed_codes");
+meta(redeemed_codes, pair(miumiu.field_of, player_data));
 const codes_serdes: miumiu.Serdes<Set<string>, string[]> = {
 	serialize: (codes) => [...codes],
 	deserialize: (stored) => new Set(stored),
@@ -99,6 +100,7 @@ meta(money, pair(miumiu.field_of, player_data));
 meta(money, pair(miumiu.field_of, tool));
 meta(last_seen, pair(miumiu.field_of, tool));
 meta(tool, miumiu.child, tool_config);
+meta(tool, pair(miumiu.field_of, player_data));
 export const battery = component<number>();
 meta(battery, miumiu.saveable, "battery");
 meta(battery, miumiu.lazy);
@@ -106,10 +108,12 @@ meta(battery, pair(miumiu.field_of, tool));
 export const plot_kind = component<string>();
 export const plot = tag();
 meta(plot, miumiu.child, { via: owner_link, key: "containers", mode: "attached", id: plot_kind });
+meta(plot, pair(miumiu.field_of, player_data));
 meta(tutorial_finished, pair(miumiu.field_of, plot));
 export const has_buff = tag();
 meta(has_buff, miumiu.saveable, "buffs");
 meta(has_buff, miumiu.pairs);
+meta(has_buff, pair(miumiu.field_of, player_data));
 export const fire = tag();
 meta(fire, Name, "fire");
 export const ice = tag();
@@ -121,6 +125,7 @@ interface Buff {
 export const buff = component<Buff>();
 meta(buff, miumiu.saveable, "timed_buffs");
 meta(buff, miumiu.pairs, { targets: [fire] });
+meta(buff, pair(miumiu.field_of, player_data));
 export const container_link = tag();
 meta(container_link, Exclusive);
 export const zone_index = component<number>();
@@ -232,6 +237,7 @@ export function on_failure(world: World, kick: (entity: Entity, message: string)
 export const late_world = create_world();
 export const late_saveable = late_world.component<number>();
 late_world.set(late_saveable, miumiu.saveable, "late");
+late_world.add(late_saveable, pair(miumiu.field_of, player_data));
 function helper(world: World, entity: Entity): number | undefined {
 	return world.get(entity, late_saveable);
 }
@@ -250,8 +256,8 @@ export function watch(value: unknown) {
 	const truth: miumiu.Data = session.get_truth();
 	const stamps: miumiu.Stamps = session.get_stamps();
 	const resolved: miumiu.ResolvedCollectionConfig = session.get_config();
-	const closure: miumiu.Closure | undefined = session.get_closure();
-	if (closure?.kind === "abandoned") print(closure.message);
+	const status: miumiu.SessionStatus = session.get_status();
+	if (status.kind === "closed" && status.closure.kind === "abandoned") print(status.closure.message);
 	const record: miumiu.StoredRecord = { data: truth, stamps, version: 1 };
 	const pending: miumiu.Pending = record.pending ?? {};
 	const op: miumiu.Op | undefined = pending[session.get_key()]?.ops[0];

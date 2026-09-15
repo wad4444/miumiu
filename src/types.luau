@@ -390,13 +390,17 @@ export type BatchInternal = Batch & {
 		outcome: Outcome,
 		result: any,
 		awaited: boolean,
+		flush: (() -> ())?,
 	},
 	internal_hooks: CallbackRegistry,
 	internal_waiters: { thread },
 	hold: (BatchInternal, result: any) -> (),
 	land: (BatchInternal) -> (),
 	refuse: (BatchInternal, id: string, keys: { string }, message: string, heard: boolean) -> (),
+	flush_with: (BatchInternal, flush: () -> ()) -> (),
 }
+
+export type Watcher = (outcome: SettledOutcome) -> ()
 
 export type PulledHook = Symbol<"pulled">
 export type ClosedHook = Symbol<"closed">
@@ -451,6 +455,8 @@ export type SessionInternal = Session & {
 	internal_mutex: Mutex,
 	internal_unwritten: { Group },
 	internal_awaiting: { Group },
+	internal_watchers: { [string]: Watcher },
+	internal_landed: { string },
 	internal_cache: State?,
 	internal_before_last: State?,
 
@@ -460,6 +466,7 @@ export type SessionInternal = Session & {
 	reopen: (SessionInternal) -> (),
 	prepare_with: (SessionInternal, fn: (() -> ())?) -> (),
 	journal: (SessionInternal, group: Group) -> (),
+	watch: (SessionInternal, id: string, watcher: Watcher) -> (),
 	touch: (SessionInternal) -> (),
 	abandon: (SessionInternal, id: string) -> (),
 	has_landed: (SessionInternal, id: string) -> boolean,
@@ -533,6 +540,7 @@ export type CaptureEntry = {
 export type Capture = {
 	id: string,
 	delta: boolean,
+	flushing: boolean,
 	undo: { Undo },
 	entries: { CaptureEntry },
 	children: { [Entity]: ChildUndo },

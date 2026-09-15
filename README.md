@@ -172,7 +172,9 @@ session or a batch handle from anything else.
 Hooks run on the library's threads: `pulled` on the pull thread, where the entities are
 updated only on the next `step`, so read the truth it hands you rather than the world;
 `writing` right before the write; `closed` while the session still holds its lock;
-`landed` and `refused` on the commit thread between frames. Never yield in `writing`,
+`landed` on the thread that wrote the group (the pull loop, a `sync`, an `await`) and
+`refused` on the thread that refused it, a multi-key batch's on its commit thread
+between frames. Never yield in `writing`,
 `closed`, `landed` or `refused`, and never `sync` from `writing`; `pulled` is the one
 hook that may `sync` again. A write made in `refused` is an ordinary journaled write.
 
@@ -190,8 +192,9 @@ end)
 ```
 
 `batch` and `delta` run the function now, journal the group and return at once, so they
-are safe inside a system. The commit runs in the background; the returned handle reports
-it:
+are safe inside a system. On one key the group rides the session's next write like any
+plain write, and `await` writes it now; across keys it commits in the background. The
+returned handle reports it:
 
 ```luau
 local batch = miumiu.batch(world, function()
@@ -209,7 +212,8 @@ it in the same frame. `batch:await()` yields until the group is in every record 
 returns the outcome, `{ kind = "landed" }` or `{ kind = "refused", message = ... }`,
 never throwing. The handle also has `get_outcome()` (the same record, `pending` until
 then), `is_settled()` and `get_result()`, what the function returned, there as soon as
-`batch` returns. Hooks and the rollback run on the commit thread, between frames. After
+`batch` returns. Hooks and the rollback run on the thread that settled the batch: the
+awaiting thread, the pull loop, or a multi-key batch's commit thread between frames. After
 the rollback every entity linked to the batch's keys is supplied again from the record,
 so siblings, children and attached trees that saw the group flip back too. Your jecs
 listeners fire for every one of those writes, as for any write; only the journal
@@ -465,8 +469,8 @@ from both entities: they share one session and see each other's writes on the ne
 
 ## Receipts
 
-`batch(...):await()` returns `landed` only once everything the batch wrote is in the
-record, so it is the durability point. Write the receipt and grant the reward in one
+`batch(...):await()` writes now and returns `landed` only once everything the batch wrote
+is in the record, so it is the durability point. Write the receipt and grant the reward in one
 batch: a crash between the two cannot leave a receipt marked processed with nothing
 granted.
 
@@ -577,8 +581,8 @@ alive when the first miumiu server starts. Keep the lapis migrations in
 `wipe` never re-imports: the wiped key has a record.
 
 An imported record usually keeps items in arrays. Children are keyed by id, so an array
-under a kind's key is left alone (with one warning) until a migration turns it into
-children:
+under a kind's key is left alone until a migration turns it into children (one warning
+when none does):
 
 ```luau
 function(world, entity, context)

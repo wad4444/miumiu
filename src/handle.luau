@@ -37,11 +37,19 @@ end
 
 local function await(self: BatchInternal): SettledOutcome
 	self.internal_values.awaited = true
+	local flush = self.internal_values.flush
+	if flush ~= nil and not is_settled(self) then
+		flush()
+	end
 	if not is_settled(self) then
 		table.insert(self.internal_waiters, coroutine.running())
 		coroutine.yield()
 	end
 	return self.internal_values.outcome :: SettledOutcome
+end
+
+local function flush_with(self: BatchInternal, flush: () -> ())
+	self.internal_values.flush = flush
 end
 
 local function settle(self: BatchInternal, outcome: Outcome)
@@ -91,6 +99,7 @@ local template = {
 		outcome = { kind = "pending" } :: Outcome,
 		result = nil :: any,
 		awaited = false,
+		flush = nil :: (() -> ())?,
 	},
 	internal_hooks = {},
 	internal_waiters = {},
@@ -102,6 +111,7 @@ local template = {
 	hold = hold,
 	land = land,
 	refuse = refuse,
+	flush_with = flush_with,
 }
 
 local meta = {

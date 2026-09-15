@@ -172,9 +172,8 @@ end
 local function spawn_tree(scratch: MigrationScratch, kinds: { ChildKind }, key: string, parent: Entity, data: Data)
 	local world = scratch.world
 	for _, kind in kinds do
-		for id, child_data in children.stored_children(data, kind, scratch.warned) do
+		for id, child_data in children.stored_children(data, kind, nil) do
 			if type(child_data) ~= "table" then
-				logging.warn(messages.warnings.child_invalid(kind.key, id, key))
 				continue
 			end
 			local child = world:entity()

@@ -31,6 +31,9 @@ local errors = table.freeze({
 	session_closed = function(key: string)
 		return prefixed(`session "{key}" is closed`)
 	end,
+	record_wiped = function(key: string)
+		return prefixed(`record "{key}" was wiped with the batch still unwritten`)
+	end,
 	saveable_unnamed = function(id: unknown)
 		return prefixed(`saveable {id} has no key: meta(id, miumiu.saveable, "key") needs a non-empty string`)
 	end,

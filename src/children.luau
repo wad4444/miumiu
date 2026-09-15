@@ -264,7 +264,7 @@ local function delete_tree(world: World, index: ChildIndex, entity: Entity, dele
 	end
 end
 
-local function stored_children(data: Data, kind: ChildKind, warned: Warned): { [string]: Data }
+local function stored_children(data: Data, kind: ChildKind, warned: Warned?): { [string]: Data }
 	local group = data[kind.key]
 	if type(group) ~= "table" then
 		return {}
@@ -278,7 +278,7 @@ local function stored_children(data: Data, kind: ChildKind, warned: Warned): { [
 			skipped = true
 		end
 	end
-	if skipped then
+	if skipped and warned then
 		logging.warn_once(warned, `child_group_array:{kind.key}`, messages.warnings.child_group_array(kind.key))
 	end
 	return named

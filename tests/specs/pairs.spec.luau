@@ -198,6 +198,7 @@ return function()
 			local batch = miumiu.batch(t.world, function()
 				t.world:add(player, jecs.pair(r.has_buff, r.ice))
 			end)
+			task.spawn(batch.await, batch)
 			expect(utils.wait_until(function()
 				return t.backend.calls.UpdateAsync > writes
 			end)).to.equal(true)

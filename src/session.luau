@@ -34,6 +34,7 @@ type Stamps = types.Stamps
 type State = types.State
 type StoredRecord = types.StoredRecord
 type Symbol = types.Symbol
+type Watcher = types.Watcher
 
 local session_symbol = symbol.create_symbol("Session")
 
@@ -51,6 +52,28 @@ local function validate_open(self: SessionInternal)
 	end
 end
 
+local function fire_landed(self: SessionInternal)
+	local landed = self.internal_landed
+	if #landed == 0 then
+		return
+	end
+	self.internal_landed = {}
+	local watchers = self.internal_watchers
+	for _, id in landed do
+		local watcher = watchers[id]
+		watchers[id] = nil
+		watcher({ kind = "landed" })
+	end
+end
+
+local function refuse_watched(self: SessionInternal, message: string)
+	local watchers = self.internal_watchers
+	self.internal_watchers = {}
+	for _, watcher in watchers do
+		watcher({ kind = "refused", message = message })
+	end
+end
+
 local function close(self: SessionInternal, closure: Closure)
 	local values = self.internal_values
 	if values.status.kind == "closed" then
@@ -58,6 +81,10 @@ local function close(self: SessionInternal, closure: Closure)
 	end
 	values.status = { kind = "closed", closure = closure }
 	self.internal_mutex:close(messages.errors.session_closed(values.key))
+	if closure.kind ~= "clean" then
+		fire_landed(self)
+		refuse_watched(self, closure.message)
+	end
 	callbacks.fire(self.internal_hooks, hooks.closed, self, closure)
 end
 
@@ -202,9 +229,14 @@ local function remove_group(groups: { Group }, id: string)
 	end
 end
 
+local function watch(self: SessionInternal, id: string, watcher: Watcher)
+	self.internal_watchers[id] = watcher
+end
+
 local function abandon(self: SessionInternal, id: string)
 	remove_group(self.internal_unwritten, id)
 	remove_group(self.internal_awaiting, id)
+	self.internal_watchers[id] = nil
 	forget_state(self)
 end
 
@@ -222,6 +254,9 @@ local function forget_written(self: SessionInternal, written: { Group }): { Grou
 		if index then
 			table.remove(unwritten, index)
 			table.insert(removed, group)
+			if self.internal_watchers[group.id] then
+				table.insert(self.internal_landed, group.id)
+			end
 		end
 	end
 	return removed
@@ -511,10 +546,14 @@ local function pull_with(self: SessionInternal, retry: RetryConfig): boolean
 		values.touched = false
 	end
 	local adopted = false
-	self.internal_mutex:with(function()
+	local ok, err = pcall(self.internal_mutex.with, self.internal_mutex, function()
 		adopted = pull_now(self, retry)
 		values.pulls += 1
 	end)
+	fire_landed(self)
+	if not ok then
+		error(err, 0)
+	end
 	if adopted and values.status.kind ~= "closed" then
 		callbacks.fire(self.internal_hooks, hooks.pulled, self, get_truth(self))
 	end
@@ -598,6 +637,7 @@ local function wipe(self: SessionInternal)
 		values.written = record.written
 		forget_state(self)
 	end)
+	refuse_watched(self, messages.errors.record_wiped(values.key))
 end
 
 local function hook(self: SessionInternal, hook_symbol: Symbol, callback: Callback): () -> ()
@@ -627,6 +667,8 @@ local template = {
 	internal_mutex = (nil :: any) :: Mutex,
 	internal_unwritten = {},
 	internal_awaiting = {},
+	internal_watchers = {},
+	internal_landed = {},
 	internal_cache = nil :: State?,
 	internal_before_last = nil :: State?,
 
@@ -641,6 +683,7 @@ local template = {
 	is_dirty = is_dirty,
 	journal = journal,
 	touch = touch,
+	watch = watch,
 	abandon = abandon,
 	has_landed = has_landed,
 	sync = sync,
@@ -669,6 +712,8 @@ local function create_session(collection: CollectionState, key: string, migrate:
 	session.internal_mutex = mutex.create_mutex()
 	session.internal_unwritten = {}
 	session.internal_awaiting = {}
+	session.internal_watchers = {}
+	session.internal_landed = {}
 	setmetatable(session, meta)
 	return session :: SessionInternal
 end

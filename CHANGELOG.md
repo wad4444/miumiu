@@ -28,6 +28,14 @@ wipe drops only the lazy marks of the wiped collection; a rollback whose restore
 listener throw still refreshes shadows and resupplies before rethrowing. `migrations`
 and `from_foreign` freeze with the schema.
 
+A batch on one key no longer writes on its own: its group rides the session's next write
+like a plain write, `await` writes it now, and it is refused only when that write fails
+after its retries or the session ends with the group unwritten (a newer server, a `close`
+out of budget, a `wipe`); `landed` fires on the thread that wrote it. A multi-key batch
+still commits at once through the commit store. The scratch supply that runs before a
+migration no longer warns about imported arrays or non-table children under a kind's
+key; the live supply still does.
+
 ## 0.1.0 (2026-09-07)
 
 First release candidate. Lockless sessions on jecs 0.11.

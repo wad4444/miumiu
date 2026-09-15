@@ -76,6 +76,31 @@ return function()
 			expect(batch:await().kind).to.equal("landed")
 		end)
 
+		it("runs the flush on await while pending, then waits for the settle", function()
+			local batch = handle.create_batch()
+			local flushed = 0
+			batch:flush_with(function()
+				flushed += 1
+				batch:land()
+			end)
+			expect(batch:await().kind).to.equal("landed")
+			expect(flushed).to.equal(1)
+			batch:await()
+			expect(flushed).to.equal(1)
+			local waiting = handle.create_batch()
+			waiting:flush_with(function()
+				flushed += 1
+			end)
+			local outcome = nil
+			task.spawn(function()
+				outcome = waiting:await().kind
+			end)
+			expect(flushed).to.equal(2)
+			expect(outcome).to.equal(nil)
+			waiting:land()
+			expect(outcome).to.equal("landed")
+		end)
+
 		it("warns a frame later when nobody hooked the refusal", function()
 			local backend = utils.create_backend()
 			local hooked = handle.create_batch()

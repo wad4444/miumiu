@@ -28,6 +28,7 @@ type Context = types.Context
 type Data = types.Data
 type ResolvedCollectionConfig = types.ResolvedCollectionConfig
 type SchemaEntry = types.SchemaEntry
+type SettledOutcome = types.SettledOutcome
 type Touched = types.Touched
 type Undo = types.Undo
 
@@ -347,26 +348,52 @@ local function fail(context: Context, captured: Capture, id: string, err: unknow
 	callbacks.fire(context.world_state.hooks, hooks.refused, captured.batch, captured.batch, message)
 end
 
-local function commit_single(context: Context, captured: Capture, entry: CaptureEntry)
-	local session = entry.session
-	local id = captured.id
-	local ok, err = pcall(function()
-		session:journal({ id = id, ops = entry.ops, kind = "single" })
-		session:sync()
-	end)
-	if ok then
+local function settle_single(context: Context, captured: Capture, outcome: SettledOutcome)
+	if outcome.kind == "landed" then
 		forget_capture(context, captured)
 		captured.batch:land()
+		return
+	end
+	fail(context, captured, captured.id, outcome.message)
+end
+
+local function flush_single(context: Context, captured: Capture, entry: CaptureEntry)
+	local batch = captured.batch
+	if batch:is_settled() or captured.flushing then
+		return
+	end
+	captured.flushing = true
+	local session = entry.session
+	local id = captured.id
+	local _, err = pcall(session.sync, session)
+	captured.flushing = false
+	if batch:is_settled() then
 		return
 	end
 	if session:has_landed(id) then
 		session:abandon(id)
 		settle(captured.entries, id)
 		forget_capture(context, captured)
-		captured.batch:land()
+		batch:land()
 		return
 	end
 	fail(context, captured, id, err)
+end
+
+local function commit_single(context: Context, captured: Capture, entry: CaptureEntry)
+	local session = entry.session
+	local id = captured.id
+	local ok, err = pcall(session.journal, session, { id = id, ops = entry.ops, kind = "single" })
+	if not ok then
+		fail(context, captured, id, err)
+		return
+	end
+	session:watch(id, function(outcome)
+		settle_single(context, captured, outcome)
+	end)
+	captured.batch:flush_with(function()
+		flush_single(context, captured, entry)
+	end)
 end
 
 local function mark_or_confirm(config: ResolvedCollectionConfig, id: string, created: number)
@@ -435,6 +462,7 @@ local function run(world: World, fn: () -> any, is_delta: boolean): Batch
 	local captured: Capture = {
 		id = util.create_guid(),
 		delta = is_delta,
+		flushing = false,
 		undo = {},
 		entries = {},
 		children = {},

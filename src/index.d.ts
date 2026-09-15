@@ -146,7 +146,7 @@ declare namespace miumiu {
 	/** Where a batch stands: `pending` until its commit finishes, then `landed` or `refused`. */
 	export type Outcome = { kind: "pending" } | SettledOutcome;
 
-	/** The handle `batch` and `delta` return. The commit runs in the background; hook or await it. `T` is what the function returned. */
+	/** The handle `batch` and `delta` return. A group on one key rides the session's next write and `await` writes it now; a group over several keys commits in the background. Hook or await it. `T` is what the function returned. */
 	export interface Batch<T = void> {
 		/** `pending`, `landed` or `refused`. */
 		get_outcome(): Outcome;
@@ -157,7 +157,7 @@ declare namespace miumiu {
 		/** Connect to `landed` or `refused`; fires at once if already settled. Returns a disconnect. Callbacks are pcalled and a throw is warned, never raised. */
 		hook(hook: LandedHook, callback: () => void): () => void;
 		hook(hook: RefusedHook, callback: (message: string) => void): () => void;
-		/** Yields until settled and returns the outcome (`landed`, or `refused` with the message); never throws. The result is the decision: branch on it, never discard it. The durability point for receipts. A refusal warns when nothing hooked `refused` or awaited the batch in the same frame. */
+		/** Writes a single-key batch now, then yields until settled and returns the outcome (`landed`, or `refused` with the message); never throws. The result is the decision: branch on it, never discard it. The durability point for receipts. A refusal warns when nothing hooked `refused` or awaited the batch in the same frame. */
 		await(): SettledOutcome;
 	}
 
@@ -205,7 +205,7 @@ declare namespace miumiu {
 	export function get_session(world: World, collection: Entity, key: string): Session | undefined;
 	/** Erase a key in one write: a fresh empty record, every stored key stamped past its old stamp. A loaded key also drops its unwritten changes and lazy marks, puts initials back on every linked entity, deletes its owned children and resets attached ones; a key nobody here holds is wiped straight in the store. Yields; throws if the write fails, keeping everything. */
 	export function wipe(world: World, collection: Entity, key: string): void;
-	/** Every write inside lands as one group, on every key it touches, or none. Runs `fn` now, journals the group and returns without yielding; the commit runs in the background and the returned `Batch` reports it (`await` for receipts). A write `fn` cannot make (guard, unloaded entity, `fn` throwing) or keys on collections with different commit stores throw here and roll the world back at once; a commit refused later rolls back only the values the batch still holds and fires `refused`. A nested call joins the outer batch and returns the outer handle. A batch that captured no saveable write lands at once; snapshots are evaluated at write time outside any batch. */
+	/** Every write inside lands as one group, on every key it touches, or none. Runs `fn` now, journals the group and returns without yielding; on one key the group rides the session's next write (`await` writes it now, for receipts), across keys it commits in the background, and the returned `Batch` reports it. A write `fn` cannot make (guard, unloaded entity, `fn` throwing) or keys on collections with different commit stores throw here and roll the world back at once; a commit refused later rolls back only the values the batch still holds and fires `refused`. A nested call joins the outer batch and returns the outer handle. A batch that captured no saveable write lands at once; snapshots are evaluated at write time outside any batch. */
 	export function batch<T = void>(world: World, fn: () => T): Batch<T>;
 	/** Like `batch`, but each `set` on a root saveable is diffed against the previous value into `add`/`insert`/`erase`/`put`/`drop`. Build new values from the old ones. A write inside a child is a whole put, never a diff. */
 	export function delta<T = void>(world: World, fn: () => T): Batch<T>;

@@ -26,7 +26,7 @@ src/ops.luau          op replay (pure), deep_equal/deep_copy, path stamps
 src/delta.luau        diff of two values into delta ops
 src/commit.luau       commit-store cache, fetch, mark, resolve
 src/datastore.luau    the only calls into DataStoreService (GetDataStore/GetAsync/SetAsync/UpdateAsync)
-src/session.luau      one key: journal, merge, pull (read or update), adopt, unload, touch, wipe / wipe_key (cake-style class)
+src/session.luau      one key: journal, watch (a group's landing or loss), merge, pull (read or update), adopt, unload, touch, wipe / wipe_key (cake-style class)
 src/pull_loop.luau    the per-session loop (pull_interval when dirty, idle_interval when clean)
 src/recorder.luau     jecs added/changed/removed listeners feeding a sink (pairs packed per write, jecs.Name index); used by capture and migrations
 src/relations.luau    saveable pairs: pack the dictionary of a relation's pairs, apply one onto an entity
@@ -38,7 +38,7 @@ src/foreign/          adapters for importing from other libraries (lapis.luau)
 src/listeners.luau    data_link listeners → events; install/uninstall
 src/link.luau         link lifecycle: link/unlink/loaded/load_failed/closed/pulled handlers, cleanups, get_session, wipe_key, detach_all, resupply
 src/step.luau         the event loop, get_session, wipe, close, the world-level hook
-src/batch.luau        batch/delta: capture, background commit (single or shared), rollback
+src/batch.luau        batch/delta: capture, single-key groups journaled and settled through the session's watch (await flushes them), shared commit in the background, rollback
 src/handle.luau       Batch: the handle batch/delta return (outcome, result via hold/get_result, landed/refused hooks, await; cake-style class)
 src/index.d.ts        the roblox-ts surface
 tests/specs/          TestEZ specs, never inside src

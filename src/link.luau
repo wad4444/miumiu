@@ -69,12 +69,24 @@ local function entities_of(link_state: LinkState): { Entity }
 	return entities
 end
 
+local function convert_pending_puts(context: Context, root: Entity)
+	local world_state = context.world_state
+	for entity in world_state.pending_puts do
+		local ancestry = children.ancestry(world_state, entity)
+		if ancestry and ancestry.root == root then
+			world_state.pending_puts[entity] = nil
+			table.insert(world_state.cleanups, { kind = "put", entity = entity })
+		end
+	end
+end
+
 local function supply_all(context: Context, link_state: LinkState, loaded: SessionInternal)
 	local known = loaded:get_state()
 	util.run_all(entities_of(link_state), function(entity)
 		local collection_entity = link_state.collection
 		local shallow = is_shallow(context, entity, collection_entity)
 		reconcile.reconcile(context, entity, known, collection_entity, shallow)
+		convert_pending_puts(context, entity)
 	end)
 end
 
@@ -556,6 +568,7 @@ return table.freeze({
 	on_load_failed = on_load_failed,
 	on_closed = on_closed,
 	on_pulled = on_pulled,
+	resolve_drops = resolve_drops,
 	run_cleanups = run_cleanups,
 	resupply = resupply,
 	wipe_key = wipe_key,

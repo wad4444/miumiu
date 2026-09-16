@@ -134,6 +134,9 @@ local function close(world: World, budget: number?)
 	end
 
 	local context = contexts.create_context(world)
+	for root in world_state.pending_drops do
+		link.resolve_drops(context, root)
+	end
 	local detached = link.detach_all(context)
 	link.run_cleanups(context)
 	listeners.uninstall(world_state)

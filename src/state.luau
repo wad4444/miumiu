@@ -32,6 +32,7 @@ local function get(world: World): WorldState
 		cleanups = {},
 		pending_drops = {},
 		pending_puts = {},
+		pending_root_puts = {},
 		dropped_entities = {},
 		captures = {},
 		hooks = {},

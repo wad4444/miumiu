@@ -217,6 +217,12 @@ local errors = table.freeze({
 	lazy_on_tag = function(id: unknown)
 		return prefixed(`saveable {id} is a tag and cannot be lazy`)
 	end,
+	guard_on_tag = function(id: unknown)
+		return prefixed(`saveable {id} is a tag and cannot carry a guard`)
+	end,
+	serdes_on_tag = function(id: unknown)
+		return prefixed(`saveable {id} is a tag and cannot carry serdes`)
+	end,
 	pairs_meta = function(id: unknown, meta: string)
 		local carried = { guard = "a guard", serdes = "serdes", snapshot = "a snapshot", lazy = "lazy" }
 		return prefixed(`saveable {id} stores pairs and cannot carry {carried[meta]}`)

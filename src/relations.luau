@@ -41,13 +41,15 @@ local function pack(
 			continue
 		end
 		local owner = named[name]
-		if owner == nil then
-			named[name] = target
-		elseif owner ~= target then
+		if owner ~= target then
 			logging.warn_once(
 				warned,
 				`name_shared:{name}`,
-				messages.warnings.name_shared(name, util.describe(world, owner), tostring(target))
+				messages.warnings.name_shared(
+					name,
+					if owner then util.describe(world, owner) else tostring(owner),
+					tostring(target)
+				)
 			)
 			continue
 		end

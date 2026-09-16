@@ -363,10 +363,15 @@ local function on_link(context: Context, entity: Entity, collection_entity: Enti
 	end
 end
 
-local function detach(link_state: LinkState): SessionInternal?
+local function has_stashed_puts(context: Context, link_state: LinkState): boolean
+	local by_key = context.world_state.pending_root_puts[link_state.collection]
+	return by_key ~= nil and by_key[link_state.key] ~= nil
+end
+
+local function detach(context: Context, link_state: LinkState): SessionInternal?
 	local phase = link_state.phase
 	if phase.kind == "loading" then
-		if coroutine.status(phase.thread) ~= "dead" then
+		if coroutine.status(phase.thread) ~= "dead" and not has_stashed_puts(context, link_state) then
 			task.cancel(phase.thread)
 		end
 		return nil
@@ -428,7 +433,7 @@ local function on_unlink(context: Context, entity: Entity, collection_entity: En
 			end)
 		end
 		if next(link_state.entities) == nil then
-			local loaded = detach(link_state)
+			local loaded = detach(context, link_state)
 			if loaded and loaded:is_open() then
 				link_state.phase =
 					{ kind = "unloading", session = loaded, disconnect = watch_closed(context, link_state, loaded) }
@@ -442,6 +447,12 @@ local function on_unlink(context: Context, entity: Entity, collection_entity: En
 end
 
 local function on_loaded(context: Context, link_state: LinkState, loaded: SessionInternal)
+	local stashed = context.world_state.pending_root_puts[link_state.collection]
+	local ops = if stashed then stashed[link_state.key] else nil
+	if ops then
+		stashed[link_state.key] = nil
+		loaded:journal({ id = util.create_guid(), ops = ops, kind = "single" })
+	end
 	if not is_current(context, link_state) or link_state.phase.kind ~= "loading" then
 		unload_quietly(context, loaded)
 		return
@@ -566,7 +577,7 @@ local function detach_all(context: Context): Detached
 					mark(context, entity, collection_entity, "none")
 				end)
 			end
-			local loaded = detach(link_state)
+			local loaded = detach(context, link_state)
 			if loaded then
 				table.insert(sessions, loaded)
 			end

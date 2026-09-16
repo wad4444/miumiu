@@ -114,7 +114,7 @@ local function resolve_config(world: World, collection: Entity): ResolvedCollect
 		retry_base = given.retry_base or defaults.retry_base,
 		commit_store = given.commit_store or defaults.commit_store,
 		commit_timeout = given.commit_timeout or defaults.commit_timeout,
-		migrations = world:get(collection, ids.migrations) or {},
+		migrations = table.freeze(table.clone(world:get(collection, ids.migrations) or {})),
 		foreign = source,
 		user_ids = given.user_ids,
 	}

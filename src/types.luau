@@ -594,6 +594,7 @@ export type WorldState = {
 	cleanups: { Cleanup },
 	pending_drops: { [Entity]: { PendingDrop } },
 	pending_puts: { [Entity]: boolean },
+	pending_root_puts: { [Entity]: { [string]: { Op } } },
 	dropped_entities: { Entity },
 	captures: { Capture },
 	hooks: CallbackRegistry,

@@ -62,29 +62,44 @@ end
 local function watch_names(world: World, named: Named): { () -> () }
 	local warned = state.get(world).warned
 	local names: { [Entity]: string } = {}
-	for name, entity in named do
+	local carriers: { [string]: { [Entity]: boolean } } = {}
+	local function learn(entity: Entity, name: string)
 		names[entity] = name
-	end
-	local function forget(entity: Entity)
-		local old = names[entity]
-		if old ~= nil and named[old] == entity then
-			named[old] = nil
+		local holders = carriers[name]
+		if holders == nil then
+			holders = {}
+			carriers[name] = holders
 		end
-		names[entity] = nil
-	end
-	local function remember(entity: Entity, _, name: string)
-		forget(entity)
+		holders[entity] = true
 		local other = named[name]
-		if other ~= nil and other ~= entity then
+		if other == nil then
+			named[name] = entity
+		elseif other ~= entity then
 			logging.warn_once(
 				warned,
 				`name_shared:{name}`,
 				messages.warnings.name_shared(name, util.describe(world, other), tostring(entity))
 			)
+		end
+	end
+	local function forget(entity: Entity)
+		local old = names[entity]
+		if old == nil then
 			return
 		end
-		named[name] = entity
-		names[entity] = name
+		names[entity] = nil
+		local holders = carriers[old]
+		holders[entity] = nil
+		if named[old] == entity then
+			named[old] = next(holders) :: any
+		end
+	end
+	local function remember(entity: Entity, _, name: string)
+		forget(entity)
+		learn(entity, name)
+	end
+	for entity in world:each(jecs.Name) do
+		learn(entity, world:get(entity, jecs.Name))
 	end
 	return {
 		world:added(jecs.Name, remember),

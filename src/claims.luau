@@ -17,6 +17,7 @@ type ChildKind = types.ChildKind
 type Context = types.Context
 type ExistingChild = types.ExistingChild
 type MarkWrite = types.MarkWrite
+type Op = types.Op
 type PendingDrop = types.PendingDrop
 type RelationWrite = types.RelationWrite
 type Undo = types.Undo
@@ -199,6 +200,26 @@ local function cancel_drop(world_state: WorldState, ancestry: Ancestry, entity: 
 	end
 end
 
+local function stash_put(context: Context, ancestry: Ancestry, op: Op)
+	local world_state = context.world_state
+	local links: { [Entity]: string } = world_state.links[ancestry.root] or {}
+	for collection, key in links do
+		if ancestry.kind.holders[collection] then
+			local by_key = world_state.pending_root_puts[collection]
+			if by_key == nil then
+				by_key = {}
+				world_state.pending_root_puts[collection] = by_key
+			end
+			local ops = by_key[key]
+			if ops == nil then
+				ops = {}
+				by_key[key] = ops
+			end
+			table.insert(ops, op)
+		end
+	end
+end
+
 local function on_detached(context: Context, write: RelationWrite)
 	local world_state = context.world_state
 	local index = world_state.children
@@ -211,6 +232,9 @@ local function on_detached(context: Context, write: RelationWrite)
 	local applying = state.is_applying(world_state, write.entity, pair)
 	if write.child.mode == "attached" and previous and not write.deleted and not applying then
 		capture.flush_lazy(context, write.entity, write.child.entries)
+	end
+	if ancestry and world_state.pending_puts[write.entity] and world_state.deleting[write.parent] then
+		stash_put(context, ancestry, capture.child_put(context, ancestry))
 	end
 	children.forget(index, write.entity)
 	world_state.pending_puts[write.entity] = nil

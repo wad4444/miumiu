@@ -105,6 +105,12 @@ local function create_entry(world: World, id: Entity, key: string): SchemaEntry
 		if world:has(id, ids.lazy) then
 			error(messages.errors.lazy_on_tag(util.describe(world, id)), 0)
 		end
+		if world:has(id, ids.guard) then
+			error(messages.errors.guard_on_tag(util.describe(world, id)), 0)
+		end
+		if world:has(id, ids.serdes) then
+			error(messages.errors.serdes_on_tag(util.describe(world, id)), 0)
+		end
 		return {
 			kind = "tag",
 			id = id,

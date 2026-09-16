@@ -332,5 +332,27 @@ return function()
 				schema.create_schema(world)
 			end).to.throw("miumiu.snapshot, fn")
 		end)
+
+		it("rejects a guard or serdes on a tag", function()
+			local t = utils.create_fixture({ pull_interval = utils.timings.never })
+			t.world:set(t.tutorial, miumiu.guard, function()
+				return true
+			end)
+			expect(function()
+				miumiu.step(t.world)
+			end).to.throw("cannot carry a guard")
+			t.world:remove(t.tutorial, miumiu.guard)
+			t.world:set(t.tutorial, miumiu.serdes, {
+				serialize = function(value)
+					return value
+				end,
+				deserialize = function(value)
+					return value
+				end,
+			})
+			expect(function()
+				miumiu.step(t.world)
+			end).to.throw("cannot carry serdes")
+		end)
 	end)
 end

@@ -206,5 +206,16 @@ return function()
 				collection.resolve_config(world, entity)
 			end).to.throw("must offer GetDataStore")
 		end)
+
+		it("copies the migrations list so a later insert does not reach open sessions", function()
+			local world = jecs.world()
+			local backend = utils.create_backend()
+			local entity = utils.create_collection(world, backend)
+			local list = { function() end }
+			world:set(entity, miumiu.migrations, list)
+			local config = collection.resolve_config(world, entity)
+			table.insert(list, function() end)
+			expect(#config.migrations).to.equal(1)
+		end)
 	end)
 end

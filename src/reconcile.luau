@@ -299,14 +299,6 @@ local function remove_child(context: Context, child: Entity)
 	world_state.entities[child] = nil
 end
 
-local function clear_pending_puts(context: Context, entity: Entity, kind: ChildKind)
-	local world_state = context.world_state
-	children.each_nested(world_state.children, entity, kind, function(child, nested)
-		world_state.pending_puts[child] = nil
-		clear_pending_puts(context, child, nested)
-	end)
-end
-
 local function supply_children(context: Context, entity: Entity, kinds: { ChildKind }, data: Data, resetting: boolean)
 	local index = context.world_state.children
 	util.run_all(kinds, function(kind)
@@ -348,7 +340,6 @@ local function supply_children(context: Context, entity: Entity, kinds: { ChildK
 		for _, child in present do
 			if kind.mode == "owned" and context.world_state.pending_puts[child] then
 				context.world_state.pending_puts[child] = nil
-				clear_pending_puts(context, child, kind)
 				table.insert(context.world_state.cleanups, { kind = "put", entity = child })
 			elseif kind.mode == "owned" then
 				remove_child(context, child)

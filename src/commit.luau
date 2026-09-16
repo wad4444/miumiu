@@ -62,7 +62,7 @@ local function fetch(config: ResolvedCollectionConfig, id: string, created: numb
 		remember(id, true)
 		return "committed"
 	end
-	if os.time() - created >= config.commit_timeout then
+	if type(created) ~= "number" or os.time() - created >= config.commit_timeout then
 		remember(id, false)
 		return "failed"
 	end

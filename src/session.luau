@@ -400,7 +400,7 @@ end
 local function prune_landed(landed: Landed, now: number, ttl: number): Landed
 	local next_landed = landed
 	for id, at in landed do
-		if now - at > ttl then
+		if type(at) ~= "number" or now - at > ttl then
 			next_landed = util.own(landed, next_landed)
 			next_landed[id] = nil
 		end

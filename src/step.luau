@@ -133,7 +133,9 @@ local function close(world: World, budget: number?)
 		return
 	end
 
-	local detached = link.detach_all(contexts.create_context(world))
+	local context = contexts.create_context(world)
+	local detached = link.detach_all(context)
+	link.run_cleanups(context)
 	listeners.uninstall(world_state)
 	world_state.links = {}
 	world_state.entities = {}

@@ -735,5 +735,17 @@ return function()
 			expect((string.find(err, "record format 2", 1, true))).to.be.ok()
 			expect(t.backend:dump("p1").format).to.equal(2)
 		end)
+
+		it("loads a record whose pending entry lacks created", function()
+			local t = setup({ pull_interval = never })
+			t.backend:seed("p1", {
+				data = { money = 4 },
+				pending = { ["deadbeef"] = { ops = { utils.add("money", 1) } } },
+			})
+			local player = t.world:entity()
+			t.world:set(player, t.link, "p1")
+			expect(settle(t, player)).to.equal(true)
+			expect(t.world:has(player, jecs.pair(miumiu.data_loaded, t.player_data))).to.equal(true)
+		end)
 	end)
 end

@@ -316,6 +316,11 @@ local warnings = table.freeze({
 			`attached child {entity} of kind {tag} existed before the first step without an id and is not indexed: set its id component before the pair`
 		)
 	end,
+	child_ambiguous_existing = function(entity: unknown, first: unknown, second: unknown)
+		return prefixed(
+			`{entity} is already indexed as {first} and also carries {second} on the same relation; it stays under the first only`
+		)
+	end,
 	child_id_taken_existing = function(entity: unknown, tag: unknown, id: string, other: unknown)
 		return prefixed(
 			`child {entity} of kind {tag} existed before the first step with the id "{id}" that {other} already holds under the same parent and is not indexed`

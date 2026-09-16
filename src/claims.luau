@@ -275,6 +275,9 @@ local function on_attached(context: Context, write: RelationWrite)
 			0
 		)
 	end
+	if world_state.capture and (ancestry == nil or #capture.ancestry_sessions(context, ancestry) == 0) then
+		capture.reject_unloaded(context, write)
+	end
 	if write.child.mode == "attached" then
 		attach(context, write, was_dropped)
 		local active = world_state.capture
@@ -282,9 +285,6 @@ local function on_attached(context: Context, write: RelationWrite)
 			table.insert(active.undo, pair_undo(write, false, stored_id_of(context, write.entity, write.child)))
 		end
 		return
-	end
-	if world_state.capture and (ancestry == nil or #capture.ancestry_sessions(context, ancestry) == 0) then
-		capture.reject_unloaded(context, write)
 	end
 	reconcile.refresh_shadows(context, write.entity, write.child)
 	local stored_id = stored_id_of(context, write.entity, write.child)
@@ -340,6 +340,17 @@ local function index_existing(context: Context)
 	for _, existing in collect_existing(context) do
 		local kind, entity = existing.kind, existing.entity
 		if not is_held_by(context, kind, existing.parent) then
+			continue
+		end
+		local prior = children.child_of(world_state.children, entity)
+		if prior then
+			logging.warn(
+				messages.warnings.child_ambiguous_existing(
+					util.describe(world, entity),
+					children.describe_kind(world, prior.kind),
+					children.describe_kind(world, kind)
+				)
+			)
 			continue
 		end
 		local resolved, id = pcall(children.resolve_id, world, entity, kind)

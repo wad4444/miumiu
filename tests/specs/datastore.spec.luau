@@ -4,6 +4,8 @@ return function()
 	local datastore = require(ReplicatedStorage.Packages.miumiu.datastore)
 	local utils = require(ReplicatedStorage.Tests.utils)
 
+	afterEach(utils.cleanup)
+
 	local retry = { retry_attempts = utils.timings.retry_attempts, retry_base = utils.timings.retry_base }
 	local no_retry = { retry_attempts = 1, retry_base = 0 }
 

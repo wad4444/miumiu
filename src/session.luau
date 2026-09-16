@@ -114,9 +114,9 @@ local function close(self: SessionInternal, closure: Closure)
 		return
 	end
 	values.status = table.freeze({ kind = "closed", closure = table.freeze(closure) })
-	local writing = self.internal_mutex:is_locked()
+	local deferred = self.internal_mutex:is_locked()
 	self.internal_mutex:close(messages.errors.session_closed(values.key))
-	if not writing then
+	if not deferred then
 		fire_landed(self)
 		if closure.kind ~= "clean" then
 			refuse_watched(self, closure.message)

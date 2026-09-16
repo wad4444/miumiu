@@ -6,6 +6,8 @@ return function()
 	local schema = require(ReplicatedStorage.Packages.miumiu.schema)
 	local utils = require(ReplicatedStorage.Tests.utils)
 
+	afterEach(utils.cleanup)
+
 	type Entity<T = nil> = miumiu.Entity<T>
 
 	local roots: { [miumiu.World]: Entity } = {}

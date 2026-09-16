@@ -93,7 +93,10 @@ local function supply_claimed(context: Context, entity: Entity, kind: ChildKind)
 	end
 	local split = capture.split_path(ancestry)
 	local stored = ops.resolve(sessions[1]:get_truth(), split.key, split.path, #split.path)
-	reconcile.supply_child(context, entity, kind, if type(stored) == "table" then stored else nil)
+	if type(stored) ~= "table" then
+		return
+	end
+	reconcile.supply_child(context, entity, kind, stored, false)
 end
 
 local function pair_undo(write: RelationWrite, present: boolean, stored_id: any): Undo
@@ -108,7 +111,7 @@ local function pair_undo(write: RelationWrite, present: boolean, stored_id: any)
 	}
 end
 
-local function legacy_group(context: Context, ancestry: Ancestry): boolean
+local function is_legacy_group(context: Context, ancestry: Ancestry): boolean
 	local sessions = capture.ancestry_sessions(context, ancestry)
 	if #sessions == 0 then
 		return false
@@ -169,9 +172,9 @@ local function on_detached(context: Context, write: RelationWrite)
 		end
 		if not write.deleted then
 			mark_dropped(context, write.entity)
-			local capture = world_state.capture
-			if capture and previous then
-				table.insert(capture.undo, pair_undo(write, true, stored_id_of(context, write.entity, write.child)))
+			local active = world_state.capture
+			if active and previous then
+				table.insert(active.undo, pair_undo(write, true, stored_id_of(context, write.entity, write.child)))
 			end
 		end
 		return
@@ -186,8 +189,8 @@ local function on_detached(context: Context, write: RelationWrite)
 		mark_dropped(context, write.entity)
 	end
 	local stored_id = stored_id_of(context, write.entity, write.child)
-	capture.emit_child(context, ancestry, capture.child_drop, function(capture)
-		table.insert(capture.undo, pair_undo(write, true, stored_id))
+	capture.emit_child(context, ancestry, capture.child_drop, function(active)
+		table.insert(active.undo, pair_undo(write, true, stored_id))
 	end)
 end
 
@@ -259,7 +262,7 @@ local function on_attached(context: Context, write: RelationWrite)
 		return
 	end
 	local ancestry = children.ancestry(world_state, write.entity)
-	if ancestry and legacy_group(context, ancestry) then
+	if ancestry and is_legacy_group(context, ancestry) then
 		children.forget(index, write.entity)
 		capture.undo_trigger(context, write)
 		error(
@@ -273,9 +276,9 @@ local function on_attached(context: Context, write: RelationWrite)
 	end
 	if write.child.mode == "attached" then
 		attach(context, write, was_dropped)
-		local capture = world_state.capture
-		if capture then
-			table.insert(capture.undo, pair_undo(write, false, stored_id_of(context, write.entity, write.child)))
+		local active = world_state.capture
+		if active then
+			table.insert(active.undo, pair_undo(write, false, stored_id_of(context, write.entity, write.child)))
 		end
 		return
 	end
@@ -286,18 +289,18 @@ local function on_attached(context: Context, write: RelationWrite)
 	local stored_id = stored_id_of(context, write.entity, write.child)
 	capture.emit_child(context, ancestry, function(found)
 		return capture.child_put(context, found)
-	end, function(capture)
-		table.insert(capture.undo, pair_undo(write, false, stored_id))
+	end, function(active)
+		table.insert(active.undo, pair_undo(write, false, stored_id))
 	end)
 end
 
 local function on_marked(context: Context, write: MarkWrite)
 	local world_state = context.world_state
-	local capture = world_state.capture
-	if capture == nil or state.is_applying(world_state, write.entity, write.child.tag) then
+	local active = world_state.capture
+	if active == nil or state.is_applying(world_state, write.entity, write.child.tag) then
 		return
 	end
-	table.insert(capture.undo, {
+	table.insert(active.undo, {
 		kind = "mark",
 		entity = write.entity,
 		id = write.child.tag,

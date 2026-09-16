@@ -6,6 +6,8 @@ return function()
 	local miumiu = require(ReplicatedStorage.Packages.miumiu)
 	local utils = require(ReplicatedStorage.Tests.utils)
 
+	afterEach(utils.cleanup)
+
 	local fake_lapis = { createCollection = function() end }
 
 	describe("collection.resolve_config", function()

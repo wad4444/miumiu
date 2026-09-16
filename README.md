@@ -55,8 +55,8 @@ Ids come from `jecs.component()` / `jecs.tag()` and are described with `jecs.met
 again. Require miumiu before that too, its own ids are named the same way. Ids made with
 `world:component()` after the fact take `world:set(id, miumiu.saveable, "money")`
 instead; every miumiu meta (`config`, `migrations`, `from_foreign`, `snapshot`, ...) may
-be `world:set` the same way, and the tags (`lazy`, `pairs`, a `field_of` pair) `world:add`,
-any time before the first `step`, link or `batch`. `miumiu.saveable`
+be `world:set` the same way, `lazy` and a `field_of` pair `world:add`, `pairs` either,
+any time before the first `step`, `batch`, `delta` or `wipe`. `miumiu.saveable`
 gives a component or tag its stored key, `pair(miumiu.field_of, player_data)` puts it on
 that collection's record; a saveable without a `field_of` pair fails the schema build.
 The component set on itself is its initial value. A guard rejects bad writes and skips
@@ -78,7 +78,8 @@ schema freezes there.
 Config is checked when a key links, not at `meta`: a bad value lands as
 `pair(miumiu.data_error, c)` on every entity that links, the same pair as in *When a
 session ends mid-play*, so a typo kicks every player under the kick that section
-recommends. Fix it before
+recommends (a `wipe` of an unloaded key resolves the collection itself, so it throws the
+config error rather than landing it). Fix it before
 shipping; the message names the field.
 
 ## Link
@@ -563,7 +564,8 @@ reset. A key nobody here holds is wiped straight in the store. Every stored key 
 stamped by the wipe, so a write another server journaled against the old record loses to
 it. It yields; if the write fails it throws and the session keeps its unwritten changes.
 It is the erasure path: the record left behind holds no data, only its stamps, version,
-write id and migration count, written under the key's `user_ids`. A key removed from
+write id, migration count and record format (plus any fields a newer build added),
+written under the key's `user_ids`. A key removed from
 outside (`RemoveAsync`) is adopted as empty on the next read.
 
 ## Migrate

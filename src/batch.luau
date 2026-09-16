@@ -1,7 +1,7 @@
 local types = require("./types")
 local callbacks = require("./callbacks")
-local claims = require("./claims")
 local children = require("./children")
+local claims = require("./claims")
 local commit = require("./commit")
 local contexts = require("./contexts")
 local handle = require("./handle")
@@ -452,7 +452,9 @@ local function run(world: World, fn: () -> any, is_delta: boolean): Batch
 	if world_state.phase.kind == "closed" then
 		local refused = handle.create_batch()
 		refused:hold(nil, {})
-		refused:refuse("", messages.errors.world_closed(), true)
+		local message = messages.errors.world_closed()
+		refused:refuse("", message, callbacks.is_connected(world_state.hooks, hooks.refused))
+		callbacks.fire(world_state.hooks, hooks.refused, refused, refused, message)
 		return refused
 	end
 	local context = contexts.create_context(world)

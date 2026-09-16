@@ -14,10 +14,10 @@ src/ids.luau          every preregistered component/tag the library exposes
 src/messages.luau     every user-facing string (errors, warnings, closures, reasons)
 src/logging.luau      warn sink (`miumiu.set_warn`), warn_once over a per-world `warned` table
 src/symbol.luau       opaque symbols; hooks.luau holds the hook symbols (pulled, closed, writing, landed, refused)
-src/callbacks.luau    connect/invoke/fire registry behind Session:hook and Batch:hook
+src/callbacks.luau    connect/invoke/fire/is_connected registry behind Session:hook and Batch:hook
 src/mutex.luau        per-session lock (cake-style class)
 src/util.luau         describe, targets_of, sync (no-yield runner), own (copy-on-write), run_all, join_all, create_guard, cached, create_guid
-src/state.luau        per-world state: applying marks, entity shadows, link_states_of, open_session, read_values
+src/state.luau        per-world state: applying marks, entity shadows and removal bookkeeping (forget_removing / mark_removing_field / removing_targets), linked_key, link_states_of, open_session, read_values
 src/contexts.luau     create_context = world + world_state + schema (builds and freezes the schema)
 src/schema.luau       saveable discovery, field_of scopes (roots per collection, kinds), freeze
 src/collection.luau   collection config resolution and validation, store handle
@@ -30,7 +30,7 @@ src/session.luau      one key: journal, watch (a group's landing or loss), merge
 src/pull_loop.luau    the per-session loop (pull_interval when dirty, idle_interval when clean)
 src/recorder.luau     jecs added/changed/removed listeners feeding a sink (pairs packed per write, jecs.Name index); used by capture and migrations
 src/relations.luau    saveable pairs: pack the dictionary of a relation's pairs, apply one onto an entity
-src/children.luau     child index (entity → parent/kind/id), ancestry paths, kind_of, pack / pack_fields_of, delete_tree (marks deleting), stored_children
+src/children.luau     child index (entity → parent/kind/id), ancestry paths, kind_of, pack / pack_fields_of, each_child / each_nested, delete_tree (marks deleting), stored_children
 src/capture.luau      world writes → validated ops, batch capture (undos, carried marks), shadows, lazy flush at write time (flush_lazy), child put/drop ops
 src/claims.luau       child pairs: claim and unclaim (on_attached/on_detached), kind validation, id assignment, claim-time supply (supply_claimed), pre-step child indexing, the recorder sink (install)
 src/reconcile.luau    merged truth → entity (initials, decode, apply; lazy-marked keys skipped), child supply, reset_child, baselines, snapshots, wipe_entity
@@ -44,6 +44,7 @@ src/handle.luau       Batch: the handle batch/delta return (outcome, result and 
 src/index.d.ts        the roblox-ts surface
 tests/specs/          TestEZ specs, never inside src
 tests/coverage.luau   block instrumenter used by the runner
+tests/coverage_check.luau  self-check: instruments fixtures and asserts the marker counts
 tests/run.luau        Lune runner
 tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 ```
@@ -152,10 +153,10 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
   block, and those cover capture/reconcile/step/link/migrations/listeners/children/relations.
   Specs never read `internal_*` fields; `utils.journal`, `utils.session_of` and
   `state.get(world)` cover what the public surface does not; `schema.create_schema`,
-  `collection.resolve_config` and `session:resolve_group` are spec seams, exported for
-  the unit specs and unused by the library. Every spec that opens a
-  fixture or session starts with `afterEach(utils.cleanup)` so nothing keeps pulling
-  into the next test.
+  and `collection.resolve_config` are spec seams, exported for the unit specs and unused
+  by the library. Every spec that opens a fixture or session, or calls
+  `utils.create_backend`, starts with `afterEach(utils.cleanup)` so nothing keeps pulling
+  and the warn sink stops fanning into a dead backend in the next test.
 - Storage is always MockDataStoreService through `utils.create_backend()`: a unique store
   per test, zeroed yields/cooldowns/budgets, `backend:fail_next(op, mode)` for failures,
   `backend:delay_next(op, seconds, mode)` for in-flight windows, `backend.warnings` for
@@ -209,6 +210,6 @@ npm run typecheck
 
 `globalTypes.d.luau` comes from
 `https://raw.githubusercontent.com/JohnnyMorganz/luau-lsp/<version>/scripts/globalTypes.d.luau`
-at the luau-lsp version pinned in `rokit.toml` (CI pins the same in `LUAU_LSP_VERSION`).
+at the luau-lsp version pinned in `rokit.toml` (CI reads that same pin with `sed`).
 `npm run typecheck` keeps `--skipLibCheck` because `@rbxts/types` itself does not pass
 `tsc` without it; `usage.ts` is what exercises `index.d.ts`.

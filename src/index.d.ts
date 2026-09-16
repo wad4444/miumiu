@@ -36,6 +36,8 @@ declare namespace miumiu {
 		version?: number;
 		written?: string;
 		migrations?: number;
+		/** The record-format version this build writes (1). A record in a higher format closes the session, like a newer migration count. */
+		format?: number;
 	}
 
 	/** The part of a lapis collection the import uses. */
@@ -59,7 +61,7 @@ declare namespace miumiu {
 	/** Every foreign source the import understands; lapis is the only one. */
 	export type ForeignSource = LapisSource<any>;
 
-	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes and how long an unawaited single-key batch stays pending, warned under 6 s (the DataStore write cooldown); `idle_interval` (default 60, never under `pull_interval`) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off. `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). Config is validated at link time: a bad value does not throw at `meta`, it lands as `pair(data_error, collection)` on every entity that links. */
+	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes and how long an unawaited single-key batch stays pending, warned under 6 s (the DataStore write cooldown); `idle_interval` (default 60, never under `pull_interval`) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off; `pull_interval = math.huge` runs no loop at all (only `sync`, `await`, unlink and `close` write). `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). Config is validated at link time: a bad value does not throw at `meta`, it lands as `pair(data_error, collection)` on every entity that links. */
 	export interface CollectionConfig {
 		data_store_service?: Pick<DataStoreService, "GetDataStore">;
 		pull_interval?: number;
@@ -130,7 +132,7 @@ declare namespace miumiu {
 	}
 	/** Fires after a pull adopted something new, with the merged truth in stored form. Runs on the pull thread after the session's lock is released: the entities are updated on the next `step`, so read `truth`, not the world. The one hook that may `sync` again. */
 	export type PulledHook = Hook<[truth: Data], "pulled">;
-	/** Fires once when the session closes, with why: final write done, a newer server took the key, or `close` ran out of budget; the latter two refused every single-key batch still riding the session. */
+	/** Fires once when the session closes, with why: final write done, a newer server took the key, or `close` ran out of budget; the latter two refuse every riding batch not already carried by a write in flight. */
 	export type ClosedHook = Hook<[closure: Closure], "closed">;
 	/** What `Session.get_status()` returns. */
 	export type SessionStatus = { kind: "open" } | { kind: "closing" } | { kind: "closed"; closure: Closure };
@@ -150,7 +152,7 @@ declare namespace miumiu {
 	export interface Batch<T = void> {
 		/** `pending`, `landed` or `refused`. */
 		get_outcome(): Outcome;
-		/** What the function returned, available as soon as `batch` returns. A nested call returns the outer handle, so it reports the outer function's result. */
+		/** What the function returned, available as soon as `batch` returns. A nested call returns the outer handle, so it reports the outer function's result. `undefined` for a batch refused on a closed world, whose function never ran. */
 		get_result(): T;
 		/** The stored keys the batch touched, in the order they were first written; empty for a batch that captured nothing. Available as soon as `batch` returns. */
 		get_keys(): readonly string[];
@@ -162,7 +164,7 @@ declare namespace miumiu {
 		await(): SettledOutcome;
 	}
 
-	/** Why a session closed: `clean` after its final write; `refused` when a newer server took the key; `abandoned` when `close` gave up on the final write. Both latter kinds lost the unwritten changes and refused every single-key batch still riding the session. */
+	/** Why a session closed: `clean` after its final write; `refused` when a newer server took the key; `abandoned` when `close` gave up on the final write. Both latter kinds lost the unwritten changes and refused every riding batch not already carried by a write in flight. */
 	export type Closure = { kind: "clean" } | { kind: "refused"; message: string } | { kind: "abandoned"; message: string };
 
 	/** The hook symbols `Session.hook` (`pulled`, `closed`, `writing`), `Batch.hook` (`landed`, `refused`) and the world-level `hook` (`refused`) take. */

@@ -4,6 +4,8 @@ return function()
 	local commit = require(ReplicatedStorage.Packages.miumiu.commit)
 	local utils = require(ReplicatedStorage.Tests.utils)
 
+	afterEach(utils.cleanup)
+
 	local fresh_id = utils.fresh_id
 	local commit_store = utils.commit_store
 	local set = utils.set

@@ -13,7 +13,6 @@ local util = require("./util")
 type World = types.World
 type Entity<T = nil> = types.Entity<T>
 type ChildKind = types.ChildKind
-type ChildRecord = types.ChildRecord
 type ComponentEntry = types.ComponentEntry
 type Context = types.Context
 type Data = types.Data
@@ -300,7 +299,7 @@ local function remove_child(context: Context, child: Entity)
 	world_state.entities[child] = nil
 end
 
-local function supply_children(context: Context, entity: Entity, kinds: { ChildKind }, data: Data)
+local function supply_children(context: Context, entity: Entity, kinds: { ChildKind }, data: Data, resetting: boolean)
 	local index = context.world_state.children
 	util.run_all(kinds, function(kind)
 		local stored = children.stored_children(data, kind)
@@ -333,28 +332,28 @@ local function supply_children(context: Context, entity: Entity, kinds: { ChildK
 				continue
 			end
 			apply_child(context, child, kind, child_data)
-			supply_children(context, child, kind.kinds, child_data)
+			supply_children(context, child, kind.kinds, child_data, false)
 		end
 		for _, child in present do
 			if kind.mode == "owned" then
 				remove_child(context, child)
-			else
+			elseif resetting or state.entity_state(context.world_state, child).tree ~= nil then
 				table.clear(state.entity_state(context.world_state, child).lazy)
 				apply_child(context, child, kind, nil)
-				supply_children(context, child, kind.kinds, {})
+				supply_children(context, child, kind.kinds, {}, true)
 			end
 		end
 	end)
 end
 
-local function supply_child(context: Context, child: Entity, kind: ChildKind, data: Data?)
+local function supply_child(context: Context, child: Entity, kind: ChildKind, data: Data?, resetting: boolean)
 	apply_child(context, child, kind, data)
-	supply_children(context, child, kind.kinds, data or {})
+	supply_children(context, child, kind.kinds, data or {}, resetting)
 end
 
 local function reset_child(context: Context, child: Entity, kind: ChildKind)
 	table.clear(state.entity_state(context.world_state, child).lazy)
-	supply_child(context, child, kind, nil)
+	supply_child(context, child, kind, nil, true)
 end
 
 local function release_children(context: Context, entity: Entity, kinds: { ChildKind })
@@ -384,7 +383,7 @@ local function reconcile(context: Context, entity: Entity, known: State, collect
 	if shallow then
 		return
 	end
-	supply_children(context, entity, root.kinds, known.truth)
+	supply_children(context, entity, root.kinds, known.truth, false)
 end
 
 local function wipe_entity(context: Context, entity: Entity, collection: Entity)

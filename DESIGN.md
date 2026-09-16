@@ -401,8 +401,8 @@ end)
   refused means the group is dropped from every session, the world rolled back (values
   the batch still holds) and a warning when nothing hooked or awaited the handle in the
   same frame. The handle: `get_outcome` (`pending`, `landed`, `refused` with the
-  message), `get_result` (what the function returned), `is_settled`,
-  `hook(landed | refused)` (fires at once when
+  message), `get_result` (what the function returned), `get_keys` (the stored keys it
+  touched), `is_settled`, `hook(landed | refused)` (fires at once when
   already settled, pcalled and warned like session hooks), `await` (yields until settled
   and returns the outcome, never throws: the durability point). A nested `batch` or `delta`
   returns the outer handle. Every key in a multi-key batch must share one
@@ -429,6 +429,7 @@ end)
 	version = 12,
 	written = "0e8f5a6c1d2e3f4a5b6c9c1e3f2a7b4d",
 	migrations = 1,
+	format = 1,
 }
 ```
 
@@ -436,7 +437,11 @@ end)
 the ids of groups this record has taken, with the time, for `commit_timeout` seconds: a
 write that fails after reaching storage is retried, and the retry skips groups the
 record already holds instead of applying `add` twice. `version` bumps on every write.
-`migrations` is how many declared migrations have been applied.
+`migrations` is how many declared migrations have been applied. `format` is the
+record-format version this library writes; a read of a record in a higher `format`
+closes the session like a newer migration count, so an old server cannot mangle a record
+a new one owns. Top-level fields a build does not know are carried through its writes
+untouched, so a new field costs nothing to add.
 
 ## Pull
 
@@ -467,8 +472,9 @@ transform(old):
     landed[group.id] = now
     single-key group     -> replay its ops
     multi-key group      -> pending[group.id] = { created, ops = its entry for this key }
+  format > known           -> fail: a newer server owns the key
   drop landed ids older than commit_timeout
-  return { data = truth, stamps, pending, landed, version + 1, written = new id, migrations = declared }
+  return { data = truth, stamps, pending, landed, version + 1, written = new id, migrations = declared, format = 1 }
                                            (nil when nothing changed)
 ```
 
@@ -737,7 +743,10 @@ a function of the key, returns the user ids every `UpdateAsync` and wipe of that
 carries (the DataStore GDPR association); it must be a function or absent.
 `pull_interval` and `commit_timeout` must be positive, `idle_interval` at least
 `pull_interval`, `retry_attempts` at least 1, `retry_base` at least 0, `commit_store` a
-non-empty string; anything else fails the link. On the real `DataStoreService` a
+non-empty string, `data_store_service` a table offering `GetDataStore`; a config field
+the library does not know fails the link, and so does anything above. `pull_interval =
+math.huge` runs no pull loop at all, so idle reads are off whatever `idle_interval` says:
+only `sync`, `await`, an unlink and `close` write. On the real `DataStoreService` a
 `pull_interval` under Roblox's 6 s per-key write cooldown warns once per collection.
 With `retry_attempts = 5, retry_base = 1` a load during an outage takes 15 s of backoff
 to reach `data_error`. `pull_interval` bounds how long a write, or a single-key batch

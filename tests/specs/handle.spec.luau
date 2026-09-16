@@ -5,6 +5,8 @@ return function()
 	local hooks = require(ReplicatedStorage.Packages.miumiu.hooks)
 	local utils = require(ReplicatedStorage.Tests.utils)
 
+	afterEach(utils.cleanup)
+
 	describe("handle.create_batch", function()
 		it("starts pending and names itself by its outcome", function()
 			local batch = handle.create_batch()

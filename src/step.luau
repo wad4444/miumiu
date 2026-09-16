@@ -134,6 +134,18 @@ local function close(world: World, budget: number?)
 	end
 
 	local context = contexts.create_context(world)
+	local guard = util.create_guard()
+	local events = world_state.events
+	world_state.events = {}
+	for _, event in events do
+		if event.kind == "loaded" then
+			guard.run(function()
+				link.on_loaded(context, event.link, event.session)
+			end)
+		else
+			table.insert(world_state.events, event)
+		end
+	end
 	for root in world_state.pending_drops do
 		link.resolve_drops(context, root)
 	end
@@ -154,6 +166,7 @@ local function close(world: World, budget: number?)
 	if detached.err ~= nil then
 		error(detached.err, 0)
 	end
+	guard.rethrow()
 end
 
 return table.freeze({

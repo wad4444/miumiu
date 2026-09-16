@@ -338,8 +338,19 @@ local function create_schema(world: World): Schema
 		table.insert(collections, collection)
 	end
 	local named: Named = {}
+	local warned = state.get(world).warned
 	for entity in world:each(jecs.Name) do
-		named[world:get(entity, jecs.Name)] = entity
+		local name = world:get(entity, jecs.Name)
+		local owner = named[name]
+		if owner == nil then
+			named[name] = entity
+		else
+			logging.warn_once(
+				warned,
+				`name_shared:{name}`,
+				messages.warnings.name_shared(name, util.describe(world, owner), tostring(entity))
+			)
+		end
 	end
 	local roots: { [Entity]: Fields } = {}
 	for _, collection in collections do

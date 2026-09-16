@@ -75,7 +75,9 @@ local function convert_pending_puts(context: Context, root: Entity)
 		local ancestry = children.ancestry(world_state, entity)
 		if ancestry and ancestry.root == root then
 			world_state.pending_puts[entity] = nil
-			table.insert(world_state.cleanups, { kind = "put", entity = entity })
+			capture.emit_child(context, ancestry, function(found)
+				return capture.child_put(context, found)
+			end, function() end)
 		end
 	end
 end
@@ -218,6 +220,16 @@ end
 
 local function wipe_key(context: Context, collection_entity: Entity, key: string)
 	local link_state = state.link_states_of(context.world_state, collection_entity)[key]
+	if link_state and link_state.phase.kind == "unloading" then
+		local leaving = link_state.phase.session
+		local ok, err = pcall(leaving.wipe, leaving)
+		if ok then
+			return
+		end
+		if leaving:is_open() then
+			error(err, 0)
+		end
+	end
 	local loaded = state.open_session(link_state)
 	if link_state == nil or loaded == nil then
 		session.wipe_key(collection.get(context.world, collection_entity), key)
@@ -285,6 +297,9 @@ local function overlapping_link(context: Context, entity: Entity, collection_ent
 	end
 	local kinds = root.kinds
 	for other in links do
+		if not context.world:has(entity, jecs.pair(ids.data_link, other)) then
+			continue
+		end
 		for _, kind in context.schema.roots[other].kinds do
 			if table.find(kinds, kind) then
 				return other
@@ -396,10 +411,15 @@ local function on_unlink(context: Context, entity: Entity, collection_entity: En
 	end)
 	if key and link_state then
 		forget_link(context, entity, collection_entity)
-		if context.world_state.links[entity] == nil and children.child_of(context.world_state.children, entity) then
+		local held = children.child_of(context.world_state.children, entity)
+		if context.world_state.links[entity] == nil and held then
 			capture.emit_child(context, children.ancestry(context.world_state, entity), function(found)
 				return capture.child_put(context, found)
 			end, function() end)
+			reconcile.refresh_shadows(context, entity, held.kind)
+		end
+		if not context.world:contains(entity) then
+			children.forget_parent(context.world_state.children, entity)
 		end
 		link_state.entities[entity] = nil
 		if link_state.phase.kind == "loaded" then
@@ -490,12 +510,6 @@ local function run_cleanup(context: Context, cleanup: Cleanup)
 	if not context.world:contains(cleanup.entity) then
 		return
 	end
-	if cleanup.kind == "put" then
-		capture.emit_child(context, children.ancestry(context.world_state, cleanup.entity), function(found)
-			return capture.child_put(context, found)
-		end, function() end)
-		return
-	end
 	if children.child_of(context.world_state.children, cleanup.entity) ~= nil then
 		return
 	end
@@ -556,11 +570,6 @@ local function detach_all(context: Context): Detached
 			if loaded then
 				table.insert(sessions, loaded)
 			end
-		end
-	end
-	for _, event in world_state.events do
-		if event.kind == "loaded" then
-			table.insert(sessions, event.session)
 		end
 	end
 	for loaded in world_state.orphans do

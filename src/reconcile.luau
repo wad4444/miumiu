@@ -338,11 +338,10 @@ local function supply_children(context: Context, entity: Entity, kinds: { ChildK
 			supply_children(context, child, kind.kinds, child_data, false)
 		end
 		for _, child in present do
-			if kind.mode == "owned" and context.world_state.pending_puts[child] then
-				context.world_state.pending_puts[child] = nil
-				table.insert(context.world_state.cleanups, { kind = "put", entity = child })
-			elseif kind.mode == "owned" then
-				remove_child(context, child)
+			if kind.mode == "owned" then
+				if not context.world_state.pending_puts[child] then
+					remove_child(context, child)
+				end
 			elseif resetting or state.entity_state(context.world_state, child).tree ~= nil then
 				table.clear(state.entity_state(context.world_state, child).lazy)
 				apply_child(context, child, kind, nil)

@@ -270,10 +270,7 @@ export type SplitPath = {
 
 export type GuardResult = { kind: "ok" } | { kind: "rejected", reason: string? }
 
-export type Cleanup =
-	{ kind: "delete", entity: Entity }
-	| { kind: "reset", entity: Entity, child: ChildKind }
-	| { kind: "put", entity: Entity }
+export type Cleanup = { kind: "delete", entity: Entity } | { kind: "reset", entity: Entity, child: ChildKind }
 
 export type PendingDrop = {
 	entity: Entity,

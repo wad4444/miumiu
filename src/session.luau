@@ -56,7 +56,7 @@ end
 
 local function has_landed(self: SessionInternal, id: string): boolean
 	local collection = self.internal_collection
-	local ok, record = pcall(datastore.get_async, collection.store, self.internal_values.key, datastore.single_attempt)
+	local ok, record = pcall(datastore.get_async, collection.store, self.internal_values.key, collection.config)
 	return ok and type(record) == "table" and type(record.landed) == "table" and record.landed[id] ~= nil
 end
 
@@ -289,6 +289,9 @@ local function resolve_group(self: SessionInternal, id: string, message: string)
 		forget_state(self)
 	end)
 	self.internal_watchers[id] = nil
+	if self.internal_values.status.kind == "closed" then
+		settle_watched(self)
+	end
 	return outcome
 end
 

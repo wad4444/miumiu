@@ -928,5 +928,19 @@ return function()
 			loaded:sync()
 			expect(backend:dump("k").data.money).to.equal(2)
 		end)
+
+		it("retries the landed probe through a transient read failure", function()
+			local backend = utils.create_backend()
+			local loaded = utils.open_session(
+				backend,
+				"k",
+				{ pull_interval = never, retry_attempts = 2, retry_base = utils.timings.fast }
+			)
+			local id = utils.fresh_id()
+			backend:seed("k", { data = { money = 1 }, landed = { [id] = os.time() } })
+			backend:fail_next("GetAsync", "before", "read blip")
+			expect(loaded:resolve_group(id, "gone").kind).to.equal("landed")
+			loaded:unload()
+		end)
 	end)
 end

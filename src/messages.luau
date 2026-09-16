@@ -12,6 +12,8 @@ local reasons = table.freeze({
 	type_changed = "type changed",
 	in_place = "array elements changed in place; build the new array from the old one (table.clone, then insert or remove) so untouched elements keep their identity",
 	string_keys = "dictionary keys must be strings",
+	slash_keys = "dictionary keys cannot contain /",
+	deserialize_nil = "deserialize returned nil",
 	mixed = "array and dictionary mixed",
 	not_a_table = function(kind: string)
 		return `{kind} values cannot be expressed as a delta`
@@ -40,9 +42,14 @@ local errors = table.freeze({
 	saveable_key_invalid = function(id: unknown, key: string)
 		return prefixed(`saveable {id} stores under "{key}": a key cannot contain /`)
 	end,
-	field_of_invalid = function(what: string, id: unknown, target: unknown)
+	field_of_invalid = function(id: unknown, target: unknown)
 		return prefixed(
-			`{what} {id} is a field of {target}, which is neither a collection nor a child kind: pair(miumiu.field_of, x) takes a collection entity or a kind tag`
+			`saveable {id} is a field of {target}, which is neither a collection nor a child kind: pair(miumiu.field_of, x) takes a collection entity or a kind tag`
+		)
+	end,
+	kind_target_invalid = function(tag: unknown, target: unknown)
+		return prefixed(
+			`child kind {tag} is a field of {target}, which is neither a collection nor a child kind: pair(miumiu.field_of, x) takes a collection entity or a kind tag`
 		)
 	end,
 	duplicate_key = function(first: unknown, second: unknown, key: string)
@@ -50,7 +57,7 @@ local errors = table.freeze({
 	end,
 	schema_frozen = function(id: unknown)
 		return prefixed(
-			`{id} changed after the schema was built: declare every saveable, collection, kind and config before the first step, link or batch`
+			`{id} changed after the schema was built: declare every saveable, collection, kind and config before the first step, batch, delta or wipe`
 		)
 	end,
 	not_a_collection = function(entity: unknown)
@@ -85,6 +92,28 @@ local errors = table.freeze({
 			`record "{key}" has {applied} migrations applied but this server declares {declared}: written by a newer server, this server's session on the key ends and its entities get data_error`
 		)
 	end,
+	legacy_is_children = function(key: string, stored_key: string)
+		return prefixed(
+			`record "{key}": "{stored_key}" holds children keyed by id, which the migration already sees as entities; context.legacy is for arrays and keys the schema does not describe`
+		)
+	end,
+	serialize_nil = function(key: string)
+		return prefixed(`serialize for "{key}" returned nil: return a stored form or throw`)
+	end,
+	meta_not_function = function(id: unknown, what: string)
+		return prefixed(`saveable {id}: meta(id, miumiu.{what}, fn) takes a function`)
+	end,
+	serdes_invalid = function(id: unknown)
+		return prefixed(`saveable {id}: meta(id, miumiu.serdes, \{ serialize, deserialize }) takes two functions`)
+	end,
+	world_closed = function()
+		return prefixed(`batch after close: the world is closed and nothing saves`)
+	end,
+	child_group_legacy = function(entity: unknown, tag: unknown, key: string)
+		return prefixed(
+			`child {entity} of kind {tag} cannot be stored: the record holds an array under "{key}" that no migration turned into children; rebuild it through context.legacy("{key}")`
+		)
+	end,
 	legacy_missing = function(key: string, stored_key: string)
 		return prefixed(`record "{key}" has no stored value for legacy key "{stored_key}"`)
 	end,
@@ -104,10 +133,20 @@ local errors = table.freeze({
 			`entity {entity} cannot link to {collection} while linked to {other}: both hold a child kind and would each delete the other's children; scope the kind to one collection with pair(miumiu.field_of, collection)`
 		)
 	end,
-	scope_required = function(unscoped: { string })
+	scope_required = function(saveables: { string }, kinds: { string })
+		local unscoped: { string } = {}
+		for _, id in saveables do
+			table.insert(unscoped, `saveable {id}`)
+		end
+		for _, tag in kinds do
+			table.insert(unscoped, `child kind {tag}`)
+		end
 		return prefixed(
 			`no field_of pair on {table.concat(unscoped, ", ")}: meta(id, pair(miumiu.field_of, collection or kind)) picks where each lives`
 		)
+	end,
+	batch_awaited_inside = function()
+		return prefixed(`a batch cannot be awaited inside its own function: await it once batch returned`)
 	end,
 	batch_expired = function(id: string)
 		return prefixed(`batch {id} took longer than half of commit_timeout to reach its commit and was rolled back`)
@@ -121,7 +160,7 @@ local errors = table.freeze({
 		return prefixed(`value written to "{key}" on {entity} failed its guard (got {typeof(value)}){suffix(message)}`)
 	end,
 	yielded = function(what: string, subject: string)
-		return prefixed(`{what} for "{subject}" yielded; guards, serdes and migrations must not yield`)
+		return prefixed(`{what} for "{subject}" yielded; guards, serdes, snapshots and migrations must not yield`)
 	end,
 	not_a_delta = function(key: string, reason: string)
 		return prefixed(`write to "{key}" inside delta is not a delta: {reason}`)
@@ -176,11 +215,26 @@ local errors = table.freeze({
 	lazy_on_tag = function(id: unknown)
 		return prefixed(`saveable {id} is a tag and cannot be lazy`)
 	end,
-	pairs_meta = function(id: unknown, what: string)
-		return prefixed(`saveable {id} stores pairs and cannot carry {what}`)
+	pairs_meta = function(id: unknown, meta: string)
+		local carried = { guard = "a guard", serdes = "serdes", snapshot = "a snapshot", lazy = "lazy" }
+		return prefixed(`saveable {id} stores pairs and cannot carry {carried[meta]}`)
 	end,
 	pairs_targets_invalid = function(id: unknown)
 		return prefixed(`saveable {id}: meta(id, miumiu.pairs, \{ targets = list }) takes a list of entities`)
+	end,
+	bad_config_field = function(collection: unknown, field: string)
+		return prefixed(`collection {collection}: config has no field "{field}"`)
+	end,
+	bad_service = function(collection: unknown)
+		return prefixed(`collection {collection}: data_store_service must offer GetDataStore`)
+	end,
+	hook_unknown = function(hook: string)
+		return prefixed(`miumiu.hook takes hooks.refused, not {hook}`)
+	end,
+	newer_format = function(key: string, format: number, known: number)
+		return prefixed(
+			`record "{key}" uses record format {format} but this server knows format {known}: written by a newer server, this server's session on the key ends and its entities get data_error`
+		)
 	end,
 	bad_user_ids = function(collection: unknown)
 		return prefixed(`collection {collection}: user_ids must be a function of the key returning a list of user ids`)

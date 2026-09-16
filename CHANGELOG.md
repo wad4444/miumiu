@@ -28,13 +28,44 @@ wipe drops only the lazy marks of the wiped collection; a rollback whose restore
 listener throw still refreshes shadows and resupplies before rethrowing. `migrations`
 and `from_foreign` freeze with the schema.
 
-A batch on one key no longer writes on its own: its group rides the session's next write
-like a plain write, `await` writes it now, and it is refused only when that write fails
-after its retries or the session ends with the group unwritten (a newer server, a `close`
-out of budget, a `wipe`); `landed` fires on the thread that wrote it. A multi-key batch
-still commits at once through the commit store. The scratch supply that runs before a
-migration no longer warns about imported arrays or non-table children under a kind's
-key; the live supply still does.
+BREAKING: a batch on one key no longer writes on its own. Its group rides the session's
+next write like a plain write, so a batch nobody awaits settles up to `pull_interval`
+and its jitter later, never on its own under `pull_interval = math.huge`, and code that
+hooked `landed` without `await` now waits that long; `await` or `sync` keeps the old
+latency. It is refused when the session ends with the group unwritten (a newer server,
+a `close` out of budget, a `wipe`) or when an `await`'s own write fails after its
+retries; a failed interval, `sync` or unlink write keeps it pending and retries it, like
+any unwritten group. `landed` and `refused` fire on the thread that wrote, after the
+session's lock; a write in flight when the session closes settles the batches it
+carries. An `await` inside the batch's own function throws. A multi-key batch still
+commits at once through the commit store. The scratch
+supply that runs before a migration no longer warns about imported arrays or non-table
+children under a kind's key, since the migration is where those shapes get fixed; the
+live supply still does.
+
+Also new: `Batch` reaches roblox-ts (`batch` and `delta` returned `void` in 0.1.0; now
+`Batch<T>`, `is_batch` and the world-level `hook`), `MigrationContext.legacy` is a
+function property (0.1.0 typed it as a method, so roblox-ts passed the context as the
+stored key), `Batch:get_keys()` names the keys a batch touched, records carry
+`format = 1` and a record in a newer format closes the session like newer migrations do,
+top-level record fields this build does not know survive its writes, `config` rejects an
+unknown field and a `data_store_service` without `GetDataStore`, `pull_interval =
+math.huge` spawns no loop, `miumiu.hook` rejects any symbol but `refused`, a guard,
+serdes or snapshot that is not a function fails the schema build, and every pending set
+of one key coalesces into one group across other keys.
+
+Fixed: a claimed attached child is supplied from its record entry alone, so a field it
+shed stays gone (pre-claim values stand only until the first put); a child added under
+an imported array group throws until a migration rebuilds it instead of making the
+record unwritable; a migration that touches an attached child no longer packs initials
+into it; `context.legacy` refuses a kind key the record already holds as children;
+`delta` rejects dictionary keys containing `/`; a serialize that returns nil throws
+instead of removing the component; a deserialize that returns nil is skipped with a
+warning; an unchanged lazy write no longer dirties the session; an awaited batch whose
+lost-response write is followed by a newer record lands instead of being refused; a
+batch on a closed world is refused without running its function; a leave with only an
+undecided shared group, or lazy marks that died with their entity, closes without a
+request; an empty-diff `delta` lands at once.
 
 ## 0.1.0 (2026-09-07)
 

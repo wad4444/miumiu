@@ -7,6 +7,7 @@ type Context = types.Context
 type Data = types.Data
 type EntityState = types.EntityState
 type LinkState = types.LinkState
+type Removal = types.Removal
 type SchemaEntry = types.SchemaEntry
 type SessionInternal = types.SessionInternal
 type WorldState = types.WorldState
@@ -22,8 +23,7 @@ local function get(world: World): WorldState
 		collections = {},
 		schema = nil,
 		disconnects = {},
-		closed = false,
-		stepping = false,
+		phase = { kind = "idle" },
 		applying = nil,
 		capture = nil,
 		entities = {},
@@ -53,6 +53,39 @@ local function with_applying(world_state: WorldState, entity: Entity, id: Entity
 	if not ok then
 		error(err, 0)
 	end
+end
+
+local function removing_of(world_state: WorldState, entity: Entity): { [string]: Removal }?
+	local existing = world_state.entities[entity]
+	return if existing then existing.removing else nil
+end
+
+local function forget_removing(world_state: WorldState, entity: Entity, key: string)
+	local removing = removing_of(world_state, entity)
+	if removing then
+		removing[key] = nil
+	end
+end
+
+local function mark_removing_field(world_state: WorldState, entity: Entity, key: string)
+	local removing = removing_of(world_state, entity)
+	if removing then
+		removing[key] = { kind = "field" }
+	end
+end
+
+local function removing_targets(world_state: WorldState, entity: Entity, key: string): { [Entity]: boolean }
+	local removing = removing_of(world_state, entity)
+	if removing == nil then
+		return {}
+	end
+	local existing = removing[key]
+	if existing and existing.kind == "targets" then
+		return existing.targets
+	end
+	local targets: { [Entity]: boolean } = {}
+	removing[key] = { kind = "targets", targets = targets }
+	return targets
 end
 
 local function is_applying(world_state: WorldState, entity: Entity, id: Entity<any>): boolean
@@ -115,6 +148,9 @@ return table.freeze({
 	get = get,
 	with_applying = with_applying,
 	is_applying = is_applying,
+	forget_removing = forget_removing,
+	mark_removing_field = mark_removing_field,
+	removing_targets = removing_targets,
 	entity_state = entity_state,
 	read_values = read_values,
 	linked_key = linked_key,

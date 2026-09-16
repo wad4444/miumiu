@@ -22,7 +22,7 @@ type Detached = types.Detached
 type LinkPhase = types.LinkPhase
 type LinkState = types.LinkState
 type LinkStatus = types.LinkStatus
-type RefusedClosure = types.RefusedClosure
+type DropReason = types.DropReason
 type Session = types.Session
 type SessionInternal = types.SessionInternal
 type WorldState = types.WorldState
@@ -395,12 +395,24 @@ local function on_loaded(context: Context, link_state: LinkState, loaded: Sessio
 	end
 end
 
-local function drop_link(context: Context, link_state: LinkState, err: string?, release: boolean)
+local function error_of(reason: DropReason): string?
+	if reason.kind == "failed" then
+		return reason.message
+	end
+	if reason.kind == "unloaded" then
+		return nil
+	end
+	local closure = reason.closure
+	return if closure.kind == "clean" then nil else closure.message
+end
+
+local function drop_link(context: Context, link_state: LinkState, reason: DropReason)
 	state.link_states_of(context.world_state, link_state.collection)[link_state.key] = nil
+	local err = error_of(reason)
 	util.run_all(entities_of(link_state), function(entity)
 		forget_link(context, entity, link_state.collection)
 		mark(context, entity, link_state.collection, "none", err)
-		if release then
+		if reason.kind == "closed" then
 			reconcile.release_children(context, entity, context.schema.roots[link_state.collection].kinds)
 		end
 	end)
@@ -410,7 +422,7 @@ local function on_load_failed(context: Context, link_state: LinkState, err: stri
 	if not is_current(context, link_state) then
 		return
 	end
-	drop_link(context, link_state, err, false)
+	drop_link(context, link_state, { kind = "failed", message = err })
 end
 
 local function on_closed(context: Context, link_state: LinkState, closed: SessionInternal)
@@ -419,12 +431,12 @@ local function on_closed(context: Context, link_state: LinkState, closed: Sessio
 	end
 	local phase = link_state.phase
 	if phase.kind == "unloading" then
-		drop_link(context, link_state, nil, false)
+		drop_link(context, link_state, { kind = "unloaded" })
 	elseif phase.kind == "loaded" then
 		phase.disconnect()
 		local status = closed:get_status()
 		if status.kind == "closed" then
-			drop_link(context, link_state, (status.closure :: RefusedClosure).message, true)
+			drop_link(context, link_state, { kind = "closed", closure = status.closure })
 		end
 	end
 end

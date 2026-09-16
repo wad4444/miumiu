@@ -59,7 +59,7 @@ declare namespace miumiu {
 	/** Every foreign source the import understands; lapis is the only one. */
 	export type ForeignSource = LapisSource<any>;
 
-	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes, warned under 6 s (the DataStore write cooldown); `idle_interval` (default 60, never under `pull_interval`) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off. `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). Config is validated at link time: a bad value does not throw at `meta`, it lands as `pair(data_error, collection)` on every entity that links. */
+	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes and how long an unawaited single-key batch stays pending, warned under 6 s (the DataStore write cooldown); `idle_interval` (default 60, never under `pull_interval`) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off. `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). Config is validated at link time: a bad value does not throw at `meta`, it lands as `pair(data_error, collection)` on every entity that links. */
 	export interface CollectionConfig {
 		data_store_service?: Pick<DataStoreService, "GetDataStore">;
 		pull_interval?: number;
@@ -130,7 +130,7 @@ declare namespace miumiu {
 	}
 	/** Fires after a pull adopted something new, with the merged truth in stored form. Runs on the pull thread after the session's lock is released: the entities are updated on the next `step`, so read `truth`, not the world. The one hook that may `sync` again. */
 	export type PulledHook = Hook<[truth: Data], "pulled">;
-	/** Fires once when the session closes, with why: final write done, a newer server took the key, or `close` ran out of budget. */
+	/** Fires once when the session closes, with why: final write done, a newer server took the key, or `close` ran out of budget; the latter two refused every single-key batch still riding the session. */
 	export type ClosedHook = Hook<[closure: Closure], "closed">;
 	/** What `Session.get_status()` returns. */
 	export type SessionStatus = { kind: "open" } | { kind: "closing" } | { kind: "closed"; closure: Closure };
@@ -138,12 +138,12 @@ declare namespace miumiu {
 	export type WritingHook = Hook<[], "writing">;
 	/** Fires once a batch's group is in every record it touched. Connecting after that fires at once. */
 	export type LandedHook = Hook<[], "landed">;
-	/** Fires once a batch's commit failed: the group was dropped from every session and the world rolled back (only values the batch still held). Connecting after that fires at once. A write made in the callback is an ordinary journaled write. */
+	/** Fires once the batch is refused (a newer server took the key, `close` gave up, `wipe`, an `await`'s write failed after its retries, a multi-key commit failed): the group was dropped from every session and the world rolled back (only values the batch still held). Connecting after that fires at once. A write made in the callback is an ordinary journaled write, except when the refusal closed the session: the key no longer saves. */
 	export type RefusedHook = Hook<[message: string], "refused">;
 
 	/** A batch that is no longer pending: `landed`, or `refused` with the message. */
 	export type SettledOutcome = { kind: "landed" } | { kind: "refused"; message: string };
-	/** Where a batch stands: `pending` until its commit finishes, then `landed` or `refused`. */
+	/** Where a batch stands: `pending` until it settles, then `landed` or `refused`. */
 	export type Outcome = { kind: "pending" } | SettledOutcome;
 
 	/** The handle `batch` and `delta` return. A group on one key rides the session's next write and `await` writes it now; a group over several keys commits in the background. Hook or await it. `T` is what the function returned. */
@@ -152,16 +152,17 @@ declare namespace miumiu {
 		get_outcome(): Outcome;
 		/** What the function returned, available as soon as `batch` returns. A nested call returns the outer handle, so it reports the outer function's result. */
 		get_result(): T;
+		/** The stored keys the batch touched, in the order they were first written; empty for a batch that captured nothing. Available as soon as `batch` returns. */
+		get_keys(): readonly string[];
 		/** True once landed or refused. */
 		is_settled(): boolean;
 		/** Connect to `landed` or `refused`; fires at once if already settled. Returns a disconnect. Callbacks are pcalled and a throw is warned, never raised. */
-		hook(hook: LandedHook, callback: () => void): () => void;
-		hook(hook: RefusedHook, callback: (message: string) => void): () => void;
-		/** Writes a single-key batch now, then yields until settled and returns the outcome (`landed`, or `refused` with the message); never throws. The result is the decision: branch on it, never discard it. The durability point for receipts. A refusal warns when nothing hooked `refused` or awaited the batch in the same frame. */
+		hook<H extends LandedHook | RefusedHook>(hook: H, callback: (...args: H["__hook"]) => void): () => void;
+		/** Writes a single-key batch now, then yields until settled and returns the outcome (`landed`, or `refused` with the message); never throws, except when called inside the batch's own function. The result is the decision: branch on it, never discard it. The durability point for receipts. A refusal warns when nothing hooked `refused` or awaited the batch in the same frame. */
 		await(): SettledOutcome;
 	}
 
-	/** Why a session closed: `clean` after its final write; `refused` when a newer server took the key; `abandoned` when `close` gave up on the final write. Both latter kinds lost the unwritten changes. */
+	/** Why a session closed: `clean` after its final write; `refused` when a newer server took the key; `abandoned` when `close` gave up on the final write. Both latter kinds lost the unwritten changes and refused every single-key batch still riding the session. */
 	export type Closure = { kind: "clean" } | { kind: "refused"; message: string } | { kind: "abandoned"; message: string };
 
 	/** The hook symbols `Session.hook` (`pulled`, `closed`, `writing`), `Batch.hook` (`landed`, `refused`) and the world-level `hook` (`refused`) take. */
@@ -189,12 +190,10 @@ declare namespace miumiu {
 		is_open(): boolean;
 		/** True while ops are journaled but not yet written, including while a write is in flight. */
 		is_dirty(): boolean;
-		/** Rebase unwritten changes onto the live record and write them now instead of waiting for `pull_interval`. Yields; returns only once every change journaled before the call is in the record, and throws otherwise (write failed after its retries, session refused or closed). The boolean says whether something new from elsewhere was adopted, not whether the write happened. The durability point for a plain write; receipts await a `batch`. */
+		/** Rebase unwritten changes onto the live record and write them now instead of waiting for `pull_interval`. Yields; returns only once every change journaled before the call is in the record, and throws otherwise (write failed after its retries, session refused or closed). The boolean says whether something new from elsewhere was adopted, not whether the write happened. The durability point for a plain write; receipts await a `batch`. Lands every single-key batch journaled before the call and fires its hooks here; a refusal inside (newer server, closed) refuses them, a failed write leaves them pending. */
 		sync(): boolean;
 		/** Connect to `pulled`, `closed` or `writing`; returns a disconnect. Callbacks are pcalled and a throw is warned, never raised. */
-		hook(hook: PulledHook, callback: (truth: Data) => void): () => void;
-		hook(hook: ClosedHook, callback: (closure: Closure) => void): () => void;
-		hook(hook: WritingHook, callback: () => void): () => void;
+		hook<H extends PulledHook | ClosedHook | WritingHook>(hook: H, callback: (...args: H["__hook"]) => void): () => void;
 	}
 
 	/** Drain queued link/unlink/load/pull events into the world. Call every Heartbeat. No-op after `close`. Unlink, then `step`, then delete the entity: a root deleted while linked keeps its record, and its owned children are deleted with it on the next `step`. */
@@ -203,7 +202,7 @@ declare namespace miumiu {
 	export function close(world: World, budget?: number): void;
 	/** The open session behind `pair(data_link, collection) = key`, or undefined while loading, failed, unlinked or writing its final record after an unlink. `collection` is the collection tag. */
 	export function get_session(world: World, collection: Entity, key: string): Session | undefined;
-	/** Erase a key in one write: a fresh empty record, every stored key stamped past its old stamp. A loaded key also drops its unwritten changes and lazy marks, puts initials back on every linked entity, deletes its owned children and resets attached ones; a key nobody here holds is wiped straight in the store. Yields; throws if the write fails, keeping everything. */
+	/** Erase a key in one write: a fresh empty record, every stored key stamped past its old stamp. A loaded key also drops its unwritten changes and lazy marks, refuses every single-key batch still riding it (their hooks fire inside the call), puts initials back on every linked entity, deletes its owned children and resets attached ones; a key nobody here holds is wiped straight in the store. Yields; throws if the write fails, keeping everything. A multi-key batch mid-commit on the key is not refused: its pending entry goes with the record while its other keys may still land it. */
 	export function wipe(world: World, collection: Entity, key: string): void;
 	/** Every write inside lands as one group, on every key it touches, or none. Runs `fn` now, journals the group and returns without yielding; on one key the group rides the session's next write (`await` writes it now, for receipts), across keys it commits in the background, and the returned `Batch` reports it. A write `fn` cannot make (guard, unloaded entity, `fn` throwing) or keys on collections with different commit stores throw here and roll the world back at once; a commit refused later rolls back only the values the batch still holds and fires `refused`. A nested call joins the outer batch and returns the outer handle. A batch that captured no saveable write lands at once; snapshots are evaluated at write time outside any batch. */
 	export function batch<T = void>(world: World, fn: () => T): Batch<T>;

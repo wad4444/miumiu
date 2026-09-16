@@ -1,4 +1,5 @@
 local types = require("./types")
+local messages = require("./messages")
 local util = require("./util")
 
 type Change = types.Change
@@ -10,7 +11,11 @@ type SyncKind = types.SyncKind
 
 local function stored_form(entry: SchemaEntry, value: any): any
 	if entry.kind == "component" and entry.serdes and value ~= nil then
-		return util.sync("serialize", entry.key, entry.serdes.serialize, value)
+		local stored = util.sync("serialize", entry.key, entry.serdes.serialize, value)
+		if stored == nil then
+			error(messages.errors.serialize_nil(entry.key), 0)
+		end
+		return stored
 	end
 	return value
 end

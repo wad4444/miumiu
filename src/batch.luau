@@ -1,6 +1,6 @@
 local types = require("./types")
 local callbacks = require("./callbacks")
-local capture = require("./capture")
+local claims = require("./claims")
 local children = require("./children")
 local commit = require("./commit")
 local contexts = require("./contexts")
@@ -23,7 +23,6 @@ type Entity<T = nil> = types.Entity<T>
 type Batch = types.Batch
 type Capture = types.Capture
 type CaptureEntry = types.CaptureEntry
-type ChildKind = types.ChildKind
 type Context = types.Context
 type Data = types.Data
 type ResolvedCollectionConfig = types.ResolvedCollectionConfig
@@ -32,7 +31,7 @@ type SettledOutcome = types.SettledOutcome
 type Touched = types.Touched
 type Undo = types.Undo
 
-local function still_ours(context: Context, undo: Undo): boolean
+local function is_still_ours(context: Context, undo: Undo): boolean
 	local world = context.world
 	if undo.kind == "component" then
 		return world:get(undo.entity, undo.entry.id) == undo.value
@@ -73,7 +72,7 @@ local function undo_one(context: Context, undo: Undo, carried: boolean)
 			world:add(undo.entity, kind.tag)
 			world:add(undo.entity, jecs.pair(kind.via, undo.parent))
 			if kind.mode == "attached" then
-				capture.supply_claimed(context, undo.entity, kind)
+				claims.supply_claimed(context, undo.entity, kind)
 			end
 			return
 		end
@@ -100,14 +99,7 @@ local function undo_one(context: Context, undo: Undo, carried: boolean)
 		return
 	end
 	if undo.kind == "relation" then
-		relations.apply(
-			world,
-			undo.entry,
-			undo.entity,
-			context.schema.named,
-			undo.previous or {},
-			context.world_state.warned
-		)
+		reconcile.write_entry(context, undo.entity, undo.entry, undo.previous)
 		return
 	end
 	if undo.kind == "tag" then
@@ -116,11 +108,9 @@ local function undo_one(context: Context, undo: Undo, carried: boolean)
 		else
 			world:remove(undo.entity, undo.id)
 		end
-	elseif undo.previous ~= nil then
-		world:set(undo.entity, undo.entry.id, undo.previous)
-	else
-		world:remove(undo.entity, undo.entry.id)
+		return
 	end
+	reconcile.write_entry(context, undo.entity, undo.entry, undo.previous)
 end
 
 local function applied_id(undo: Undo): Entity<any>?
@@ -159,7 +149,7 @@ local function undo_all(context: Context, captured: Capture, touched: Touched)
 		if not world:contains(undo.entity) then
 			continue
 		end
-		if not still_ours(context, undo) then
+		if not is_still_ours(context, undo) then
 			if undo.kind == "child" then
 				local ok, err =
 					pcall(reconcile.repair_fields, context, undo.entity, undo.child, undo.previous, undo.value)
@@ -251,6 +241,11 @@ local function forget_capture(context: Context, captured: Capture)
 	end
 end
 
+local function land(context: Context, captured: Capture)
+	forget_capture(context, captured)
+	captured.batch:land()
+end
+
 local function open_entries(entries: { CaptureEntry }): { CaptureEntry }
 	local open: { CaptureEntry } = {}
 	for _, entry in entries do
@@ -263,7 +258,7 @@ end
 
 local function rollback(context: Context, captured: Capture)
 	local world_state = context.world_state
-	if world_state.closed then
+	if world_state.phase.kind == "closed" then
 		return
 	end
 	disinherit(context, captured)
@@ -309,9 +304,9 @@ local function settle(entries: { CaptureEntry }, id: string)
 	end)
 end
 
-local function abandon_all(entries: { CaptureEntry }, id: string)
+local function drop_groups(entries: { CaptureEntry }, id: string)
 	for _, entry in open_entries(entries) do
-		entry.session:abandon(id)
+		entry.session:drop_group(id)
 	end
 end
 
@@ -339,19 +334,17 @@ local function keys_of(entries: { CaptureEntry }): { string }
 end
 
 local function fail(context: Context, captured: Capture, id: string, err: unknown)
-	abandon_all(captured.entries, id)
+	drop_groups(captured.entries, id)
 	try_rollback(context, captured, id)
 	forget_capture(context, captured)
-	local heard = context.world_state.hooks[hooks.refused]
 	local message = tostring(err)
-	captured.batch:refuse(id, keys_of(captured.entries), message, heard ~= nil and #heard > 0)
+	captured.batch:refuse(id, message, callbacks.is_connected(context.world_state.hooks, hooks.refused))
 	callbacks.fire(context.world_state.hooks, hooks.refused, captured.batch, captured.batch, message)
 end
 
 local function settle_single(context: Context, captured: Capture, outcome: SettledOutcome)
 	if outcome.kind == "landed" then
-		forget_capture(context, captured)
-		captured.batch:land()
+		land(context, captured)
 		return
 	end
 	fail(context, captured, captured.id, outcome.message)
@@ -359,28 +352,29 @@ end
 
 local function flush_single(context: Context, captured: Capture, entry: CaptureEntry)
 	local batch = captured.batch
-	if batch:is_settled() or captured.flushing then
-		return
-	end
-	captured.flushing = true
 	local session = entry.session
 	local id = captured.id
 	local _, err = pcall(session.sync, session)
-	captured.flushing = false
 	if batch:is_settled() then
 		return
 	end
-	if session:has_landed(id) then
-		session:abandon(id)
-		settle(captured.entries, id)
-		forget_capture(context, captured)
-		batch:land()
+	local resolved, outcome = pcall(session.resolve_group, session, id, tostring(err))
+	if not resolved or batch:is_settled() then
 		return
 	end
-	fail(context, captured, id, err)
+	if outcome.kind == "landed" then
+		settle(captured.entries, id)
+		land(context, captured)
+		return
+	end
+	fail(context, captured, id, outcome.message)
 end
 
 local function commit_single(context: Context, captured: Capture, entry: CaptureEntry)
+	if #entry.ops == 0 then
+		land(context, captured)
+		return
+	end
 	local session = entry.session
 	local id = captured.id
 	local ok, err = pcall(session.journal, session, { id = id, ops = entry.ops, kind = "single" })
@@ -425,15 +419,13 @@ local function commit_shared(context: Context, captured: Capture)
 		return
 	end
 	settle(entries, id)
-	forget_capture(context, captured)
-	captured.batch:land()
+	land(context, captured)
 end
 
 local function commit_capture(context: Context, captured: Capture)
 	local entries = captured.entries
 	if #entries == 0 then
-		forget_capture(context, captured)
-		captured.batch:land()
+		land(context, captured)
 		return
 	end
 	if #entries == 1 then
@@ -457,12 +449,17 @@ local function run(world: World, fn: () -> any, is_delta: boolean): Batch
 		return outer.batch
 	end
 
+	if world_state.phase.kind == "closed" then
+		local refused = handle.create_batch()
+		refused:hold(nil, {})
+		refused:refuse("", messages.errors.world_closed(), true)
+		return refused
+	end
 	local context = contexts.create_context(world)
 	listeners.install(context)
 	local captured: Capture = {
 		id = util.create_guid(),
 		delta = is_delta,
-		flushing = false,
 		undo = {},
 		entries = {},
 		children = {},
@@ -470,6 +467,7 @@ local function run(world: World, fn: () -> any, is_delta: boolean): Batch
 	}
 	table.insert(world_state.captures, captured)
 	world_state.capture = captured
+	captured.batch:enter()
 	local ok, result = pcall(fn)
 	world_state.capture = nil
 	if ok and #captured.entries > 1 then
@@ -480,7 +478,7 @@ local function run(world: World, fn: () -> any, is_delta: boolean): Batch
 		forget_capture(context, captured)
 		error(result, 0)
 	end
-	captured.batch:hold(result)
+	captured.batch:hold(result, keys_of(captured.entries))
 	task.spawn(commit_capture, context, captured)
 	return captured.batch
 end

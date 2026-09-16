@@ -12,7 +12,7 @@ type Named = types.Named
 type RelationEntry = types.RelationEntry
 type Warned = types.Warned
 
-local function takes(entry: RelationEntry, target: Entity): boolean
+local function is_target(entry: RelationEntry, target: Entity): boolean
 	local targets = entry.targets
 	return targets == nil or targets[target] == true
 end
@@ -28,7 +28,7 @@ local function pack(
 	local packed: Data = {}
 	local any = false
 	for _, target in util.targets_of(world, entity, entry.id) do
-		if (except and except[target]) or not takes(entry, target) then
+		if (except and except[target]) or not is_target(entry, target) then
 			continue
 		end
 		local name = world:get(target, jecs.Name)
@@ -77,7 +77,7 @@ local function apply(world: World, entry: RelationEntry, entity: Entity, named: 
 			)
 			continue
 		end
-		if not takes(entry, target) then
+		if not is_target(entry, target) then
 			continue
 		end
 		local pair = jecs.pair(entry.id, target)
@@ -91,7 +91,7 @@ local function apply(world: World, entry: RelationEntry, entity: Entity, named: 
 	end
 	for _, target in util.targets_of(world, entity, entry.id) do
 		local name = world:get(target, jecs.Name)
-		if not takes(entry, target) or type(name) ~= "string" or named[name] ~= target or value[name] ~= nil then
+		if not is_target(entry, target) or type(name) ~= "string" or named[name] ~= target or value[name] ~= nil then
 			continue
 		end
 		local pair = jecs.pair(entry.id, target)

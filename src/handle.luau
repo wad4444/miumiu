@@ -6,6 +6,7 @@ local messages = require("./messages")
 local symbol = require("./symbol")
 
 type BatchInternal = types.BatchInternal
+type BatchPhase = types.BatchPhase
 type Callback = types.Callback
 type Outcome = types.Outcome
 type SettledOutcome = types.SettledOutcome
@@ -18,7 +19,12 @@ local function get_outcome(self: BatchInternal): Outcome
 end
 
 local function get_result(self: BatchInternal): any
-	return self.internal_values.result
+	local phase = self.internal_values.phase
+	return if phase.kind == "held" then phase.result else nil
+end
+
+local function get_keys(self: BatchInternal): { string }
+	return self.internal_keys
 end
 
 local function is_settled(self: BatchInternal): boolean
@@ -36,9 +42,14 @@ local function hook(self: BatchInternal, hook_symbol: Symbol, callback: Callback
 end
 
 local function await(self: BatchInternal): SettledOutcome
-	self.internal_values.awaited = true
-	local flush = self.internal_values.flush
+	local values = self.internal_values
+	if values.phase.kind == "running" then
+		error(messages.errors.batch_awaited_inside(), 0)
+	end
+	values.awaited = true
+	local flush = values.flush
 	if flush ~= nil and not is_settled(self) then
+		values.flush = nil
 		flush()
 	end
 	if not is_settled(self) then
@@ -56,7 +67,8 @@ local function settle(self: BatchInternal, outcome: Outcome)
 	if is_settled(self) then
 		return
 	end
-	self.internal_values.outcome = outcome
+	self.internal_values.outcome = table.freeze(outcome)
+	self.internal_values.flush = nil
 	if outcome.kind == "refused" then
 		callbacks.fire(self.internal_hooks, hooks.refused, self, outcome.message)
 	else
@@ -71,20 +83,28 @@ local function settle(self: BatchInternal, outcome: Outcome)
 	end
 end
 
-local function hold(self: BatchInternal, result: any)
-	self.internal_values.result = result
+local function enter(self: BatchInternal)
+	self.internal_values.phase = { kind = "running" }
+end
+
+local function hold(self: BatchInternal, result: any, keys: { string })
+	self.internal_values.phase = { kind = "held", result = result }
+	self.internal_keys = table.freeze(table.clone(keys))
 end
 
 local function land(self: BatchInternal)
 	settle(self, { kind = "landed" })
 end
 
-local function refuse(self: BatchInternal, id: string, keys: { string }, message: string, heard: boolean)
+local function refuse(self: BatchInternal, id: string, message: string, heard: boolean)
 	settle(self, { kind = "refused", message = message })
 	task.defer(function()
-		local listeners = self.internal_hooks[hooks.refused]
-		if not heard and not self.internal_values.awaited and (listeners == nil or #listeners == 0) then
-			logging.warn(messages.warnings.batch_refused(id, keys, message))
+		if
+			not heard
+			and not self.internal_values.awaited
+			and not callbacks.is_connected(self.internal_hooks, hooks.refused)
+		then
+			logging.warn(messages.warnings.batch_refused(id, self.internal_keys, message))
 		end
 	end)
 end
@@ -96,18 +116,21 @@ end
 local template = {
 	symbol = batch_symbol,
 	internal_values = {
-		outcome = { kind = "pending" } :: Outcome,
-		result = nil :: any,
+		outcome = table.freeze({ kind = "pending" }) :: Outcome,
+		phase = table.freeze({ kind = "held", result = nil }) :: BatchPhase,
 		awaited = false,
 		flush = nil :: (() -> ())?,
 	},
 	internal_hooks = {},
 	internal_waiters = {},
+	internal_keys = table.freeze({}),
 	get_outcome = get_outcome,
 	get_result = get_result,
+	get_keys = get_keys,
 	is_settled = is_settled,
 	hook = hook,
 	await = await,
+	enter = enter,
 	hold = hold,
 	land = land,
 	refuse = refuse,

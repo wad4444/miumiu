@@ -1,5 +1,5 @@
 local types = require("./types")
-local capture = require("./capture")
+local claims = require("./claims")
 local ids = require("./ids")
 local jecs = require("./dependencies/jecs")
 local state = require("./state")
@@ -40,7 +40,7 @@ local function install(context: Context)
 		return
 	end
 
-	local disconnects = capture.install(context)
+	local disconnects = claims.install(context)
 	table.insert(
 		disconnects,
 		world:added(ids.data_link, function(entity, id, key)

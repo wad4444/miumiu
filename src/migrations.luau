@@ -138,12 +138,19 @@ local function create_scratch(schema: Schema, root: Fields, warned: Warned): Mig
 	return scratch
 end
 
-local function set_stored(scratch: MigrationScratch, entity: Entity, entries: { SchemaEntry }, key: string, data: Data)
+local function set_stored(
+	scratch: MigrationScratch,
+	entity: Entity,
+	entries: { SchemaEntry },
+	key: string,
+	data: Data,
+	with_initials: boolean
+)
 	local world = scratch.world
 	for _, entry in entries do
 		local value = data[entry.key]
 		if entry.kind == "tag" then
-			if value == true or (value == nil and entry.has_initial) then
+			if value == true or (value == nil and with_initials and entry.initial.kind == "value") then
 				world:add(entity, entry.id)
 			end
 			continue
@@ -155,8 +162,9 @@ local function set_stored(scratch: MigrationScratch, entity: Entity, entries: { 
 			continue
 		end
 		if value == nil then
-			if entry.has_initial then
-				world:set(entity, entry.id, ops.deep_copy(entry.initial))
+			local initial = entry.initial
+			if with_initials and initial.kind == "value" then
+				world:set(entity, entry.id, ops.deep_copy(initial.value))
 			end
 			continue
 		end
@@ -172,7 +180,7 @@ end
 local function spawn_tree(scratch: MigrationScratch, kinds: { ChildKind }, key: string, parent: Entity, data: Data)
 	local world = scratch.world
 	for _, kind in kinds do
-		for id, child_data in children.stored_children(data, kind, nil) do
+		for id, child_data in children.stored_children(data, kind).named do
 			if type(child_data) ~= "table" then
 				continue
 			end
@@ -183,7 +191,7 @@ local function spawn_tree(scratch: MigrationScratch, kinds: { ChildKind }, key: 
 			else
 				world:set(child, ids.child_id, id)
 			end
-			set_stored(scratch, child, kind.entries, key, child_data)
+			set_stored(scratch, child, kind.entries, key, child_data, kind.mode == "owned")
 			world:add(child, jecs.pair(kind.via, parent))
 			spawn_tree(scratch, kind.kinds, key, child, child_data)
 		end
@@ -191,7 +199,7 @@ local function spawn_tree(scratch: MigrationScratch, kinds: { ChildKind }, key: 
 end
 
 local function supply(scratch: MigrationScratch, root: Fields, key: string, data: Data)
-	set_stored(scratch, scratch.entity, root.entries, key, data)
+	set_stored(scratch, scratch.entity, root.entries, key, data, true)
 	spawn_tree(scratch, root.kinds, key, scratch.entity, data)
 end
 
@@ -215,6 +223,11 @@ local function create_migration_context(
 		if data[stored_key] == nil then
 			error(messages.errors.legacy_missing(key, stored_key), 0)
 		end
+		for _, kind in schema.kinds do
+			if kind.key == stored_key and next(children.stored_children(data, kind).named) ~= nil then
+				error(messages.errors.legacy_is_children(key, stored_key), 0)
+			end
+		end
 		id = world:entity()
 		world:add(id, jecs.Component)
 		world:set(id, jecs.Name, `miumiu.legacy.{stored_key}`)
@@ -223,8 +236,7 @@ local function create_migration_context(
 			kind = "component",
 			id = id,
 			key = stored_key,
-			has_initial = false,
-			initial = nil,
+			initial = { kind = "none" },
 			holders = {},
 		}, scratch.named, scratch.sink)
 		scratch.recording = false

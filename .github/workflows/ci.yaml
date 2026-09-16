@@ -49,6 +49,9 @@ jobs:
       - name: Analyze
         run: luau-lsp analyze --sourcemap=sourcemap.json --definitions=globalTypes.d.luau --definitions=tests/testez.d.luau --base-luaurc=.luaurc src tests/specs tests/main.server.luau
 
+      - name: Forbid literal waits in specs
+        run: "! grep -rnE 'task\\.wait\\([0-9]' tests/specs"
+
   types:
     name: TypeScript
     runs-on: ubuntu-latest
@@ -87,6 +90,9 @@ jobs:
 
       - name: Install Wally packages
         run: wally install
+
+      - name: Check the coverage instrumenter
+        run: lune run tests/coverage_check.luau
 
       - name: Build test place
         run: rojo build test.project.json -o test.rbxl

@@ -19,10 +19,7 @@ export type DataStoreService = {
 	GetDataStore: (self: DataStoreService, name: string) -> DataStore,
 }
 
-export type UpdateResult<T> = {
-	value: T?,
-	written: boolean,
-}
+export type UpdateResult<T> = { kind: "written", value: T } | { kind: "unchanged", value: T? }
 
 export type Data = { [string]: any }
 
@@ -69,6 +66,7 @@ export type StoredRecord = {
 	version: number?,
 	written: string?,
 	migrations: number?,
+	format: number?,
 }
 
 export type CommitStatus = "committed" | "failed" | "undecided" | "unknown"
@@ -101,7 +99,10 @@ export type MigrationContext = {
 export type Migration = (world: World, entity: Entity, context: MigrationContext) -> ()
 export type Migrate = (truth: Data, applied: number) -> Data
 
-export type Migrated = { kind: "state", state: State, migrated: boolean } | { kind: "newer", message: string }
+export type Migrated =
+	{ kind: "migrated", state: State }
+	| { kind: "unchanged", state: State }
+	| { kind: "newer", message: string }
 
 export type Guard = (value: any) -> (boolean, string?)
 
@@ -116,12 +117,13 @@ export type Snapshot = (world: World, entity: Entity) -> any
 
 export type Holders = { [Entity]: boolean }
 
+export type Initial = { kind: "none" } | { kind: "value", value: any }
+
 export type ComponentEntry = {
 	kind: "component",
 	id: Entity<any>,
 	key: string,
-	has_initial: boolean,
-	initial: any,
+	initial: Initial,
 	guard: Guard?,
 	serdes: Serdes?,
 	snapshot: Snapshot?,
@@ -133,7 +135,7 @@ export type TagEntry = {
 	kind: "tag",
 	id: Entity,
 	key: string,
-	has_initial: boolean,
+	initial: Initial,
 	holders: Holders,
 }
 
@@ -145,7 +147,7 @@ export type RelationEntry = {
 	kind: "relation",
 	id: Entity<any>,
 	key: string,
-	has_initial: false,
+	initial: Initial,
 	tagged: boolean,
 	targets: { [Entity]: boolean }?,
 	holders: Holders,
@@ -156,6 +158,11 @@ export type SchemaEntry = ComponentEntry | TagEntry | RelationEntry
 export type Named = { [string]: Entity }
 
 export type Warned = { [string]: boolean }
+
+export type StoredChildren = {
+	named: { [string]: Data },
+	skipped: boolean,
+}
 
 export type Fields = {
 	entries: { SchemaEntry },
@@ -346,10 +353,9 @@ export type CollectionState = {
 }
 
 export type Mutex = {
-	lock: (Mutex) -> (),
-	unlock: (Mutex) -> (),
 	close: (Mutex, reason: string) -> (),
 	with: (Mutex, fn: () -> ()) -> (),
+	is_locked: (Mutex) -> boolean,
 }
 
 export type MutexPhase = { kind: "free" } | { kind: "locked" } | { kind: "closed", reason: string }
@@ -360,6 +366,8 @@ export type MutexInternal = Mutex & {
 		phase: MutexPhase,
 	},
 	internal_waiters: { thread },
+	lock: (MutexInternal) -> (),
+	unlock: (MutexInternal) -> (),
 }
 
 export type RefusedClosure = { kind: "refused", message: string }
@@ -379,24 +387,29 @@ export type BatchHook =
 export type Batch = {
 	get_outcome: (Batch) -> Outcome,
 	get_result: (Batch) -> any,
+	get_keys: (Batch) -> { string },
 	is_settled: (Batch) -> boolean,
 	hook: BatchHook,
 	await: (Batch) -> SettledOutcome,
 }
 
+export type BatchPhase = { kind: "running" } | { kind: "held", result: any }
+
 export type BatchInternal = Batch & {
 	symbol: Symbol,
 	internal_values: {
 		outcome: Outcome,
-		result: any,
+		phase: BatchPhase,
 		awaited: boolean,
 		flush: (() -> ())?,
 	},
 	internal_hooks: CallbackRegistry,
 	internal_waiters: { thread },
-	hold: (BatchInternal, result: any) -> (),
+	internal_keys: { string },
+	enter: (BatchInternal) -> (),
+	hold: (BatchInternal, result: any, keys: { string }) -> (),
 	land: (BatchInternal) -> (),
-	refuse: (BatchInternal, id: string, keys: { string }, message: string, heard: boolean) -> (),
+	refuse: (BatchInternal, id: string, message: string, heard: boolean) -> (),
 	flush_with: (BatchInternal, flush: () -> ()) -> (),
 }
 
@@ -433,7 +446,7 @@ export type Merge =
 export type Pull = {
 	merge: Merge,
 	record: StoredRecord?,
-	written: boolean,
+	wrote: boolean,
 }
 
 export type SessionInternal = Session & {
@@ -468,8 +481,8 @@ export type SessionInternal = Session & {
 	journal: (SessionInternal, group: Group) -> (),
 	watch: (SessionInternal, id: string, watcher: Watcher) -> (),
 	touch: (SessionInternal) -> (),
-	abandon: (SessionInternal, id: string) -> (),
-	has_landed: (SessionInternal, id: string) -> boolean,
+	drop_group: (SessionInternal, id: string) -> (),
+	resolve_group: (SessionInternal, id: string, message: string) -> SettledOutcome,
 	unload: (SessionInternal, retry: RetryConfig?) -> (),
 	discard: (SessionInternal, message: string) -> (),
 }
@@ -487,6 +500,8 @@ export type LinkState = {
 }
 
 export type LinkStatus = "loading" | "loaded" | "none"
+
+export type DropReason = { kind: "failed", message: string } | { kind: "unloaded" } | { kind: "closed", closure: Closure }
 
 export type Event =
 	{ kind: "link", entity: Entity, collection: Entity, key: string }
@@ -540,7 +555,6 @@ export type CaptureEntry = {
 export type Capture = {
 	id: string,
 	delta: boolean,
-	flushing: boolean,
 	undo: { Undo },
 	entries: { CaptureEntry },
 	children: { [Entity]: ChildUndo },
@@ -559,12 +573,13 @@ export type EntityState = {
 	dropped: boolean,
 }
 
+export type WorldPhase = { kind: "idle" } | { kind: "stepping" } | { kind: "closed" }
+
 export type WorldState = {
 	collections: { [Entity]: CollectionState },
 	schema: Schema?,
 	disconnects: { () -> () },
-	closed: boolean,
-	stepping: boolean,
+	phase: WorldPhase,
 	applying: Applying?,
 	capture: Capture?,
 	entities: { [Entity]: EntityState },

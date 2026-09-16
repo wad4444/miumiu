@@ -46,6 +46,16 @@ local function decode(world: World, entity: Entity, entry: ComponentEntry, value
 		logging.warn(messages.warnings.deserialize_failed(entry.key, util.describe(world, entity), result))
 		return rejected
 	end
+	if result == nil then
+		logging.warn(
+			messages.warnings.deserialize_failed(
+				entry.key,
+				util.describe(world, entity),
+				messages.reasons.deserialize_nil
+			)
+		)
+		return rejected
+	end
 	local checked = codec.check_guard(entry, result)
 	if checked.kind == "rejected" then
 		logging.warn(messages.warnings.stored_rejected(entry.key, util.describe(world, entity), checked.reason))
@@ -152,14 +162,16 @@ end
 local function apply_initials(context: Context, entity: Entity, collection: Entity)
 	local world, world_state = context.world, context.world_state
 	for _, entry in context.schema.roots[collection].entries do
-		if not entry.has_initial or world:has(entity, entry.id) then
+		local initial = entry.initial
+		if initial.kind == "none" or world:has(entity, entry.id) then
 			continue
 		end
+		local value = initial.value
 		state.with_applying(world_state, entity, entry.id, function()
 			if entry.kind == "tag" then
 				world:add(entity, entry.id)
 			else
-				world:set(entity, entry.id, ops.deep_copy(entry.initial))
+				world:set(entity, entry.id, ops.deep_copy(value))
 			end
 		end)
 	end
@@ -168,13 +180,14 @@ end
 local function with_initials(entries: { SchemaEntry }, data: Data): Data
 	local filled = table.clone(data)
 	for _, entry in entries do
-		if filled[entry.key] ~= nil or not entry.has_initial then
+		local initial = entry.initial
+		if filled[entry.key] ~= nil or initial.kind == "none" then
 			continue
 		end
 		if entry.kind == "tag" then
 			filled[entry.key] = true
 		else
-			filled[entry.key] = codec.stored_form(entry, ops.deep_copy(entry.initial))
+			filled[entry.key] = codec.stored_form(entry, ops.deep_copy(initial.value))
 		end
 	end
 	return filled
@@ -185,21 +198,26 @@ local function restore_fields(context: Context, entity: Entity, kind: ChildKind,
 	apply(context, entity, kind.entries, entity_state, { truth = data, stamps = {} }, true)
 end
 
-local function rewrite_entry(context: Context, entity: Entity, entry: SchemaEntry, stored: any)
+local function write_entry(context: Context, entity: Entity, entry: SchemaEntry, value: any)
 	local world = context.world
 	if entry.kind == "tag" then
-		if stored == true then
+		if value == true then
 			world:add(entity, entry.id)
 		else
 			world:remove(entity, entry.id)
 		end
 	elseif entry.kind == "relation" then
-		relations.apply(world, entry, entity, context.schema.named, stored or {}, context.world_state.warned)
-	elseif stored == nil then
+		relations.apply(world, entry, entity, context.schema.named, value or {}, context.world_state.warned)
+	elseif value == nil then
 		world:remove(entity, entry.id)
 	else
-		world:set(entity, entry.id, codec.runtime_form(entry, stored))
+		world:set(entity, entry.id, value)
 	end
+end
+
+local function rewrite_entry(context: Context, entity: Entity, entry: SchemaEntry, stored: any)
+	local value = if entry.kind == "component" and stored ~= nil then codec.runtime_form(entry, stored) else stored
+	write_entry(context, entity, entry, value)
 end
 
 local function repair_fields(context: Context, entity: Entity, kind: ChildKind, previous: Data, value: Data)
@@ -229,26 +247,18 @@ end
 
 local function refresh_shadows(context: Context, entity: Entity, kind: ChildKind)
 	state.entity_state(context.world_state, entity).shadow = state.read_values(context, entity, kind.entries)
-	local index = context.world_state.children
-	local kinds: { ChildKind } = kind.kinds
-	for _, nested in kinds do
-		for _, child in children.children_of(index, entity, nested.key) do
-			refresh_shadows(context, child, nested)
-		end
-	end
+	children.each_nested(context.world_state.children, entity, kind, function(child, nested)
+		refresh_shadows(context, child, nested)
+	end)
 end
 
 local function record_subtree(context: Context, entity: Entity, kind: ChildKind)
-	local index = context.world_state.children
-	local kinds: { ChildKind } = kind.kinds
-	for _, nested in kinds do
-		for _, child in children.children_of(index, entity, nested.key) do
-			if nested.mode == "attached" then
-				record_baseline(context, child, nested)
-			end
-			record_subtree(context, child, nested)
+	children.each_nested(context.world_state.children, entity, kind, function(child, nested)
+		if nested.mode == "attached" then
+			record_baseline(context, child, nested)
 		end
-	end
+		record_subtree(context, child, nested)
+	end)
 end
 
 local function record_baselines(context: Context, entity: Entity, kind: ChildKind)
@@ -256,18 +266,11 @@ local function record_baselines(context: Context, entity: Entity, kind: ChildKin
 	record_subtree(context, entity, kind)
 end
 
-local function with_baseline(baseline: Data, data: Data): Data
-	local filled = table.clone(baseline)
-	for key, value in data do
-		filled[key] = value
-	end
-	return filled
-end
-
-local function apply_child(context: Context, child: Entity, kind: ChildKind, data: Data)
+local function apply_child(context: Context, child: Entity, kind: ChildKind, data: Data?)
 	local entity_state = state.entity_state(context.world_state, child)
-	local truth = if kind.mode == "attached"
-		then with_baseline(entity_state.baseline, data)
+	local truth = if data == nil
+		then entity_state.baseline
+		elseif kind.mode == "attached" then data
 		else with_initials(kind.entries, data)
 	local ok, err = pcall(apply, context, child, kind.entries, entity_state, { truth = truth, stamps = {} }, true)
 	entity_state.shadow = state.read_values(context, child, kind.entries)
@@ -300,11 +303,22 @@ end
 local function supply_children(context: Context, entity: Entity, kinds: { ChildKind }, data: Data)
 	local index = context.world_state.children
 	util.run_all(kinds, function(kind)
-		local stored = children.stored_children(data, kind, context.world_state.warned)
+		local stored = children.stored_children(data, kind)
+		if stored.skipped then
+			logging.warn_once(
+				context.world_state.warned,
+				`child_group_array:{kind.key}`,
+				messages.warnings.child_group_array(kind.key)
+			)
+		end
 		local present = table.clone(children.children_of(index, entity, kind.key))
-		for id, child_data in stored do
+		for id, child_data in stored.named do
 			if type(child_data) ~= "table" then
-				logging.warn(messages.warnings.child_invalid(kind.key, id, util.describe(context.world, entity)))
+				logging.warn_once(
+					context.world_state.warned,
+					`child_invalid:{kind.key}/{id}`,
+					messages.warnings.child_invalid(kind.key, id, util.describe(context.world, entity))
+				)
 				continue
 			end
 			local child = present[id]
@@ -326,21 +340,21 @@ local function supply_children(context: Context, entity: Entity, kinds: { ChildK
 				remove_child(context, child)
 			else
 				table.clear(state.entity_state(context.world_state, child).lazy)
-				apply_child(context, child, kind, {})
+				apply_child(context, child, kind, nil)
 				supply_children(context, child, kind.kinds, {})
 			end
 		end
 	end)
 end
 
-local function supply_child(context: Context, child: Entity, kind: ChildKind, data: Data)
+local function supply_child(context: Context, child: Entity, kind: ChildKind, data: Data?)
 	apply_child(context, child, kind, data)
-	supply_children(context, child, kind.kinds, data)
+	supply_children(context, child, kind.kinds, data or {})
 end
 
 local function reset_child(context: Context, child: Entity, kind: ChildKind)
 	table.clear(state.entity_state(context.world_state, child).lazy)
-	supply_child(context, child, kind, {})
+	supply_child(context, child, kind, nil)
 end
 
 local function release_children(context: Context, entity: Entity, kinds: { ChildKind })
@@ -395,24 +409,20 @@ local function snapshot_fields(context: Context, entity: Entity, snapshots: { Co
 		local snapshot = entry.snapshot :: Snapshot
 		local ok, value = pcall(util.sync, "snapshot" :: SyncKind, entry.key, snapshot, world, entity)
 		if not ok then
-			logging.warn(messages.warnings.snapshot_failed(entry.key, util.describe(world, entity), value))
+			logging.warn_once(
+				context.world_state.warned,
+				`snapshot_failed:{entry.key}`,
+				messages.warnings.snapshot_failed(entry.key, util.describe(world, entity), value)
+			)
 			continue
 		end
 		if value ~= nil and not ops.deep_equal(world:get(entity, entry.id), value) then
 			world:set(entity, entry.id, value)
 		end
 	end
-	local index = context.world_state.children
-	local by_key = index.by_parent[entity]
-	if not by_key then
-		return
-	end
-	for _, list in by_key do
-		for _, child in list do
-			local held = children.child_of(index, child) :: ChildRecord
-			snapshot_fields(context, child, held.kind.snapshots)
-		end
-	end
+	children.each_child(context.world_state.children, entity, function(child, held)
+		snapshot_fields(context, child, held.kind.snapshots)
+	end)
 end
 
 return table.freeze({
@@ -422,6 +432,7 @@ return table.freeze({
 	restore_fields = restore_fields,
 	repair_fields = repair_fields,
 	rewrite_fields = rewrite_fields,
+	write_entry = write_entry,
 	refresh_shadows = refresh_shadows,
 	reconcile = reconcile,
 	supply_child = supply_child,

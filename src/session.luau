@@ -27,9 +27,10 @@ type Pending = types.Pending
 type Pull = types.Pull
 type Resolution = types.Resolution
 type ResolvedCollectionConfig = types.ResolvedCollectionConfig
-type SessionStatus = types.SessionStatus
 type RetryConfig = types.RetryConfig
 type SessionInternal = types.SessionInternal
+type SessionStatus = types.SessionStatus
+type SettledOutcome = types.SettledOutcome
 type Stamps = types.Stamps
 type State = types.State
 type StoredRecord = types.StoredRecord
@@ -37,6 +38,7 @@ type Symbol = types.Symbol
 type Watcher = types.Watcher
 
 local session_symbol = symbol.create_symbol("Session")
+local record_format = 1
 
 local function empty_state(): State
 	return { truth = {}, stamps = {} }
@@ -52,6 +54,12 @@ local function validate_open(self: SessionInternal)
 	end
 end
 
+local function has_landed(self: SessionInternal, id: string): boolean
+	local collection = self.internal_collection
+	local ok, record = pcall(datastore.get_async, collection.store, self.internal_values.key, datastore.single_attempt)
+	return ok and type(record) == "table" and type(record.landed) == "table" and record.landed[id] ~= nil
+end
+
 local function fire_landed(self: SessionInternal)
 	local landed = self.internal_landed
 	if #landed == 0 then
@@ -61,8 +69,10 @@ local function fire_landed(self: SessionInternal)
 	local watchers = self.internal_watchers
 	for _, id in landed do
 		local watcher = watchers[id]
-		watchers[id] = nil
-		watcher({ kind = "landed" })
+		if watcher then
+			watchers[id] = nil
+			watcher({ kind = "landed" })
+		end
 	end
 end
 
@@ -74,16 +84,43 @@ local function refuse_watched(self: SessionInternal, message: string)
 	end
 end
 
+local function resolve_watched(self: SessionInternal, message: string)
+	local watchers = self.internal_watchers
+	self.internal_watchers = {}
+	for id, watcher in watchers do
+		if has_landed(self, id) then
+			watcher({ kind = "landed" })
+		else
+			watcher({ kind = "refused", message = message })
+		end
+	end
+end
+
+local function settle_watched(self: SessionInternal)
+	fire_landed(self)
+	local status = self.internal_values.status
+	if status.kind ~= "closed" then
+		return
+	end
+	local closure = status.closure
+	if closure.kind ~= "clean" then
+		resolve_watched(self, closure.message)
+	end
+end
+
 local function close(self: SessionInternal, closure: Closure)
 	local values = self.internal_values
 	if values.status.kind == "closed" then
 		return
 	end
-	values.status = { kind = "closed", closure = closure }
+	values.status = table.freeze({ kind = "closed", closure = table.freeze(closure) })
+	local writing = self.internal_mutex:is_locked()
 	self.internal_mutex:close(messages.errors.session_closed(values.key))
-	if closure.kind ~= "clean" then
+	if not writing then
 		fire_landed(self)
-		refuse_watched(self, closure.message)
+		if closure.kind ~= "clean" then
+			refuse_watched(self, closure.message)
+		end
 	end
 	callbacks.fire(self.internal_hooks, hooks.closed, self, closure)
 end
@@ -184,9 +221,10 @@ local function coalesced_slot(self: SessionInternal, coalesce: string?): number?
 		return nil
 	end
 	local unwritten = self.internal_unwritten
-	local last = unwritten[#unwritten]
-	if last and last.coalesce == coalesce then
-		return #unwritten
+	for index = #unwritten, 1, -1 do
+		if unwritten[index].coalesce == coalesce then
+			return index
+		end
 	end
 	return nil
 end
@@ -199,9 +237,10 @@ local function journal(self: SessionInternal, group: Group)
 	local slot = coalesced_slot(self, group.coalesce)
 	local base: State
 	if slot then
+		local was_last = slot == #self.internal_unwritten
 		table.remove(self.internal_unwritten, slot)
 		local before_last = self.internal_before_last
-		if before_last then
+		if was_last and before_last then
 			base = before_last
 		else
 			forget_state(self)
@@ -233,17 +272,24 @@ local function watch(self: SessionInternal, id: string, watcher: Watcher)
 	self.internal_watchers[id] = watcher
 end
 
-local function abandon(self: SessionInternal, id: string)
+local function drop_group(self: SessionInternal, id: string)
 	remove_group(self.internal_unwritten, id)
 	remove_group(self.internal_awaiting, id)
 	self.internal_watchers[id] = nil
 	forget_state(self)
 end
 
-local function has_landed(self: SessionInternal, id: string): boolean
-	local collection = self.internal_collection
-	local ok, record = pcall(datastore.get_async, collection.store, self.internal_values.key, collection.config)
-	return ok and type(record) == "table" and type(record.landed) == "table" and record.landed[id] ~= nil
+local function resolve_group(self: SessionInternal, id: string, message: string): SettledOutcome
+	local outcome: SettledOutcome = { kind = "refused", message = message }
+	self.internal_mutex:with(function()
+		if has_landed(self, id) then
+			outcome = { kind = "landed" }
+		end
+		remove_group(self.internal_unwritten, id)
+		forget_state(self)
+	end)
+	self.internal_watchers[id] = nil
+	return outcome
 end
 
 local function forget_written(self: SessionInternal, written: { Group }): { Group }
@@ -283,7 +329,7 @@ local function forget_settled(self: SessionInternal, record: StoredRecord, decid
 	end
 end
 
-local function same_record(self: SessionInternal, old: StoredRecord): boolean
+local function is_same_record(self: SessionInternal, old: StoredRecord): boolean
 	local values = self.internal_values
 	if old.written ~= nil or values.written ~= nil then
 		return old.written == values.written
@@ -295,7 +341,7 @@ local function base_state(self: SessionInternal, old: StoredRecord?): State
 	if old == nil then
 		return if self.internal_values.version == 0 then self.internal_base else empty_state()
 	end
-	if same_record(self, old) then
+	if is_same_record(self, old) then
 		return self.internal_base
 	end
 	return state_of(old)
@@ -316,12 +362,11 @@ local function migrate_state(self: SessionInternal, old: StoredRecord?, state: S
 	end
 	if applied < declared then
 		return {
-			kind = "state",
+			kind = "migrated",
 			state = { truth = self.internal_migrate(state.truth, applied), stamps = state.stamps },
-			migrated = true,
 		}
 	end
-	return { kind = "state", state = state, migrated = false }
+	return { kind = "unchanged", state = state }
 end
 
 local function land_groups(state: State, pending: Pending, landed: Landed, groups: { Group }, now: number): Landing
@@ -374,15 +419,16 @@ end
 local function build_record(self: SessionInternal, record: StoredRecord, landing: Landing, now: number): StoredRecord
 	local config = self.internal_collection.config
 	local next_landed = prune_landed(landing.landed, now, config.commit_timeout)
-	return {
-		data = landing.state.truth,
-		stamps = prune_stamps(landing.state, now, config.commit_timeout),
-		pending = if next(landing.pending) ~= nil then landing.pending else nil,
-		landed = if next(next_landed) ~= nil then next_landed else nil,
-		version = (record.version or 0) + 1,
-		written = util.create_guid(),
-		migrations = #config.migrations,
-	}
+	local next_record = table.clone(record)
+	next_record.data = landing.state.truth
+	next_record.stamps = prune_stamps(landing.state, now, config.commit_timeout)
+	next_record.pending = if next(landing.pending) ~= nil then landing.pending else nil
+	next_record.landed = if next(next_landed) ~= nil then next_landed else nil
+	next_record.version = (record.version or 0) + 1
+	next_record.written = util.create_guid()
+	next_record.migrations = #config.migrations
+	next_record.format = record_format
+	return next_record
 end
 
 local function merge(self: SessionInternal, old: StoredRecord?): Merge
@@ -391,6 +437,11 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 		group.coalesce = nil
 	end
 	local record: StoredRecord = old or {}
+	local resolution: Resolution = { truth = {}, stamps = {}, pending = {}, unknown = {}, decided = {} }
+	if (record.format or record_format) > record_format then
+		local message = messages.errors.newer_format(self.internal_values.key, record.format :: number, record_format)
+		return { kind = "newer", message = message, groups = groups, resolution = resolution }
+	end
 	local state = base_state(self, old)
 
 	local seeded = old == nil and self.internal_seed ~= nil
@@ -399,7 +450,6 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 	end
 
 	local migrated = migrate_state(self, old, state, seeded)
-	local resolution: Resolution = { truth = {}, stamps = {}, pending = {}, unknown = {}, decided = {} }
 	if migrated.kind == "newer" then
 		return { kind = "newer", message = migrated.message, groups = groups, resolution = resolution }
 	end
@@ -414,7 +464,7 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 
 	local unchanged = landing.landed == landed
 		and landing.pending == original
-		and not migrated.migrated
+		and migrated.kind == "unchanged"
 		and not seeded
 		and not (old ~= nil and record.version == nil)
 	if unchanged then
@@ -447,7 +497,7 @@ local function run_update(self: SessionInternal, retry: RetryConfig): Pull
 		end
 		return nil
 	end, retry, user_ids_of(collection, self.internal_values.key))
-	return { merge = merged :: Merge, record = result.value, written = result.written }
+	return { merge = merged :: Merge, record = result.value, wrote = result.kind == "written" }
 end
 
 local function is_idle(self: SessionInternal): boolean
@@ -465,7 +515,14 @@ local function run_read(self: SessionInternal, retry: RetryConfig): Pull?
 	if merged.kind == "merged" then
 		return nil
 	end
-	return { merge = merged, record = record, written = false }
+	return { merge = merged, record = record, wrote = false }
+end
+
+local function adopt_record(self: SessionInternal, record: StoredRecord)
+	local values = self.internal_values
+	self.internal_base = state_of(record)
+	values.version = record.version or 0
+	values.written = record.written
 end
 
 local function adopt(self: SessionInternal, pull: Pull): boolean
@@ -485,11 +542,9 @@ local function adopt(self: SessionInternal, pull: Pull): boolean
 
 	self.internal_seed = nil
 	await_shared(self, forget_written(self, pull.merge.groups))
-	local adopted = pull.written or not same_record(self, record)
+	local adopted = pull.wrote or not is_same_record(self, record)
 	if adopted then
-		self.internal_base = state_of(record)
-		values.version = record.version or 0
-		values.written = record.written
+		adopt_record(self, record)
 	end
 	forget_settled(self, record, pull.merge.resolution.decided)
 	return adopted
@@ -542,15 +597,23 @@ local function pull_with(self: SessionInternal, retry: RetryConfig): boolean
 		if prepare then
 			callbacks.invoke(hooks.writing, self, prepare)
 		end
-		callbacks.fire(self.internal_hooks, hooks.writing, self)
 		values.touched = false
+		if values.status.kind == "closing" and is_idle(self) then
+			close(self, { kind = "clean" })
+			return false
+		end
+		callbacks.fire(self.internal_hooks, hooks.writing, self)
 	end
 	local adopted = false
+	local entered = false
 	local ok, err = pcall(self.internal_mutex.with, self.internal_mutex, function()
+		entered = true
 		adopted = pull_now(self, retry)
 		values.pulls += 1
 	end)
-	fire_landed(self)
+	if entered then
+		settle_watched(self)
+	end
 	if not ok then
 		error(err, 0)
 	end
@@ -571,11 +634,11 @@ end
 
 local function unload(self: SessionInternal, retry: RetryConfig?)
 	validate_open(self)
-	if is_idle(self) and #self.internal_awaiting == 0 then
+	if is_idle(self) then
 		close(self, { kind = "clean" })
 		return
 	end
-	self.internal_values.status = { kind = "closing" }
+	self.internal_values.status = table.freeze({ kind = "closing" })
 	local ok, err = pcall(pull_with, self, retry or self.internal_collection.config)
 	if ok or is_closed_clean(self) or self.internal_values.status.kind == "open" then
 		return
@@ -585,7 +648,7 @@ end
 
 local function reopen(self: SessionInternal)
 	validate_open(self)
-	self.internal_values.status = { kind = "open" }
+	self.internal_values.status = table.freeze({ kind = "open" })
 end
 
 local function prepare_with(self: SessionInternal, fn: (() -> ())?)
@@ -606,13 +669,16 @@ local function wiped_record(old: StoredRecord?, declared: number): StoredRecord
 			stamps[key] = math.max(stamps[key] or now, at + 1)
 		end
 	end
-	return {
-		data = {},
-		stamps = stamps,
-		version = ((old and old.version) or 0) + 1,
-		written = util.create_guid(),
-		migrations = declared,
-	}
+	local wiped: StoredRecord = if old then table.clone(old) else {}
+	wiped.data = {}
+	wiped.stamps = stamps
+	wiped.pending = nil
+	wiped.landed = nil
+	wiped.version = ((old and old.version) or 0) + 1
+	wiped.written = util.create_guid()
+	wiped.migrations = declared
+	wiped.format = record_format
+	return wiped
 end
 
 local function wipe_key(collection: CollectionState, key: string): StoredRecord
@@ -632,9 +698,7 @@ local function wipe(self: SessionInternal)
 		table.clear(self.internal_awaiting)
 		self.internal_seed = nil
 		values.touched = false
-		self.internal_base = state_of(record)
-		values.version = record.version or 0
-		values.written = record.written
+		adopt_record(self, record)
 		forget_state(self)
 	end)
 	refuse_watched(self, messages.errors.record_wiped(values.key))
@@ -652,7 +716,7 @@ local template = {
 	symbol = session_symbol,
 	internal_values = {
 		key = "",
-		status = { kind = "open" } :: SessionStatus,
+		status = table.freeze({ kind = "open" }) :: SessionStatus,
 		version = 0,
 		written = nil :: string?,
 		pulls = 0,
@@ -684,8 +748,8 @@ local template = {
 	journal = journal,
 	touch = touch,
 	watch = watch,
-	abandon = abandon,
-	has_landed = has_landed,
+	drop_group = drop_group,
+	resolve_group = resolve_group,
 	sync = sync,
 	unload = unload,
 	discard = discard,

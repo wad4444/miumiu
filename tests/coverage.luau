@@ -134,8 +134,11 @@ local function instrument(source: string, file: string): string
 				inserts[index] = at
 			end
 		end
+	end
+
+	for index in masked_lines do
 		local tail = opens_tail(masked_lines, index)
-		if tail and not prefixes[tail] and not suffixes[tail] and not inserts[tail] then
+		if tail and not prefixes[tail] then
 			prefixes[tail] = `{marker(file, tail)} `
 		end
 		local header_end = function_header_end(masked_lines, index)
@@ -144,7 +147,7 @@ local function instrument(source: string, file: string): string
 			local first = masked_lines[body]
 			local closes = first and string.match(trim(first), "^[%)%}]") ~= nil
 			local ends = first and string.match(first, "^%s*end") ~= nil
-			if first and not closes and not ends and not prefixes[body] and not suffixes[body] then
+			if first and not closes and not ends and not prefixes[body] then
 				prefixes[body] = `{marker(file, body)} `
 			end
 		end
@@ -152,14 +155,14 @@ local function instrument(source: string, file: string): string
 
 	local output = table.create(#lines)
 	for index, line in lines do
+		local insert_at = inserts[index]
+		if insert_at then
+			line = `{string.sub(line, 1, insert_at)}{marker(file, index)} {string.sub(line, insert_at + 1)}`
+		end
 		local prefix = prefixes[index]
 		if prefix then
 			local indent, rest = string.match(line, "^(%s*)(.*)$")
 			line = `{indent}{prefix}{rest}`
-		end
-		local insert_at = inserts[index]
-		if insert_at then
-			line = `{string.sub(line, 1, insert_at)}{marker(file, index)} {string.sub(line, insert_at + 1)}`
 		end
 		output[index] = line .. (suffixes[index] or "")
 	end

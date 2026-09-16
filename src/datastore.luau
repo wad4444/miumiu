@@ -10,7 +10,7 @@ local single_attempt: RetryConfig = table.freeze({ retry_attempts = 1, retry_bas
 
 local fresh_options: DataStoreGetOptions? = nil
 
-local function default_service(): DataStoreService
+local function get_default_service(): DataStoreService
 	return game:GetService("DataStoreService") :: any
 end
 
@@ -52,9 +52,9 @@ local function get_async(store: DataStore, key: string, retry_config: RetryConfi
 	end)
 end
 
-local function set_async(store: DataStore, key: string, value: any, retry_config: RetryConfig, user_ids: { number }?)
+local function set_async(store: DataStore, key: string, value: any, retry_config: RetryConfig)
 	retry(retry_config, function()
-		store:SetAsync(key, value, user_ids)
+		store:SetAsync(key, value)
 	end)
 end
 
@@ -65,12 +65,12 @@ local function update_async<T>(
 	retry_config: RetryConfig,
 	user_ids: { number }?
 ): UpdateResult<T>
-	local result: UpdateResult<T> = { value = nil, written = false }
+	local result: UpdateResult<T> = { kind = "unchanged", value = nil }
 	local transform_error: any = nil
 
 	retry(retry_config, function()
 		store:UpdateAsync(key, function(old: T?)
-			result = { value = old, written = false }
+			result = { kind = "unchanged", value = old }
 			transform_error = nil
 			local ok, new = pcall(transform, old)
 			if not ok then
@@ -80,7 +80,7 @@ local function update_async<T>(
 			if new == nil then
 				return nil
 			end
-			result = { value = new, written = true }
+			result = { kind = "written", value = new }
 			return new, user_ids
 		end)
 	end)
@@ -93,7 +93,7 @@ end
 
 return table.freeze({
 	single_attempt = single_attempt,
-	default_service = default_service,
+	get_default_service = get_default_service,
 	open = open,
 	get_async = get_async,
 	set_async = set_async,

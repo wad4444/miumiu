@@ -1,7 +1,6 @@
 local types = require("./types")
 local codec = require("./codec")
 local ids = require("./ids")
-local logging = require("./logging")
 local messages = require("./messages")
 local relations = require("./relations")
 local util = require("./util")
@@ -19,6 +18,7 @@ type Named = types.Named
 type RelationEntry = types.RelationEntry
 type Removal = types.Removal
 type SchemaEntry = types.SchemaEntry
+type StoredChildren = types.StoredChildren
 type Warned = types.Warned
 type WorldState = types.WorldState
 
@@ -63,6 +63,27 @@ end
 
 local function forget_parent(index: ChildIndex, parent: Entity)
 	index.by_parent[parent] = nil
+end
+
+local function each_child(index: ChildIndex, parent: Entity, fn: (Entity, ChildRecord) -> ())
+	local by_key = index.by_parent[parent]
+	if not by_key then
+		return
+	end
+	for _, list in by_key do
+		for _, child in list do
+			fn(child, index.by_entity[child] :: ChildRecord)
+		end
+	end
+end
+
+local function each_nested(index: ChildIndex, entity: Entity, kind: ChildKind, fn: (Entity, ChildKind) -> ())
+	local kinds: { ChildKind } = kind.kinds
+	for _, nested in kinds do
+		for _, child in children_of(index, entity, nested.key) do
+			fn(child, nested)
+		end
+	end
 end
 
 local function describe_kind(world: World, kind: ChildKind): string
@@ -180,7 +201,7 @@ local function pack_fields(
 		if entry.kind == "tag" then
 			if world:has(entity, entry.id) and not removing_field(world, removing, entity, entry) then
 				packed[entry.key] = true
-			elseif entry.has_initial then
+			elseif entry.initial.kind == "value" then
 				packed[entry.key] = false
 			end
 		elseif entry.kind == "relation" then
@@ -264,10 +285,10 @@ local function delete_tree(world: World, index: ChildIndex, entity: Entity, dele
 	end
 end
 
-local function stored_children(data: Data, kind: ChildKind, warned: Warned?): { [string]: Data }
+local function stored_children(data: Data, kind: ChildKind): StoredChildren
 	local group = data[kind.key]
 	if type(group) ~= "table" then
-		return {}
+		return { named = {}, skipped = false }
 	end
 	local named: { [string]: Data } = {}
 	local skipped = false
@@ -278,10 +299,7 @@ local function stored_children(data: Data, kind: ChildKind, warned: Warned?): { 
 			skipped = true
 		end
 	end
-	if skipped and warned then
-		logging.warn_once(warned, `child_group_array:{kind.key}`, messages.warnings.child_group_array(kind.key))
-	end
-	return named
+	return { named = named, skipped = skipped }
 end
 
 return table.freeze({
@@ -290,6 +308,8 @@ return table.freeze({
 	record = record,
 	forget = forget,
 	forget_parent = forget_parent,
+	each_child = each_child,
+	each_nested = each_nested,
 	resolve_id = resolve_id,
 	mint_id = mint_id,
 	reject_unnamed = reject_unnamed,

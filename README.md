@@ -68,7 +68,7 @@ schema freezes there.
 
 | field | default | meaning |
 |---|---|---|
-| `pull_interval` | 15 | seconds between writes while something is unwritten; under 6 (the DataStore write cooldown) warns |
+| `pull_interval` | 15 | seconds between writes while something is unwritten, so also how long an unawaited single-key batch stays pending; under 6 (the DataStore write cooldown) warns |
 | `idle_interval` | 60, never under `pull_interval` | seconds between reads while clean; `math.huge` turns them off |
 | `retry_attempts`, `retry_base` | 5, 1 | storage retries and their base delay, doubling |
 | `commit_store`, `commit_timeout` | `"miumiu_commits"`, 300 | the store and window multi-key batches commit through |
@@ -113,8 +113,8 @@ end)
 `close` detaches every link first, then writes every open session, including the final
 writes of leaves already in progress, and yields until the writes land or its budget
 runs out (25 s by default, under the 30 s `BindToClose` allows). Write leave-time state
-before calling it, or in a `writing` hook: a saveable write made after `close` began is
-dropped.
+before calling it: a saveable write made after `close` began is dropped, a `writing`
+hook included, since `close` detaches every link before its final writes.
 
 Joining: while the first read is in flight the entity carries
 `pair(miumiu.data_loading, c)`; once the record's values are supplied onto it (supply:
@@ -165,18 +165,23 @@ The session behind a key is `miumiu.get_session(world, player_data, key)`: `get_
 `get_truth()` and `get_stamps()` (the stored form, read-only), `get_config()`,
 `is_open()`, `is_dirty()`, `sync()`, `get_status()` (`open`, `closing`, or `closed` with
 the closure), and
-`hook(miumiu.hooks.pulled | closed | writing, fn)`. `is_dirty()` stays true while a
-write is in flight. `miumiu.is_session(value)` and `miumiu.is_batch(value)` tell a
+`hook(miumiu.hooks.pulled | closed | writing, fn)`. `is_dirty()` stays true while
+anything is unwritten, a pending single-key batch included, and while a write is in
+flight. `miumiu.is_session(value)` and `miumiu.is_batch(value)` tell a
 session or a batch handle from anything else.
 
 Hooks run on the library's threads: `pulled` on the pull thread, where the entities are
 updated only on the next `step`, so read the truth it hands you rather than the world;
-`writing` right before the write; `closed` while the session still holds its lock;
-`landed` on the thread that wrote the group (the pull loop, a `sync`, an `await`) and
-`refused` on the thread that refused it, a multi-key batch's on its commit thread
+`writing` right before the write; `closed` under the session's lock when a write closed
+it and with the lock free otherwise;
+`landed` on the thread that wrote the group (the pull loop, a `sync`, an `await`), after
+the lock like `pulled`; `refused` on the thread that refused it, after the lock and after
+`closed` when the session's end refused it, a multi-key batch's on its commit thread
 between frames. Never yield in `writing`,
 `closed`, `landed` or `refused`, and never `sync` from `writing`; `pulled` is the one
-hook that may `sync` again. A write made in `refused` is an ordinary journaled write.
+hook that may `sync` again. A write made in `refused` is an ordinary journaled write,
+except when the refusal closed the session (a newer server, an abandoned `close`): the
+key no longer saves.
 
 Writes that must land together, across any number of players, go in a batch; writes that
 should compose with what other servers did go in a delta:
@@ -193,8 +198,9 @@ end)
 
 `batch` and `delta` run the function now, journal the group and return at once, so they
 are safe inside a system. On one key the group rides the session's next write like any
-plain write, and `await` writes it now; across keys it commits in the background. The
-returned handle reports it:
+plain write (up to `pull_interval` and its jitter later, never on its own under
+`pull_interval = math.huge`), and `await` writes it now; across keys it commits in the
+background. The returned handle reports it:
 
 ```luau
 local batch = miumiu.batch(world, function()
@@ -211,9 +217,12 @@ values the batch still holds, fires `refused`, and warns when nothing hooked or 
 it in the same frame. `batch:await()` yields until the group is in every record and
 returns the outcome, `{ kind = "landed" }` or `{ kind = "refused", message = ... }`,
 never throwing. The handle also has `get_outcome()` (the same record, `pending` until
-then), `is_settled()` and `get_result()`, what the function returned, there as soon as
-`batch` returns. Hooks and the rollback run on the thread that settled the batch: the
-awaiting thread, the pull loop, or a multi-key batch's commit thread between frames. After
+then), `is_settled()`, `get_keys()` (the stored keys it touched) and `get_result()`,
+what the function returned, there as soon as
+`batch` returns. Hooks and the rollback run on the thread that wrote or refused the
+batch: an `await`, a `sync`, `wipe`, `close`, the pull loop, the unlink's final write, or
+a multi-key batch's commit thread between frames; a `sync` or `wipe` called from a system
+sees them mid-system. After
 the rollback every entity linked to the batch's keys is supplied again from the record,
 so siblings, children and attached trees that saw the group flip back too. Your jecs
 listeners fire for every one of those writes, as for any write; only the journal
@@ -530,7 +539,9 @@ values only: a grant with side effects outside them
 hook. `await` yields, which `ProcessReceipt` may; a system that must not yield uses the
 handle's `landed` and `refused` hooks instead.
 
-During shutdown: a single-key batch whose group rides the final write lands; a
+During shutdown: a single-key batch whose group rides the final write lands; when `close`
+runs out of budget with that write in flight, the write still finishes and settles the
+batches it carries, and only the ones it did not carry are refused; a
 multi-key batch that has not reached the commit store is dropped once `commit_timeout`
 passes; a refusal after `close` began settles the handle without a rollback (the
 entities are already detached); a receipt that arrives after that sees `refused` or a
@@ -546,7 +557,8 @@ pair also carries a load failure; there, remove and re-set the link to retry.
 ## Wipe
 
 `miumiu.wipe(world, player_data, key)` erases a key: a fresh record, unwritten changes
-dropped, initials back on the linked entities, owned children deleted, attached ones
+dropped, every single-key batch riding the key refused (its hooks fire inside the call),
+initials back on the linked entities, owned children deleted, attached ones
 reset. A key nobody here holds is wiped straight in the store. Every stored key is
 stamped by the wipe, so a write another server journaled against the old record loses to
 it. It yields; if the write fails it throws and the session keeps its unwritten changes.
@@ -582,7 +594,7 @@ alive when the first miumiu server starts. Keep the lapis migrations in
 
 An imported record usually keeps items in arrays. Children are keyed by id, so an array
 under a kind's key is left alone until a migration turns it into children (one warning
-when none does):
+per kind key when none does):
 
 ```luau
 function(world, entity, context)
@@ -681,7 +693,8 @@ A spec runs the library against MockDataStoreService: pass its service as
 shrink `pull_interval` and `idle_interval` so writes and reads happen within the test,
 zero the mock's yields and budgets, capture warnings with `miumiu.set_warn`, and call
 `miumiu.step` in a loop or after each write instead of relying on Heartbeat. The mock
-completes every call synchronously, so `sync()` and `await()` return at once; give each
+completes every call synchronously, so `sync()` and `await()` return at once (a single-key
+batch nobody awaits still waits for the pull interval: `await` it or `sync`); give each
 test its own store name so keys never leak between tests. `tests/specs/utils.luau` in
 the repository is a complete fixture built that way.
 

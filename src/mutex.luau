@@ -64,8 +64,8 @@ local function with(self: MutexInternal, fn: () -> ())
 	end
 end
 
-local function is_mutex(value: unknown): boolean
-	return symbol.is_marked(value, mutex_symbol)
+local function is_locked(self: MutexInternal): boolean
+	return self.internal_values.phase.kind == "locked"
 end
 
 local template = {
@@ -78,6 +78,7 @@ local template = {
 	unlock = unlock,
 	close = close,
 	with = with,
+	is_locked = is_locked,
 }
 
 local meta = {
@@ -96,5 +97,4 @@ end
 
 return table.freeze({
 	create_mutex = create_mutex,
-	is_mutex = is_mutex,
 })

@@ -8,6 +8,8 @@ local session = require(ReplicatedStorage.Packages.miumiu.session)
 local state = require(ReplicatedStorage.Packages.miumiu.state)
 
 type World = miumiu.World
+type Batch = miumiu.Batch
+type Session = miumiu.Session
 type Entity<T = nil> = miumiu.Entity<T>
 type DataStore = types.DataStore
 type DataStoreGetOptions = types.DataStoreGetOptions
@@ -46,6 +48,7 @@ mock_constants.BUDGET_UPDATE_INTERVAL = 0.01
 export type FailMode = "before" | "after"
 
 export type Delay = {
+	op: string,
 	seconds: number,
 	mode: FailMode,
 	skip: number,
@@ -63,7 +66,7 @@ export type Backend = {
 	service: DataStoreService,
 	store: DataStore,
 	failures: { Failure },
-	delays: { [string]: Delay },
+	delays: { Delay },
 	calls: { [string]: number },
 	fresh_reads: number,
 	warnings: { string },
@@ -71,6 +74,7 @@ export type Backend = {
 	delay_next: (self: Backend, op: string, seconds: number, mode: FailMode?, skip: number?) -> (),
 	dump: (self: Backend, key: string) -> any,
 	seed: (self: Backend, key: string, value: any) -> (),
+	seed_raw: (self: Backend, key: string, value: any) -> (),
 }
 
 export type Overrides = {
@@ -114,6 +118,7 @@ local timings = {
 	retry_attempts = 5,
 	retry_base = 0.005,
 	commit_timeout = 1,
+	budget = 5,
 }
 
 local counter = 0
@@ -133,16 +138,17 @@ local function take_failure(backend: Backend, op: string): Failure?
 end
 
 local function take_delay(backend: Backend, op: string): Delay?
-	local delay = backend.delays[op]
-	if delay == nil then
-		return nil
+	for index, delay in backend.delays do
+		if delay.op == op then
+			if delay.skip > 0 then
+				delay.skip -= 1
+				return nil
+			end
+			table.remove(backend.delays, index)
+			return delay
+		end
 	end
-	if delay.skip > 0 then
-		delay.skip -= 1
-		return nil
-	end
-	backend.delays[op] = nil
-	return delay
+	return nil
 end
 
 local function guarded<T>(backend: Backend, op: string, body: () -> T): T
@@ -198,11 +204,15 @@ local function fail_next(self: Backend, op: string, mode: FailMode, message: str
 end
 
 local function delay_next(self: Backend, op: string, seconds: number, mode: FailMode?, skip: number?)
-	self.delays[op] = { seconds = seconds, mode = mode or "after", skip = skip or 0 }
+	table.insert(self.delays, { op = op, seconds = seconds, mode = mode or "after", skip = skip or 0 })
 end
 
 local function dump(self: Backend, key: string): any
 	return self.store:GetAsync(key)
+end
+
+local function seed_raw(self: Backend, key: string, value: any)
+	self.store:SetAsync(key, value)
 end
 
 local function seed(self: Backend, key: string, value: any)
@@ -210,7 +220,15 @@ local function seed(self: Backend, key: string, value: any)
 		value = table.clone(value)
 		value.version = 1
 	end
-	self.store:SetAsync(key, value)
+	seed_raw(self, key, value)
+end
+
+local live_backends: { Backend } = {}
+
+local function fan_out(message: string)
+	for _, backend in live_backends do
+		table.insert(backend.warnings, message)
+	end
 end
 
 local function create_backend(): Backend
@@ -234,11 +252,11 @@ local function create_backend(): Backend
 		delay_next = delay_next,
 		dump = dump,
 		seed = seed,
+		seed_raw = seed_raw,
 	}
 
-	miumiu.set_warn(function(message)
-		table.insert(backend.warnings, message)
-	end)
+	table.insert(live_backends, backend)
+	miumiu.set_warn(fan_out)
 
 	return backend
 end
@@ -326,6 +344,11 @@ local function cleanup()
 		end
 	end
 	table.clear(live_sessions)
+	table.clear(live_backends)
+end
+
+local function take_over(backend: Backend, key: string)
+	open_session(backend, key, { pull_interval = timings.never, migrations = { function() end } }):unload()
 end
 
 local function create_collection(world: World, backend: Backend, overrides: Overrides?): Entity
@@ -518,6 +541,18 @@ local function wait_until(condition: () -> boolean, timeout: number?): boolean
 	return condition()
 end
 
+local function wait_closed(loaded: Session): boolean
+	return wait_until(function()
+		return not loaded:is_open()
+	end)
+end
+
+local function wait_settled(batch: Batch): boolean
+	return wait_until(function()
+		return batch:is_settled()
+	end)
+end
+
 local function wait_for_events(fixture: Fixture, count: number): boolean
 	return wait_until(function()
 		return #events(fixture) >= count
@@ -619,6 +654,9 @@ return table.freeze({
 	remove = remove,
 	add = add,
 	wait_until = wait_until,
+	wait_closed = wait_closed,
+	wait_settled = wait_settled,
+	take_over = take_over,
 	wait_for_events = wait_for_events,
 	settle = settle,
 })

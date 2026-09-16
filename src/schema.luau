@@ -11,10 +11,11 @@ type Entity<T = nil> = types.Entity<T>
 type ChildKind = types.ChildKind
 type ComponentEntry = types.ComponentEntry
 type Fields = types.Fields
+type Holders = types.Holders
+type Initial = types.Initial
 type Named = types.Named
 type Schema = types.Schema
 type SchemaEntry = types.SchemaEntry
-type Holders = types.Holders
 
 local frozen_ids = {
 	ids.collection,
@@ -73,7 +74,7 @@ end
 
 local function create_relation(world: World, id: Entity, key: string, holders: Holders): SchemaEntry
 	for meta, what in
-		{ [ids.guard] = "a guard", [ids.serdes] = "serdes", [ids.snapshot] = "a snapshot", [ids.lazy] = "lazy" }
+		{ [ids.guard] = "guard", [ids.serdes] = "serdes", [ids.snapshot] = "snapshot", [ids.lazy] = "lazy" }
 	do
 		if world:has(id, meta) then
 			error(messages.errors.pairs_meta(util.describe(world, id), what), 0)
@@ -83,7 +84,7 @@ local function create_relation(world: World, id: Entity, key: string, holders: H
 		kind = "relation",
 		id = id,
 		key = key,
-		has_initial = false,
+		initial = { kind = "none" },
 		tagged = jecs.is_tag(world, id),
 		targets = resolve_targets(world, id),
 		holders = holders,
@@ -92,6 +93,7 @@ end
 
 local function create_entry(world: World, id: Entity, key: string): SchemaEntry
 	local has_initial = world:has(id, id)
+	local initial: Initial = if has_initial then { kind = "value", value = world:get(id, id) } else { kind = "none" }
 	local holders = resolve_holders(world, id)
 	if world:has(id, ids.pairs) then
 		return create_relation(world, id, key, holders)
@@ -103,17 +105,38 @@ local function create_entry(world: World, id: Entity, key: string): SchemaEntry
 		if world:has(id, ids.lazy) then
 			error(messages.errors.lazy_on_tag(util.describe(world, id)), 0)
 		end
-		return { kind = "tag", id = id, key = key, has_initial = has_initial, holders = holders }
+		return {
+			kind = "tag",
+			id = id,
+			key = key,
+			initial = if has_initial then { kind = "value", value = true } else { kind = "none" },
+			holders = holders,
+		}
+	end
+	local described = util.describe(world, id)
+	local guard = world:get(id, ids.guard)
+	if guard ~= nil and type(guard) ~= "function" then
+		error(messages.errors.meta_not_function(described, "guard"), 0)
+	end
+	local serdes: any = world:get(id, ids.serdes)
+	if
+		serdes ~= nil
+		and (type(serdes) ~= "table" or type(serdes.serialize) ~= "function" or type(serdes.deserialize) ~= "function")
+	then
+		error(messages.errors.serdes_invalid(described), 0)
+	end
+	local snapshot = world:get(id, ids.snapshot)
+	if snapshot ~= nil and type(snapshot) ~= "function" then
+		error(messages.errors.meta_not_function(described, "snapshot"), 0)
 	end
 	return {
 		kind = "component",
 		id = id,
 		key = key,
-		has_initial = has_initial,
-		initial = world:get(id, id),
-		guard = world:get(id, ids.guard),
-		serdes = world:get(id, ids.serdes),
-		snapshot = world:get(id, ids.snapshot),
+		initial = initial,
+		guard = guard,
+		serdes = serdes,
+		snapshot = snapshot,
 		lazy = world:has(id, ids.lazy),
 		holders = holders,
 	}
@@ -223,35 +246,40 @@ local function validate_targets(world: World, entries: { SchemaEntry }, kinds: {
 	for _, kind in kinds do
 		known[kind.tag] = true
 	end
-	local function check(what: string, id: Entity, holders: Holders)
-		for target in holders do
+	for _, entry in entries do
+		for target in entry.holders do
 			if not known[target] then
-				error(messages.errors.field_of_invalid(what, util.describe(world, id), util.describe(world, target)), 0)
+				error(messages.errors.field_of_invalid(util.describe(world, entry.id), util.describe(world, target)), 0)
 			end
 		end
 	end
-	for _, entry in entries do
-		check("saveable", entry.id, entry.holders)
-	end
 	for _, kind in kinds do
-		check("child kind", kind.tag, kind.holders)
+		for target in kind.holders do
+			if not known[target] then
+				error(
+					messages.errors.kind_target_invalid(util.describe(world, kind.tag), util.describe(world, target)),
+					0
+				)
+			end
+		end
 	end
 end
 
 local function validate_scoped(world: World, entries: { SchemaEntry }, kinds: { ChildKind })
-	local unscoped: { string } = {}
+	local saveables: { string } = {}
 	for _, entry in entries do
 		if next(entry.holders) == nil then
-			table.insert(unscoped, `saveable {util.describe(world, entry.id)}`)
+			table.insert(saveables, util.describe(world, entry.id))
 		end
 	end
+	local tags: { string } = {}
 	for _, kind in kinds do
 		if next(kind.holders) == nil then
-			table.insert(unscoped, `child kind {util.describe(world, kind.tag)}`)
+			table.insert(tags, util.describe(world, kind.tag))
 		end
 	end
-	if #unscoped > 0 then
-		error(messages.errors.scope_required(unscoped), 0)
+	if #saveables > 0 or #tags > 0 then
+		error(messages.errors.scope_required(saveables, tags), 0)
 	end
 end
 
@@ -278,19 +306,16 @@ local function create_schema(world: World): Schema
 	local kinds_by_key: { [string]: ChildKind } = {}
 	for tag in world:each(ids.child) do
 		local kind = create_kind(world, tag, entries)
+		local function reject_clash(other: Entity)
+			error(messages.errors.child_key_clash(util.describe(world, tag), kind.key, util.describe(world, other)), 0)
+		end
 		local clash = by_key[kind.key]
 		if clash then
-			error(
-				messages.errors.child_key_clash(util.describe(world, tag), kind.key, util.describe(world, clash.id)),
-				0
-			)
+			reject_clash(clash.id)
 		end
 		local other = kinds_by_key[kind.key]
 		if other then
-			error(
-				messages.errors.child_key_clash(util.describe(world, tag), kind.key, util.describe(world, other.tag)),
-				0
-			)
+			reject_clash(other.tag)
 		end
 		kinds_by_key[kind.key] = kind
 		table.insert(kinds, kind)
@@ -313,14 +338,8 @@ local function create_schema(world: World): Schema
 		table.insert(collections, collection)
 	end
 	local named: Named = {}
-	local warned = state.get(world).warned
 	for entity in world:each(jecs.Name) do
-		local name = world:get(entity, jecs.Name)
-		local other = named[name]
-		if other ~= nil then
-			logging.warn_once(warned, `name_shared:{name}`, messages.warnings.name_shared(name, other, entity))
-		end
-		named[name] = entity
+		named[world:get(entity, jecs.Name)] = entity
 	end
 	local roots: { [Entity]: Fields } = {}
 	for _, collection in collections do

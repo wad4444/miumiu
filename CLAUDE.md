@@ -31,7 +31,8 @@ src/pull_loop.luau    the per-session loop (pull_interval when dirty, idle_inter
 src/recorder.luau     jecs added/changed/removed listeners feeding a sink (pairs packed per write, jecs.Name index); used by capture and migrations
 src/relations.luau    saveable pairs: pack the dictionary of a relation's pairs, apply one onto an entity
 src/children.luau     child index (entity → parent/kind/id), ancestry paths, kind_of, pack / pack_fields_of, delete_tree (marks deleting), stored_children
-src/capture.luau      world writes → validated ops, batch capture (undos, carried marks), shadows, lazy flush at write time (flush_lazy), claim-time supply (supply_claimed), pre-step child indexing
+src/capture.luau      world writes → validated ops, batch capture (undos, carried marks), shadows, lazy flush at write time (flush_lazy), child put/drop ops
+src/claims.luau       child pairs: claim and unclaim (on_attached/on_detached), kind validation, id assignment, claim-time supply (supply_claimed), pre-step child indexing, the recorder sink (install)
 src/reconcile.luau    merged truth → entity (initials, decode, apply; lazy-marked keys skipped), child supply, reset_child, baselines, snapshots, wipe_entity
 src/migrations.luau   scratch-world migrations
 src/foreign/          adapters for importing from other libraries (lapis.luau)
@@ -39,7 +40,7 @@ src/listeners.luau    data_link listeners → events; install/uninstall
 src/link.luau         link lifecycle: link/unlink/loaded/load_failed/closed/pulled handlers, cleanups, get_session, wipe_key, detach_all, resupply
 src/step.luau         the event loop, get_session, wipe, close, the world-level hook
 src/batch.luau        batch/delta: capture, single-key groups journaled and settled through the session's watch (await flushes them), shared commit in the background, rollback
-src/handle.luau       Batch: the handle batch/delta return (outcome, result via hold/get_result, landed/refused hooks, await; cake-style class)
+src/handle.luau       Batch: the handle batch/delta return (outcome, result and keys via hold/get_result/get_keys, landed/refused hooks, await, which runs the flush installed by flush_with; cake-style class)
 src/index.d.ts        the roblox-ts surface
 tests/specs/          TestEZ specs, never inside src
 tests/coverage.luau   block instrumenter used by the runner
@@ -120,15 +121,15 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 - World calls use colon methods (`world:set`, `world:get`); roblox-ts emits the same.
 - The game world is written only by `step` (through `reconcile` and the queued cleanups),
   `batch`'s rollback, a guard's restore, `capture.reject_unloaded`, the undo of a
-  rejected child pair or tag, claim-time supply of an attached child (`capture.attach` →
+  rejected child pair or tag, claim-time supply of an attached child (`claims.attach` →
   `reconcile.supply_child`), `wipe` (`reconcile.wipe_entity`) and child-id minting
-  (`children.mint_id`, which writes `child_id` bare: nothing listens on it), always under
-  `state.with_applying` (which nests) so listeners skip it. Two deliberate exceptions
-  run unmarked so they journal like a game write: a snapshot write
+  (`children.mint_id`), all but the minting (which writes `child_id` bare: nothing
+  listens on it) under `state.with_applying` (which nests) so listeners skip it. Two
+  deliberate exceptions run unmarked so they journal like a game write: a snapshot write
   (`reconcile.snapshot_fields`), and a refused batch's corrective restore
-  (`batch.rewrite_child` and an unmarked `undo_one` for an undo a later journaled op
+  (`reconcile.rewrite_fields` and an unmarked `undo_one` for an undo a later journaled op
   carried, flagged by `capture.mark_carried` / `mark_carried_children`; and
-  `batch.repair_child` for a child a plain write changed since). Listeners read or
+  `reconcile.repair_fields` for a child a plain write changed since). Listeners read or
   enqueue into `src/state.luau`.
 - Anything run inside a `removed` hook only reads: no `world:add/set/remove/delete`.
 - Plain `task.spawn` / `task.wait`; `task.defer` only for the load thread (a same-frame
@@ -143,14 +144,16 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 
 - TestEZ, specs in `tests/specs/*.spec.luau`; shared fixtures in `tests/specs/utils.luau`.
   Specs require packages by full path (`ReplicatedStorage.Packages.miumiu`) so luau-lsp
-  can type them. Leaf modules (ops, delta, commit, datastore, mutex, handle, schema,
-  collection, session, logging, state, ids) get a unit spec; world behaviour is split by phase into
+  can type them. Leaf modules (ops, delta, codec, commit, datastore, mutex, handle, schema,
+  collection, session, logging, state, ids, util, callbacks) get a unit spec; world behaviour is split by phase into
   `link.spec`, `write.spec`, `unlink.spec` (unlink and `close`), `batch.spec`,
   `migrations.spec` (migrations and foreign import), `children.spec` (child kinds,
   snapshots, lazy, wipe) and `pairs.spec` (saveable pairs), each ending in a `regressions`
   block, and those cover capture/reconcile/step/link/migrations/listeners/children/relations.
   Specs never read `internal_*` fields; `utils.journal`, `utils.session_of` and
-  `state.get(world)` cover what the public surface does not. Every spec that opens a
+  `state.get(world)` cover what the public surface does not; `schema.create_schema`,
+  `collection.resolve_config` and `session:resolve_group` are spec seams, exported for
+  the unit specs and unused by the library. Every spec that opens a
   fixture or session starts with `afterEach(utils.cleanup)` so nothing keeps pulling
   into the next test.
 - Storage is always MockDataStoreService through `utils.create_backend()`: a unique store
@@ -183,8 +186,10 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
   `error(` then `end`) is its own block. Expression-level branches (`if … then … else`
   expressions, `and`/`or`, `x or default`) are invisible to it, so "100%" says nothing
   about those: an expression-level branch with distinct outcomes gets its own `it`. A
-  function whose first statement is an `if` gets no separate body marker (the `then`
-  arm counts instead). Its
+  function whose first statement is an `if`, or a statement after an early exit that is
+  one, carries both markers: one for reaching it, one for its `then` arm.
+  `lune run tests/coverage_check.luau` instruments fixture snippets and checks that they
+  compile with the expected marker counts. Its
   string masking is `"[^"]*"`, so an escaped quote inside a string would desync it; none
   exist in `src/`. Keep a branch arm on its own line if it must be measured. A spec that
   needs a real deadline passes it explicitly (`miumiu.close(world, 0)`), never waits.
@@ -197,6 +202,7 @@ selene src tests
 rojo sourcemap test.project.json -o sourcemap.json
 luau-lsp analyze --sourcemap=sourcemap.json --definitions=globalTypes.d.luau \
   --definitions=tests/testez.d.luau --base-luaurc=.luaurc src tests/specs tests/main.server.luau
+lune run tests/coverage_check.luau
 rojo build test.project.json -o test.rbxl && MIUMIU_COVERAGE=strict lune run tests/run.luau test.rbxl
 npm run typecheck
 ```

@@ -248,7 +248,7 @@ return function()
 			expect(t.world:has(player, t.tutorial)).to.equal(true)
 		end)
 
-		it("migrations run in their own world and see initials", function()
+		it("run in their own world and see initials", function()
 			local t = setup({ pull_interval = never })
 			t.world:set(t.money, t.money, 100)
 			local seen_world = nil
@@ -344,6 +344,23 @@ return function()
 			local record = t.backend:dump("p1")
 			expect(record.migrations).to.equal(1)
 			expect(record.version).to.equal(1)
+		end)
+
+		it("refuses context.legacy on a kind key the record already holds as children", function()
+			local t = setup({ pull_interval = never })
+			local k = utils.declare_kinds(t.world, t.player_data)
+			utils.scope(t.world, { t.money }, { k.item })
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(_, _, context)
+					context.legacy("inventory")
+				end,
+			})
+			t.backend:seed("p1", { data = { inventory = { a = { money = 1 } } }, migrations = 0 })
+			local player = t.world:entity()
+			t.world:set(player, t.link, "p1")
+			settle(t, player)
+			local err = t.world:get(player, t.data_error)
+			expect((string.find(err, "holds children keyed by id", 1, true))).to.be.ok()
 		end)
 	end)
 end

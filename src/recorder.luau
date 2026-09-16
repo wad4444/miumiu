@@ -9,42 +9,20 @@ local util = require("./util")
 
 type World = types.World
 type Entity<T = nil> = types.Entity<T>
+type Change = types.Change
 type ChildKind = types.ChildKind
 type Named = types.Named
 type RecorderSink = types.RecorderSink
 type RelationEntry = types.RelationEntry
-type Removal = types.Removal
 type Schema = types.Schema
 type SchemaEntry = types.SchemaEntry
-
-local function removing_of(world: World, entity: Entity): { [string]: Removal }?
-	local existing = state.get(world).entities[entity]
-	return if existing then existing.removing else nil
-end
 
 local function forget_entity(world: World, entity: Entity)
 	state.get(world).entities[entity] = nil
 end
 
 local function forget_removing(world: World, entity: Entity, key: string)
-	local removing = removing_of(world, entity)
-	if removing then
-		removing[key] = nil
-	end
-end
-
-local function removed_targets(world: World, entity: Entity, key: string): { [Entity]: boolean }
-	local removing = removing_of(world, entity)
-	if removing == nil then
-		return {}
-	end
-	local existing = removing[key]
-	if existing and existing.kind == "targets" then
-		return existing.targets
-	end
-	local targets: { [Entity]: boolean } = {}
-	removing[key] = { kind = "targets", targets = targets }
-	return targets
+	state.forget_removing(state.get(world), entity, key)
 end
 
 local function watch_pairs(world: World, entry: RelationEntry, named: Named, sink: RecorderSink): { () -> () }
@@ -73,7 +51,7 @@ local function watch_pairs(world: World, entry: RelationEntry, named: Named, sin
 				emit(entity, nil, true)
 				return
 			end
-			local targets = removed_targets(world, entity, entry.key)
+			local targets = state.removing_targets(state.get(world), entity, entry.key)
 			targets[jecs.pair_second(world, id)] = true
 			relations.prune(world, entry, entity, targets)
 			emit(entity, targets, false)
@@ -120,36 +98,27 @@ local function watch(world: World, entry: SchemaEntry, named: Named, sink: Recor
 	if entry.kind == "relation" then
 		return watch_pairs(world, entry, named, sink)
 	end
+	local function emit(change: Change): (Entity, any, any) -> ()
+		return function(entity, _, value)
+			forget_removing(world, entity, entry.key)
+			sink({
+				kind = "component",
+				entity = entity,
+				entry = entry,
+				change = change,
+				value = value,
+				deleted = false,
+			})
+		end
+	end
 	return {
-		world:added(entry.id, function(entity, _, value)
-			forget_removing(world, entity, entry.key)
-			sink({
-				kind = "component",
-				entity = entity,
-				entry = entry,
-				change = "added",
-				value = value,
-				deleted = false,
-			})
-		end),
-		world:changed(entry.id, function(entity, _, value)
-			forget_removing(world, entity, entry.key)
-			sink({
-				kind = "component",
-				entity = entity,
-				entry = entry,
-				change = "changed",
-				value = value,
-				deleted = false,
-			})
-		end),
+		world:added(entry.id, emit("added")),
+		world:changed(entry.id, emit("changed")),
 		world:removed(entry.id, function(entity, _, deleted)
 			if deleted then
 				forget_entity(world, entity)
-			end
-			local removing = if deleted then nil else removing_of(world, entity)
-			if removing then
-				removing[entry.key] = { kind = "field" }
+			else
+				state.mark_removing_field(state.get(world), entity, entry.key)
 			end
 			sink({
 				kind = "component",

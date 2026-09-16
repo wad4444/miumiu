@@ -28,6 +28,11 @@ local function invoke(hook: Symbol, owner: unknown, callback: Callback, ...: any
 	end
 end
 
+local function is_connected(registry: CallbackRegistry, hook: Symbol): boolean
+	local callbacks = registry[hook]
+	return callbacks ~= nil and #callbacks > 0
+end
+
 local function fire(registry: CallbackRegistry, hook: Symbol, owner: unknown, ...: any)
 	local callbacks = registry[hook]
 	if not callbacks then
@@ -42,4 +47,5 @@ return table.freeze({
 	connect = connect,
 	invoke = invoke,
 	fire = fire,
+	is_connected = is_connected,
 })

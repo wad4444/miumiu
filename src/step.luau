@@ -2,6 +2,7 @@ local types = require("./types")
 local callbacks = require("./callbacks")
 local contexts = require("./contexts")
 local datastore = require("./datastore")
+local hooks = require("./hooks")
 local link = require("./link")
 local listeners = require("./listeners")
 local logging = require("./logging")
@@ -18,6 +19,7 @@ type Session = types.Session
 type SessionInternal = types.SessionInternal
 type Symbol = types.Symbol
 type UnloadAttempt = types.UnloadAttempt
+type WorldPhase = types.WorldPhase
 
 local close_budget = 25
 local close_backoff_cap = 8
@@ -51,14 +53,16 @@ end
 
 local function step(world: World)
 	local world_state = state.get(world)
-	if world_state.closed or world_state.stepping then
+	if world_state.phase.kind ~= "idle" then
 		return
 	end
 	local context = contexts.create_context(world)
 	listeners.install(context)
-	world_state.stepping = true
+	world_state.phase = { kind = "stepping" }
 	local ok, err = pcall(drain, context)
-	world_state.stepping = false
+	if (world_state.phase :: WorldPhase).kind == "stepping" then
+		world_state.phase = { kind = "idle" }
+	end
 	if not ok then
 		error(err, 0)
 	end
@@ -116,12 +120,15 @@ local function unload_until(loaded: SessionInternal, deadline: number)
 end
 
 local function hook(world: World, hook_symbol: Symbol, callback: Callback): () -> ()
+	if hook_symbol ~= (hooks.refused :: any) then
+		error(messages.errors.hook_unknown(tostring(hook_symbol)), 0)
+	end
 	return callbacks.connect(state.get(world).hooks, hook_symbol, callback)
 end
 
 local function close(world: World, budget: number?)
 	local world_state = state.get(world)
-	world_state.closed = true
+	world_state.phase = { kind = "closed" }
 	if not listeners.is_installed(world_state) then
 		return
 	end

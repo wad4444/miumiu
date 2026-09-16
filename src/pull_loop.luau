@@ -9,6 +9,9 @@ local function jittered(interval: number): number
 end
 
 local function start(session: SessionInternal)
+	if session:get_config().pull_interval == math.huge then
+		return
+	end
 	task.spawn(function()
 		local failing = false
 		local idle = 0

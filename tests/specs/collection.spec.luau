@@ -188,5 +188,21 @@ return function()
 			local other = utils.create_collection(world, utils.create_backend())
 			expect(collection.get(world, other)).never.to.equal(first)
 		end)
+
+		it("rejects an unknown config field and a service without GetDataStore", function()
+			local backend = utils.create_backend()
+			local world = jecs.world()
+			local entity = utils.create_collection(world, backend)
+			local config = world:get(entity, miumiu.config)
+			config.pull_intervall = 5
+			expect(function()
+				collection.resolve_config(world, entity)
+			end).to.throw('no field "pull_intervall"')
+			config.pull_intervall = nil
+			config.data_store_service = {}
+			expect(function()
+				collection.resolve_config(world, entity)
+			end).to.throw("must offer GetDataStore")
+		end)
 	end)
 end

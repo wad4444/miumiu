@@ -25,6 +25,17 @@ local defaults = {
 
 local write_cooldown = 6
 
+local known_fields = {
+	pull_interval = true,
+	idle_interval = true,
+	retry_attempts = true,
+	retry_base = true,
+	commit_store = true,
+	commit_timeout = true,
+	data_store_service = true,
+	user_ids = true,
+}
+
 local function validate_foreign(described: string, name: string, source: ForeignSource)
 	if not foreign.is_supported(source.type) then
 		error(messages.errors.unknown_foreign(described, tostring(source.type)), 0)
@@ -61,7 +72,17 @@ local function validate_config(described: string, config: ResolvedCollectionConf
 	if config.user_ids ~= nil and type(config.user_ids) ~= "function" then
 		error(messages.errors.bad_user_ids(described), 0)
 	end
-	if given.data_store_service == nil and config.pull_interval < write_cooldown then
+	for field in given :: { [string]: any } do
+		if not known_fields[field] then
+			error(messages.errors.bad_config_field(described, tostring(field)), 0)
+		end
+	end
+	local service: any = config.data_store_service
+	local default = service == datastore.get_default_service()
+	if not default and (type(service) ~= "table" or type(service.GetDataStore) ~= "function") then
+		error(messages.errors.bad_service(described), 0)
+	end
+	if default and config.pull_interval < write_cooldown then
 		logging.warn(messages.warnings.fast_pull(described, config.pull_interval, write_cooldown))
 	end
 end
@@ -86,7 +107,7 @@ local function resolve_config(world: World, collection: Entity): ResolvedCollect
 	local pull_interval = given.pull_interval or defaults.pull_interval
 	local config: ResolvedCollectionConfig = {
 		name = name,
-		data_store_service = given.data_store_service or datastore.default_service(),
+		data_store_service = given.data_store_service or datastore.get_default_service(),
 		pull_interval = pull_interval,
 		idle_interval = given.idle_interval or math.max(defaults.idle_interval, pull_interval),
 		retry_attempts = given.retry_attempts or defaults.retry_attempts,

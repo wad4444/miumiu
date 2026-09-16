@@ -125,11 +125,13 @@ Two modes, decided by who owns the entity:
   pre-attach values enter its shadow when it attaches, so a failed batch that changed
   them restores them instead of removing them): adding the pair while the
   parent is loaded (or the parent finishing its load while the pair exists) supplies
-  the record's values on top of the baseline, a field the record lacks keeps its
-  baseline value, a field absent from both stays absent (initials play no part), and
-  its own children are supplied the same way. Stored child ids are strings; a group
+  the record's entry for it whole (a field the entry lacks is removed, initials play no
+  part) and, while the record has no entry for it yet, leaves the pre-claim values in
+  place for the first put to store; its own children are supplied the same way. Stored
+  child ids are strings; a group
   keyed by numbers (an imported array) is left alone until a migration rebuilds it
-  through `context.legacy`, with one warning when no migration did. Removing the pair journals nothing and the
+  through `context.legacy`, with one warning per world and kind key when no migration
+  did. Removing the pair journals nothing and the
   record keeps the state; on the next `step` the entity returns to its baseline (unless
   something claimed it again in the meantime). The root unlinking resets it the same
   way. Deleting it journals nothing either.
@@ -170,11 +172,12 @@ shapes `legacy` cannot express (an array under a kind's key); it is read-only.
 
 `jecs.meta(last_seen, miumiu.snapshot, function(world, entity) return os.time() end)`
 makes a saveable the library evaluates itself: right before every write of a session
-that has something to write (interval pull, `sync`, a batch's commit, the final write on
-unlink or `close`), the function runs for each linked entity and its children and the
-component is set when the result changed, journaling an ordinary `set` (or a child put)
-as a group of its own: during a batch's commit it lands in the same write as the batch
-but is not part of the batch, so a refusal leaves it in the record. A batch that wants a
+that has something to write (interval pull, `sync`, a batch's `await`, a multi-key
+batch's commit, the final write on unlink or `close`), the function runs for each linked
+entity and its children and the component is set when the result changed, journaling an
+ordinary `set` (or a child put) as a group of its own: during a batch's `await` or a
+multi-key batch's commit it lands in the same write as the batch but is not part of the
+batch, so a refusal leaves it in the record. A batch that wants a
 snapshot's value inside its group sets the component by hand. A `nil`
 result leaves the value alone. Idle reads never run it. It must not yield; a throwing or
 yielding snapshot is warned about and skipped. Tags cannot be snapshots. Once a snapshot
@@ -386,9 +389,14 @@ end)
   journaled; they never yield. A group on one key is journaled like a plain write and
   rides the session's next write (the interval pull, an unlink, `close`, a `sync`), so a
   burst of batches costs the key nothing beyond its pull; `await` on it writes now (a
-  `sync`), and it is refused only when that write fails after its retries, or when the
-  session ends with the group unwritten (a newer server took the key, `close` ran out of
-  budget, the key was wiped). A group over several keys commits in a spawned thread
+  `sync`), and it is refused when the session ends with the group unwritten (a newer
+  server took the key, `close` ran out of budget, the key was wiped) or when an `await`'s
+  own write fails after its retries (the session then checks the record's `landed` map
+  under its lock, so a write that landed but lost its response still lands the batch,
+  and a write another thread carried meanwhile is never refused); a failed interval,
+  `sync` or unlink write keeps it pending and retries it, like any unwritten group. A
+  `delta` whose diff is empty lands at once. A group over several keys commits in a
+  spawned thread
   through the commit-store dance below. Either way it lands or is refused;
   refused means the group is dropped from every session, the world rolled back (values
   the batch still holds) and a warning when nothing hooked or awaited the handle in the
@@ -436,7 +444,8 @@ One session per (world, collection, key). The session pulls on `await` of a batc
 key, on a multi-key `batch`, on unlink, and on
 its own loop: every `pull_interval` seconds (stretched by up to 50% so sessions opened
 together drift apart) while it has unwritten groups, every `idle_interval` seconds while
-it is clean. A clean session reads (`GetAsync`, past the read cache) and adopts the
+it is clean, counted from its last pull of any kind (a `sync` or an `await` restarts the
+idle clock). A clean session reads (`GetAsync`, past the read cache) and adopts the
 record when its `written` id differs from the last one adopted. The read hands over to the
 `UpdateAsync` below when the session has groups to write, holds a foreign seed, or the read shows
 something only a write can settle: pending entries that are decided, a version-less
@@ -477,7 +486,8 @@ Budget at the defaults, per player: a clean key costs at most one read per minut
 (`idle_interval = math.huge` turns idle reads off for a game that never edits a key from
 two servers), an active key at most four writes per minute (jitter only stretches an
 interval, 15 s to 22.5 s), a join one read, a clean leave nothing (a session with nothing
-unwritten closes without touching storage; a declared snapshot makes every leave dirty),
+unwritten closes without touching storage; a declared snapshot or a pending single-key
+batch makes the leave dirty),
 a dirty leave one write. A single-key `batch` costs nothing of its own: it rides the
 next pull, or one write when awaited. A multi-key `batch` over N keys costs N writes, one
 commit-store write, then N reads and N writes to settle. Against Roblox's
@@ -505,9 +515,12 @@ first, so the entity never loses a write made while the pull was in flight. `pul
 fires only when the pull adopted something new and the session is still open, after the
 session's lock is released, so a callback may `sync` again; it runs on the pull thread,
 before the next `step` reconciles the entities, so a callback reads the truth it is
-handed, not the world.
+handed, not the world. `landed` and `refused` fire after the lock the same way, on the
+thread that wrote: a session closed by that write (a newer record, an abandoned `close`)
+fires `closed` under the lock, then lands what the write carried and refuses the rest.
 
-A write that fails keeps the unwritten groups; they go out on the next pull. Warned. An
+A write that fails keeps the unwritten groups, single-key batches included; they go out
+on the next pull. Warned. An
 unlink whose final write fails keeps the session open and retrying; it closes on the
 first pull that leaves nothing unwritten. A shared group the session is awaiting is
 forgotten as soon as a pulled record no longer lists it in `pending`, whoever decided it;
@@ -569,7 +582,8 @@ world:set(e, pair(data_link, c), key)  -> while "unloading": the same session is
 miumiu.get_session(world, c, key)      -> the open Session behind a loaded link, else nil
 miumiu.wipe(world, c, key)             -> one write: empty record, every stored key stamped
                                           past its old stamp, version bumped; a loaded key
-                                          drops its unwritten groups and lazy marks and
+                                          drops its unwritten groups and lazy marks,
+                                          refuses every single-key batch riding it and
                                           re-initialises its entities, an unloaded key is
                                           wiped straight in the store; a failed write
                                           throws and keeps everything
@@ -588,12 +602,15 @@ already has is a no-op.
 for it). It retries each final write with one storage attempt per try, backing off
 exponentially up to 8 s, until `budget` seconds (default 25) have passed since the call,
 then warns and closes the session as `abandoned` (its `closed` hooks fire; a write still
-in flight may yet land); a game's `BindToClose` has 30, and the budget is per world. A
+in flight finishes and lands or refuses the single-key batches it carries when it
+returns, and with no write in flight every batch riding the session is refused at
+once); a game's `BindToClose` has 30, and the budget is per world. A
 final write the record refuses (newer server) is warned about as lost.
 
 `Batch` is the public surface of one `batch`/`delta` call: `get_outcome`, `get_result`,
-`is_settled`, `hook(landed | refused)`, `await`; the commit that settles it is the
-pull/commit sequence above, run in its own thread. `miumiu.hook(world, refused, fn)` is
+`get_keys`, `is_settled`, `hook(landed | refused)`, `await`; one key settles through the session's
+watch on whichever write carries it, several keys through the commit sequence above in a
+thread of their own. `miumiu.hook(world, refused, fn)` is
 the world-level listener: every refusal on the world reaches it after the batch's own
 hooks, and one listener there silences the unhooked-refusal warning.
 
@@ -627,7 +644,8 @@ in both records; a remote change one collection supplies is not journaled into t
 other, so scope a saveable to one collection unless both records may drift apart.
 `world:clear(entity)` removes
 every component with the ordinary `removed` hook, so unlike `world:delete` it journals a
-`remove` per saveable and wipes the record.
+`remove` per saveable of the root; its children carry their own pairs and stay in the
+record.
 
 Rules:
 
@@ -635,7 +653,8 @@ Rules:
   cleanups queued by a deletion or an unclaim), `batch`'s rollback, a guard's restore,
   the removal of a component or pair added to an unloaded entity inside `batch`, the
   undo of a rejected child pair or tag, the claim-time supply of an attached child,
-  `wipe` and child-id minting. Every one runs under an `applying` mark, which nests;
+  `wipe` and child-id minting. Every one but the minting (which writes `child_id` bare,
+  since nothing listens on it) runs under an `applying` mark, which nests;
   two deliberate exceptions run unmarked so they journal like a game write: a snapshot
   write, and a refused batch's restore of an undo a later journaled op carried (a lazy
   flush, a plain write of the same value, a re-parent put over the child or its subtree
@@ -683,6 +702,10 @@ Rules:
   its flush, like any unwritten change. The wiped record drops `landed`, so a group whose write
   reached storage right before the wipe and is retried within the window re-applies its
   delta ops on the empty record.
+- A `wipe` refuses the single-key batches riding the key but not a multi-key batch
+  mid-commit: its pending entry goes with the record while the coordinator may still
+  mark the commit, so the other keys land it and the wiped key never replays it. The
+  wipe stamps past everything; it is the erasure it claims to be.
 - Time is `os.time()`. Servers are NTP-synced; a same-second `set` tie between two
   servers keeps the existing value (a single writer never ties with itself, see
   Operations).
@@ -717,7 +740,8 @@ carries (the DataStore GDPR association); it must be a function or absent.
 non-empty string; anything else fails the link. On the real `DataStoreService` a
 `pull_interval` under Roblox's 6 s per-key write cooldown warns once per collection.
 With `retry_attempts = 5, retry_base = 1` a load during an outage takes 15 s of backoff
-to reach `data_error`. `pull_interval` bounds how long a write can sit unwritten;
+to reach `data_error`. `pull_interval` bounds how long a write, or a single-key batch
+nobody awaits, can sit unwritten;
 `idle_interval` bounds how stale a key another server edits can be.
 
 ## Using it
@@ -749,7 +773,8 @@ to reach `data_error`. `pull_interval` bounds how long a write can sit unwritten
   Writes inside `delta` must build the new value from the old one so unchanged elements
   keep their identity.
 - Two `batch`es on one key ride the same write; two `await`s inside 6 s queue behind the
-  write cooldown.
+  write cooldown. A multi-key batch's pull carries the single-key batches pending on its
+  keys and lands them early; its refusal leaves them alone.
 - `miumiu.get_session(world, c, key)` gives the live session for forcing a `sync`,
   reading `is_dirty`, or hooking `pulled`/`closed`/`writing`. `batch` and `delta` never
   yield; hook the returned handle, or `await` it where yielding is allowed.

@@ -98,7 +98,6 @@ local function resolve(state: State, pending: Pending): Resolution
 end
 
 return table.freeze({
-	get_status = get_status,
 	fetch = fetch,
 	mark = mark,
 	resolve = resolve,

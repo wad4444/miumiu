@@ -81,9 +81,7 @@ return function()
 			loaded:sync()
 			t.world:delete(player)
 			miumiu.step(t.world)
-			expect(utils.wait_until(function()
-				return not loaded:is_open()
-			end)).to.equal(true)
+			expect(utils.wait_closed(loaded)).to.equal(true)
 			expect(t.backend:dump("p1").data.money).to.equal(3)
 		end)
 	end)
@@ -217,7 +215,7 @@ return function()
 			expect(state.get(t.world).entities[npc]).to.equal(nil)
 		end)
 
-		it("coalesces consecutive sets of one key into one group", function()
+		it("coalesces every set of one key into one group, across other keys", function()
 			local t = setup({ pull_interval = never })
 			local player = utils.link_entity(t, "p1", { money = 1 })
 			local session = utils.session_of(t, "p1")
@@ -228,7 +226,7 @@ return function()
 			t.world:set(player, t.money, 51)
 			local count = utils.count(t.backend:dump("p1").landed)
 			session:sync()
-			expect(utils.count(t.backend:dump("p1").landed)).to.equal(count + 3)
+			expect(utils.count(t.backend:dump("p1").landed)).to.equal(count + 2)
 			expect(t.backend:dump("p1").data.money).to.equal(51)
 		end)
 
@@ -620,6 +618,87 @@ return function()
 			expect(t.backend:dump("p1").data.codes[1]).to.equal("ok")
 			miumiu.step(t.world)
 			expect(t.world:get(player, codes)).to.equal(first)
+		end)
+
+		it("rejects a serialize that returns nil and keeps the previous value", function()
+			local t = setup({ pull_interval = never })
+			local codes = utils.declare_saveable(t.world, "component", "codes", { t.player_data })
+			t.world:set(codes, miumiu.guard, function()
+				return true
+			end)
+			t.world:set(codes, miumiu.serdes, {
+				serialize = function(set)
+					return if next(set) == nil then nil else set
+				end,
+				deserialize = function(list)
+					return list
+				end,
+			})
+			local player = utils.link_entity(t, "p1")
+			local session = utils.session_of(t, "p1")
+			local full = { "a" }
+			t.world:set(player, codes, full)
+			session:sync()
+			expect(function()
+				t.world:set(player, codes, {})
+			end).to.throw("returned nil")
+			expect(t.world:get(player, codes)).to.equal(full)
+			expect(session:is_dirty()).to.equal(false)
+		end)
+
+		it("does not write a lazy value that has not changed since its flush", function()
+			local t = setup({ pull_interval = never })
+			local battery = utils.declare_saveable(t.world, "component", "battery", { t.player_data })
+			t.world:add(battery, miumiu.lazy)
+			local player = utils.link_entity(t, "p1")
+			local session = utils.session_of(t, "p1")
+			t.world:set(player, battery, 5)
+			session:sync()
+			local writes = t.backend.calls.UpdateAsync
+			t.world:set(player, battery, 5)
+			expect(session:is_dirty()).to.equal(false)
+			session:sync()
+			expect(t.backend.calls.UpdateAsync).to.equal(writes)
+		end)
+
+		it("skips a deserialize that returns nil and keeps the entity's value", function()
+			local t = setup({ pull_interval = never })
+			local codes = utils.declare_saveable(t.world, "component", "codes", { t.player_data })
+			t.world:set(codes, miumiu.guard, function()
+				return true
+			end)
+			t.world:set(codes, miumiu.serdes, {
+				serialize = function(set)
+					return set
+				end,
+				deserialize = function()
+					return nil
+				end,
+			})
+			t.backend:seed("p1", { data = { codes = { "a" } }, stamps = { codes = 1 } })
+			local player = t.world:entity()
+			local mine = { "local" }
+			t.world:set(player, codes, mine)
+			t.world:set(player, t.link, "p1")
+			settle(t, player)
+			expect(t.world:get(player, codes)).to.equal(mine)
+			expect(utils.warned(t.backend, "deserialize returned nil")).to.equal(true)
+		end)
+
+		it("coalesces sets of two keys written alternately into one group each", function()
+			local t = setup({ pull_interval = never })
+			local player = utils.link_entity(t, "p1", { money = 1 })
+			local session = utils.session_of(t, "p1")
+			for value = 2, 50 do
+				t.world:set(player, t.money, value)
+				t.world:set(player, t.items, { tostring(value) })
+			end
+			local count = utils.count(t.backend:dump("p1").landed)
+			session:sync()
+			expect(utils.count(t.backend:dump("p1").landed)).to.equal(count + 2)
+			local record = t.backend:dump("p1").data
+			expect(record.money).to.equal(50)
+			expect(record.items[1]).to.equal("50")
 		end)
 	end)
 end

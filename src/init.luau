@@ -31,6 +31,7 @@ export type CollectionConfig = types.CollectionConfig
 export type ResolvedCollectionConfig = types.ResolvedCollectionConfig
 export type Session = types.Session
 export type Closure = types.Closure
+export type SessionStatus = types.SessionStatus
 export type Batch = types.Batch
 export type Outcome = types.Outcome
 export type SettledOutcome = types.SettledOutcome

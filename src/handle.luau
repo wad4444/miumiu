@@ -32,6 +32,9 @@ local function is_settled(self: BatchInternal): boolean
 end
 
 local function hook(self: BatchInternal, hook_symbol: Symbol, callback: Callback): () -> ()
+	if hook_symbol ~= (hooks.landed :: any) and hook_symbol ~= (hooks.refused :: any) then
+		error(messages.errors.hook_unknown(tostring(hook_symbol), "hooks.landed or hooks.refused"), 0)
+	end
 	local outcome = self.internal_values.outcome
 	if outcome.kind == "landed" and hook_symbol == (hooks.landed :: any) then
 		callbacks.invoke(hook_symbol, self, callback)

@@ -70,7 +70,9 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
   `setmetatable(instance, meta)` and returns `instance :: types.X`.
 - `meta` carries only `__tostring` (`Session(key)`, `Mutex(free)`, `Batch(pending)`); no
   `__index`.
-- Scalars live in `internal_values`, tables in their own `internal_*` field; the public
+- Immutable by-value state (scalars, functions, frozen variant records such as `status`
+  and `outcome`) lives in `internal_values`, mutable collections in their own
+  `internal_*` field; the public
   surface is getters (`get_key`, `is_open`) and verbs. The public type (`Session`) lists
   only that surface; `SessionInternal = Session & { internal_*, internal verbs }` is what
   the module and the rest of the library use. Nothing outside the class module reads an

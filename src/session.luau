@@ -86,9 +86,15 @@ end
 
 local function resolve_watched(self: SessionInternal, message: string)
 	local watchers = self.internal_watchers
+	if next(watchers) == nil then
+		return
+	end
 	self.internal_watchers = {}
+	local collection = self.internal_collection
+	local ok, record = pcall(datastore.get_async, collection.store, self.internal_values.key, collection.config)
+	local landed = if ok and type(record) == "table" and type(record.landed) == "table" then record.landed else {}
 	for id, watcher in watchers do
-		if has_landed(self, id) then
+		if landed[id] ~= nil then
 			watcher({ kind = "landed" })
 		else
 			watcher({ kind = "refused", message = message })
@@ -708,6 +714,13 @@ local function wipe(self: SessionInternal)
 end
 
 local function hook(self: SessionInternal, hook_symbol: Symbol, callback: Callback): () -> ()
+	if
+		hook_symbol ~= (hooks.pulled :: any)
+		and hook_symbol ~= (hooks.closed :: any)
+		and hook_symbol ~= (hooks.writing :: any)
+	then
+		error(messages.errors.hook_unknown(tostring(hook_symbol), "hooks.pulled, hooks.closed or hooks.writing"), 0)
+	end
 	return callbacks.connect(self.internal_hooks, hook_symbol, callback)
 end
 

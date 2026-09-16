@@ -153,5 +153,12 @@ return function()
 			expect(#backend.warnings).to.equal(1)
 			expect(utils.warned(backend, 'batch b on "k1", "k2" refused')).to.equal(true)
 		end)
+
+		it("rejects a hook symbol a batch never fires", function()
+			local batch = handle.create_batch()
+			expect(function()
+				batch:hook(hooks.pulled, function() end)
+			end).to.throw("hooks.landed or hooks.refused")
+		end)
 	end)
 end

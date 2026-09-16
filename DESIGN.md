@@ -348,7 +348,7 @@ inside one transform; a group whose keys span several records commits through th
 store (below). Outside `batch`, each op is its own group.
 
 ```luau
-Group = { id: string, ops: { Op }, kind: "single" | "shared" }
+Group = { id: string, ops: { Op }, kind: "single" | "shared", coalesce: string? }
 ```
 
 A session journals its own slice of a group; a `batch` that touches several keys hands
@@ -393,7 +393,9 @@ end)
   server took the key, `close` ran out of budget, the key was wiped) or when an `await`'s
   own write fails after its retries (the session then checks the record's `landed` map
   under its lock, so a write that landed but lost its response still lands the batch,
-  and a write another thread carried meanwhile is never refused); a failed interval,
+  and a write another thread carried meanwhile is never refused; the probe retries with
+  the collection's config, and if it still fails the batch is refused, the safe side for a
+  receipt, which the platform re-fires); a failed interval,
   `sync` or unlink write keeps it pending and retries it, like any unwritten group. A
   `delta` whose diff is empty lands at once. A group over several keys commits in a
   spawned thread
@@ -711,7 +713,13 @@ Rules:
 - A `wipe` refuses the single-key batches riding the key but not a multi-key batch
   mid-commit: its pending entry goes with the record while the coordinator may still
   mark the commit, so the other keys land it and the wiped key never replays it. The
-  wipe stamps past everything; it is the erasure it claims to be.
+  wipe stamps past everything; it is the erasure it claims to be, and it does not honour
+  the newer-server guard: it writes this build's `migrations` and `format` whatever the
+  record held.
+- `format` is detection only. A record in a higher format closes the session; a record
+  in a lower one is passed through `merge` unchanged and relabelled on the next write.
+  A format that changes the record's shape needs a read-side upgrade transform that does
+  not exist yet, so until then every reader tolerates every past shape.
 - Time is `os.time()`. Servers are NTP-synced; a same-second `set` tie between two
   servers keeps the existing value (a single writer never ties with itself, see
   Operations).

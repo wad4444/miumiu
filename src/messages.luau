@@ -228,8 +228,8 @@ local errors = table.freeze({
 	bad_service = function(collection: unknown)
 		return prefixed(`collection {collection}: data_store_service must offer GetDataStore`)
 	end,
-	hook_unknown = function(hook: string)
-		return prefixed(`miumiu.hook takes hooks.refused, not {hook}`)
+	hook_unknown = function(hook: string, accepted: string)
+		return prefixed(`{hook} is not a hook this surface accepts; it takes {accepted}`)
 	end,
 	newer_format = function(key: string, format: number, known: number)
 		return prefixed(

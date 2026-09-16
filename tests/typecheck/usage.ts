@@ -212,7 +212,7 @@ export function transfer(world: World, sender: Entity, receiver: Entity, amount:
 	);
 	unhook();
 	if (!paid.get_result()) return false;
-	group.hook(miumiu.hooks.landed, () => print("transferred"));
+	group.hook(miumiu.hooks.landed, () => print("transferred", group.get_keys().size()));
 	group.hook(miumiu.hooks.refused, (message: string) => print("refused", message));
 	// @ts-expect-error a batch never fires session hooks
 	group.hook(miumiu.hooks.pulled, () => {});

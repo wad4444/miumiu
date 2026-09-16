@@ -121,7 +121,7 @@ end
 
 local function hook(world: World, hook_symbol: Symbol, callback: Callback): () -> ()
 	if hook_symbol ~= (hooks.refused :: any) then
-		error(messages.errors.hook_unknown(tostring(hook_symbol)), 0)
+		error(messages.errors.hook_unknown(tostring(hook_symbol), "hooks.refused"), 0)
 	end
 	return callbacks.connect(state.get(world).hooks, hook_symbol, callback)
 end

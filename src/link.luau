@@ -196,14 +196,24 @@ end
 
 local function write_fields(context: Context, entity: Entity, collection_entity: Entity)
 	local root = context.schema.roots[collection_entity]
-	reconcile.snapshot_fields(context, entity, root.snapshots)
-	capture.flush_lazy(context, entity, root.entries)
+	local guard = util.create_guard()
+	guard.run(function()
+		reconcile.snapshot_fields(context, entity, root.snapshots)
+	end)
+	guard.run(function()
+		capture.flush_lazy(context, entity, root.entries)
+	end)
+	guard.rethrow()
 end
 
 local function snapshot_all(context: Context, link_state: LinkState)
+	local guard = util.create_guard()
 	for entity in link_state.entities do
-		write_fields(context, entity, link_state.collection)
+		guard.run(function()
+			write_fields(context, entity, link_state.collection)
+		end)
 	end
+	guard.rethrow()
 end
 
 local function wipe_key(context: Context, collection_entity: Entity, key: string)

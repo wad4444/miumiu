@@ -218,9 +218,11 @@ restricts the saveable to those targets: other pairs on the relation are neither
 stored nor touched by a supply. The schema keeps a name index seeded from every named
 entity at build time and kept current by hooks on `jecs.Name` (a rename drops the old
 name), so a target named after the first `step` resolves; a migration's scratch world
-works on a copy of it. A target's name is a stored key. A target without a name, or
-whose name another entity also carries (warned once per name, at build or when the
-second one is named), is left out of the dictionary and left alone by a supply; a
+works on a copy of it. A target's name is a stored key. The first entity to carry a
+name owns it in the index; a second one named the same (warned once per name, at build
+or when it is named) is left out of the dictionary and left alone by a supply, so a
+stored name never retargets while its owner lives, and a target without a name is left
+out the same way; a
 stored name no entity carries is skipped with one warning per name; a stored value
 that is not a table is skipped with a warning. The set is stored
 whole: no guard, serdes, snapshot, lazy or `delta` (it throws `not a delta`), and a

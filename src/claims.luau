@@ -177,13 +177,23 @@ local function defer_drop(world_state: WorldState, root: Entity, drop: PendingDr
 	table.insert(pending, drop)
 end
 
-local function cancel_drop(world_state: WorldState, root: Entity, entity: Entity)
-	local pending = world_state.pending_drops[root]
+local function is_same_place(a: Ancestry, b: Ancestry): boolean
+	for index, step in a.path do
+		if b.path[index] ~= step then
+			return false
+		end
+	end
+	return a.kind == b.kind and #a.path == #b.path
+end
+
+local function cancel_drop(world_state: WorldState, ancestry: Ancestry, entity: Entity)
+	local pending = world_state.pending_drops[ancestry.root]
 	if pending == nil then
 		return
 	end
 	for index = #pending, 1, -1 do
-		if pending[index].entity == entity then
+		local drop = pending[index]
+		if drop.entity == entity and is_same_place(drop.ancestry, ancestry) then
 			table.remove(pending, index)
 		end
 	end
@@ -237,16 +247,12 @@ local function on_detached(context: Context, write: RelationWrite)
 	if not write.deleted then
 		mark_dropped(context, write.entity)
 	end
-	if ancestry and is_unlinking_root(context, ancestry.root) then
+	if ancestry and world_state.capture == nil and is_unlinking_root(context, ancestry.root) then
 		defer_drop(world_state, ancestry.root, {
 			entity = write.entity,
 			ancestry = ancestry,
 			kept = previous ~= nil and not write.deleted,
 		})
-		local active = world_state.capture
-		if active then
-			table.insert(active.undo, pair_undo(write, true, stored_id_of(context, write.entity, write.child)))
-		end
 		return
 	end
 	local stored_id = stored_id_of(context, write.entity, write.child)
@@ -316,7 +322,7 @@ local function on_attached(context: Context, write: RelationWrite)
 	children.record(index, write.entity, write.child, write.parent, id)
 	local ancestry = children.ancestry(world_state, write.entity)
 	if ancestry then
-		cancel_drop(world_state, ancestry.root, write.entity)
+		cancel_drop(world_state, ancestry, write.entity)
 	end
 	local existing = world_state.entities[write.entity]
 	local was_dropped = existing ~= nil and existing.dropped

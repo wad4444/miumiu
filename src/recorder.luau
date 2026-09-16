@@ -81,6 +81,7 @@ local function watch_names(world: World, named: Named): { () -> () }
 				`name_shared:{name}`,
 				messages.warnings.name_shared(name, util.describe(world, other), tostring(entity))
 			)
+			return
 		end
 		named[name] = entity
 		names[entity] = name

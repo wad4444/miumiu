@@ -146,7 +146,8 @@ end
 
 local function is_unlinking_root(context: Context, root: Entity): boolean
 	local unlinking = false
-	for collection in context.world_state.links[root] or {} do
+	local links: { [Entity]: string } = context.world_state.links[root] or {}
+	for collection in links do
 		if context.world:has(root, jecs.pair(ids.data_link, collection)) then
 			return false
 		end
@@ -157,7 +158,8 @@ end
 
 local function is_loading_root(context: Context, root: Entity): boolean
 	local world_state = context.world_state
-	for collection, key in world_state.links[root] or {} do
+	local links: { [Entity]: string } = world_state.links[root] or {}
+	for collection, key in links do
 		local link_state = state.link_states_of(world_state, collection)[key]
 		if link_state and link_state.phase.kind == "loading" then
 			return true

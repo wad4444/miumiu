@@ -17,8 +17,10 @@ type ChildKind = types.ChildKind
 type Context = types.Context
 type ExistingChild = types.ExistingChild
 type MarkWrite = types.MarkWrite
+type PendingDrop = types.PendingDrop
 type RelationWrite = types.RelationWrite
 type Undo = types.Undo
+type WorldState = types.WorldState
 type Write = types.Write
 
 local function held_kind_of(context: Context, entity: Entity): ChildKind?
@@ -142,6 +144,37 @@ local function attach(context: Context, write: RelationWrite, was_dropped: boole
 	supply_claimed(context, write.entity, write.child)
 end
 
+local function is_unlinking_root(context: Context, root: Entity): boolean
+	local unlinking = false
+	for collection in context.world_state.links[root] or {} do
+		if context.world:has(root, jecs.pair(ids.data_link, collection)) then
+			return false
+		end
+		unlinking = true
+	end
+	return unlinking
+end
+
+local function is_loading_root(context: Context, root: Entity): boolean
+	local world_state = context.world_state
+	for collection, key in world_state.links[root] or {} do
+		local link_state = state.link_states_of(world_state, collection)[key]
+		if link_state and link_state.phase.kind == "loading" then
+			return true
+		end
+	end
+	return false
+end
+
+local function defer_drop(world_state: WorldState, root: Entity, drop: PendingDrop)
+	local pending = world_state.pending_drops[root]
+	if pending == nil then
+		pending = {}
+		world_state.pending_drops[root] = pending
+	end
+	table.insert(pending, drop)
+end
+
 local function on_detached(context: Context, write: RelationWrite)
 	local world_state = context.world_state
 	local index = world_state.children
@@ -156,6 +189,7 @@ local function on_detached(context: Context, write: RelationWrite)
 		capture.flush_lazy(context, write.entity, write.child.entries)
 	end
 	children.forget(index, write.entity)
+	world_state.pending_puts[write.entity] = nil
 	if write.deleted then
 		world_state.deleting[write.entity] = true
 		world_state.entities[write.entity] = nil
@@ -188,6 +222,14 @@ local function on_detached(context: Context, write: RelationWrite)
 	end
 	if not write.deleted then
 		mark_dropped(context, write.entity)
+	end
+	if ancestry and is_unlinking_root(context, ancestry.root) then
+		defer_drop(world_state, ancestry.root, {
+			entity = write.entity,
+			ancestry = ancestry,
+			kept = previous ~= nil and not write.deleted,
+		})
+		return
 	end
 	local stored_id = stored_id_of(context, write.entity, write.child)
 	capture.emit_child(context, ancestry, capture.child_drop, function(active)
@@ -287,6 +329,9 @@ local function on_attached(context: Context, write: RelationWrite)
 		return
 	end
 	reconcile.refresh_shadows(context, write.entity, write.child)
+	if ancestry and is_loading_root(context, ancestry.root) then
+		world_state.pending_puts[write.entity] = true
+	end
 	local stored_id = stored_id_of(context, write.entity, write.child)
 	capture.emit_child(context, ancestry, function(found)
 		return capture.child_put(context, found)

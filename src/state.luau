@@ -30,6 +30,8 @@ local function get(world: World): WorldState
 		children = { by_entity = {}, by_parent = {} },
 		deleting = {},
 		cleanups = {},
+		pending_drops = {},
+		pending_puts = {},
 		dropped_entities = {},
 		captures = {},
 		hooks = {},

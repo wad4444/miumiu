@@ -270,7 +270,16 @@ export type SplitPath = {
 
 export type GuardResult = { kind: "ok" } | { kind: "rejected", reason: string? }
 
-export type Cleanup = { kind: "delete", entity: Entity } | { kind: "reset", entity: Entity, child: ChildKind }
+export type Cleanup =
+	{ kind: "delete", entity: Entity }
+	| { kind: "reset", entity: Entity, child: ChildKind }
+	| { kind: "put", entity: Entity }
+
+export type PendingDrop = {
+	entity: Entity,
+	ancestry: Ancestry,
+	kept: boolean,
+}
 
 export type TouchedChild = {
 	key: string,
@@ -586,6 +595,8 @@ export type WorldState = {
 	children: ChildIndex,
 	deleting: { [Entity]: boolean },
 	cleanups: { Cleanup },
+	pending_drops: { [Entity]: { PendingDrop } },
+	pending_puts: { [Entity]: boolean },
 	dropped_entities: { Entity },
 	captures: { Capture },
 	hooks: CallbackRegistry,

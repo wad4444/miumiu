@@ -110,7 +110,12 @@ Two modes, decided by who owns the entity:
   is refused, the owned tree under it is deleted after the final write, so a gift link
   to an offline player does not leave that player's inventory alive in the world.
   Deleting a linked root is not a save: the record keeps its children, and the owned
-  tree under the root is deleted on the next `step`. Deleting an owned child deletes its
+  tree under the root is deleted on the next `step`. An owned child's pair removed
+  between the root losing its last link pair and the `step` that unlinks it is held
+  back: at that `step` it is journaled as a drop if the root still exists (the game
+  dropped it), and otherwise treated like the root's deletion (record kept, entity
+  deleted). An owned child claimed under a root whose load is in flight is put into the
+  record once the load finishes instead of being removed as absent. Deleting an owned child deletes its
   own owned tree the same way, and every entity the library deletes is marked as
   deleting for that step so an attached child hanging off it is reset rather than left
   with supplied values; queued cleanups run until none are left, so the reset lands in

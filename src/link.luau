@@ -341,7 +341,25 @@ local function detach(link_state: LinkState): SessionInternal?
 	return phase.session
 end
 
+local function resolve_drops(context: Context, root: Entity)
+	local world_state = context.world_state
+	local drops = world_state.pending_drops[root]
+	if drops == nil then
+		return
+	end
+	world_state.pending_drops[root] = nil
+	local alive = context.world:contains(root)
+	for _, drop in drops do
+		if alive then
+			capture.emit_child(context, drop.ancestry, capture.child_drop, function() end)
+		elseif drop.kept then
+			table.insert(world_state.cleanups, { kind = "delete", entity = drop.entity })
+		end
+	end
+end
+
 local function on_unlink(context: Context, entity: Entity, collection_entity: Entity)
+	resolve_drops(context, entity)
 	local by_key = state.link_states_of(context.world_state, collection_entity)
 	local key = state.linked_key(context.world_state, entity, collection_entity)
 	local link_state = if key then by_key[key] else nil
@@ -448,6 +466,12 @@ end
 
 local function run_cleanup(context: Context, cleanup: Cleanup)
 	if not context.world:contains(cleanup.entity) then
+		return
+	end
+	if cleanup.kind == "put" then
+		capture.emit_child(context, children.ancestry(context.world_state, cleanup.entity), function(found)
+			return capture.child_put(context, found)
+		end, function() end)
 		return
 	end
 	if children.child_of(context.world_state.children, cleanup.entity) ~= nil then

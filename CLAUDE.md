@@ -17,7 +17,7 @@ src/symbol.luau       opaque symbols; hooks.luau holds the hook symbols (pulled,
 src/callbacks.luau    connect/invoke/fire/is_connected registry behind Session:hook and Batch:hook
 src/mutex.luau        per-session lock (cake-style class)
 src/util.luau         describe, targets_of, sync (no-yield runner), own (copy-on-write), run_all, join_all, create_guard, cached, create_guid
-src/state.luau        per-world state: applying marks, entity shadows and removal bookkeeping (forget_removing / mark_removing_field / removing_targets), linked_key, link_states_of, open_session, read_values
+src/state.luau        per-world state: applying marks, entity shadows and removal bookkeeping (forget_removing / mark_removing_field / removing_targets), pending_drops / pending_puts (child pairs held until the unlink or load that decides them), linked_key, link_states_of, open_session, read_values
 src/contexts.luau     create_context = world + world_state + schema (builds and freezes the schema)
 src/schema.luau       saveable discovery, field_of scopes (roots per collection, kinds), freeze
 src/collection.luau   collection config resolution and validation, store handle

@@ -141,6 +141,8 @@ local function close(world: World, budget: number?)
 	world_state.entities = {}
 	world_state.link_states = {}
 	world_state.events = {}
+	world_state.pending_drops = {}
+	world_state.pending_puts = {}
 
 	local deadline = os.time() + (budget or close_budget)
 	util.join_all(detached.sessions, function(loaded)

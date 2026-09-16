@@ -29,7 +29,6 @@ local function get(world: World): WorldState
 		entities = {},
 		children = { by_entity = {}, by_parent = {} },
 		deleting = {},
-		unlinking = {},
 		cleanups = {},
 		dropped_entities = {},
 		captures = {},

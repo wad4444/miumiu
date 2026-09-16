@@ -342,7 +342,6 @@ local function detach(link_state: LinkState): SessionInternal?
 end
 
 local function on_unlink(context: Context, entity: Entity, collection_entity: Entity)
-	context.world_state.unlinking[entity] = nil
 	local by_key = state.link_states_of(context.world_state, collection_entity)
 	local key = state.linked_key(context.world_state, entity, collection_entity)
 	local link_state = if key then by_key[key] else nil
@@ -357,6 +356,11 @@ local function on_unlink(context: Context, entity: Entity, collection_entity: En
 	end)
 	if key and link_state then
 		forget_link(context, entity, collection_entity)
+		if context.world_state.links[entity] == nil and children.child_of(context.world_state.children, entity) then
+			capture.emit_child(context, children.ancestry(context.world_state, entity), function(found)
+				return capture.child_put(context, found)
+			end, function() end)
+		end
 		link_state.entities[entity] = nil
 		if link_state.phase.kind == "loaded" then
 			guard.run(function()
@@ -496,6 +500,9 @@ local function detach_all(context: Context): Detached
 			end
 			for entity in link_state.entities do
 				guard.run(function()
+					if link_state.phase.kind == "loaded" then
+						reconcile.release_children(context, entity, context.schema.roots[collection_entity].kinds)
+					end
 					mark(context, entity, collection_entity, "none")
 				end)
 			end

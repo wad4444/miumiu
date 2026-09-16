@@ -164,7 +164,7 @@ local function on_detached(context: Context, write: RelationWrite)
 	if applying then
 		return
 	end
-	local leaving = world_state.deleting[write.parent] or world_state.unlinking[write.parent]
+	local leaving = world_state.deleting[write.parent]
 	if write.child.mode == "attached" then
 		local held = (previous ~= nil and leaving)
 			or (ancestry ~= nil and #capture.ancestry_sessions(context, ancestry) > 0)

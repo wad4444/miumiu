@@ -65,11 +65,17 @@ local function install(context: Context)
 	)
 	table.insert(
 		disconnects,
+		world:removed(ids.data_loaded, function(entity, _, deleted)
+			if deleted then
+				world_state.deleting[entity] = true
+			end
+		end)
+	)
+	table.insert(
+		disconnects,
 		world:removed(ids.data_link, function(entity, id, deleted)
 			if deleted then
 				world_state.deleting[entity] = true
-			else
-				world_state.unlinking[entity] = true
 			end
 			table.insert(world_state.events, {
 				kind = "unlink",

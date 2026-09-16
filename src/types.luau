@@ -585,7 +585,6 @@ export type WorldState = {
 	entities: { [Entity]: EntityState },
 	children: ChildIndex,
 	deleting: { [Entity]: boolean },
-	unlinking: { [Entity]: boolean },
 	cleanups: { Cleanup },
 	dropped_entities: { Entity },
 	captures: { Capture },

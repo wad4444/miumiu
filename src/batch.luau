@@ -28,6 +28,7 @@ type Data = types.Data
 type ResolvedCollectionConfig = types.ResolvedCollectionConfig
 type SchemaEntry = types.SchemaEntry
 type SettledOutcome = types.SettledOutcome
+type SyncKind = types.SyncKind
 type Touched = types.Touched
 type Undo = types.Undo
 
@@ -470,7 +471,7 @@ local function run(world: World, fn: () -> any, is_delta: boolean): Batch
 	table.insert(world_state.captures, captured)
 	world_state.capture = captured
 	captured.batch:enter()
-	local ok, result = pcall(fn)
+	local ok, result = pcall(util.sync, "batch" :: SyncKind, captured.id, fn)
 	world_state.capture = nil
 	if ok and #captured.entries > 1 then
 		ok, result = pcall(shared_config, captured.entries, captured.id)

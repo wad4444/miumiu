@@ -710,6 +710,7 @@ local function wipe(self: SessionInternal)
 		adopt_record(self, record)
 		forget_state(self)
 	end)
+	fire_landed(self)
 	refuse_watched(self, messages.errors.record_wiped(values.key))
 end
 

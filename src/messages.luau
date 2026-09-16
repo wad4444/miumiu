@@ -160,7 +160,9 @@ local errors = table.freeze({
 		return prefixed(`value written to "{key}" on {entity} failed its guard (got {typeof(value)}){suffix(message)}`)
 	end,
 	yielded = function(what: string, subject: string)
-		return prefixed(`{what} for "{subject}" yielded; guards, serdes, snapshots and migrations must not yield`)
+		return prefixed(
+			`{what} for "{subject}" yielded; batch and delta functions, guards, serdes, snapshots and migrations must not yield`
+		)
 	end,
 	not_a_delta = function(key: string, reason: string)
 		return prefixed(`write to "{key}" inside delta is not a delta: {reason}`)

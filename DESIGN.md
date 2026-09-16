@@ -181,7 +181,7 @@ batch, so a refusal leaves it in the record. A batch that wants a
 snapshot's value inside its group sets the component by hand. A `nil`
 result leaves the value alone. Idle reads never run it. It must not yield; a throwing or
 yielding snapshot is warned about and skipped. Tags cannot be snapshots. Once a snapshot
-is declared every leave writes, since the final write evaluates it.
+is declared every leave evaluates it, and writes when the value changed.
 
 ## Lazy
 
@@ -494,8 +494,8 @@ Budget at the defaults, per player: a clean key costs at most one read per minut
 (`idle_interval = math.huge` turns idle reads off for a game that never edits a key from
 two servers), an active key at most four writes per minute (jitter only stretches an
 interval, 15 s to 22.5 s), a join one read, a clean leave nothing (a session with nothing
-unwritten closes without touching storage; a declared snapshot or a pending single-key
-batch makes the leave dirty),
+unwritten closes without touching storage; a snapshot whose value changed or a pending
+single-key batch makes the leave dirty),
 a dirty leave one write. A single-key `batch` costs nothing of its own: it rides the
 next pull, or one write when awaited. A multi-key `batch` over N keys costs N writes, one
 commit-store write, then N reads and N writes to settle. Against Roblox's

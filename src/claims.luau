@@ -164,8 +164,9 @@ local function on_detached(context: Context, write: RelationWrite)
 	if applying then
 		return
 	end
+	local leaving = world_state.deleting[write.parent] or world_state.unlinking[write.parent]
 	if write.child.mode == "attached" then
-		local held = (previous ~= nil and world_state.deleting[write.parent])
+		local held = (previous ~= nil and leaving)
 			or (ancestry ~= nil and #capture.ancestry_sessions(context, ancestry) > 0)
 		if not write.deleted and held then
 			table.insert(world_state.cleanups, { kind = "reset", entity = write.entity, child = write.child })
@@ -179,7 +180,7 @@ local function on_detached(context: Context, write: RelationWrite)
 		end
 		return
 	end
-	if world_state.deleting[write.parent] then
+	if leaving then
 		if previous and not write.deleted then
 			table.insert(world_state.cleanups, { kind = "delete", entity = write.entity })
 		end

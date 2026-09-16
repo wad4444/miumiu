@@ -328,6 +328,9 @@ local function supply_children(context: Context, entity: Entity, kinds: { ChildK
 			if child == nil then
 				child = spawn_child(context, entity, kind, id)
 			end
+			if context.world_state.links[child] then
+				continue
+			end
 			if state.entity_state(context.world_state, child).tree == child_data then
 				continue
 			end

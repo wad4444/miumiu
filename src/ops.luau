@@ -149,7 +149,7 @@ local function replay(state: State, ops: { Op }): State
 				stamp(key, op.at)
 			end
 		elseif op.kind == "init" then
-			if next_truth[key] == nil then
+			if next_truth[key] == nil and next_stamps[key] == nil then
 				own_truth()[key] = op.value
 			end
 		elseif op.kind == "add" then

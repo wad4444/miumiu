@@ -342,6 +342,7 @@ local function detach(link_state: LinkState): SessionInternal?
 end
 
 local function on_unlink(context: Context, entity: Entity, collection_entity: Entity)
+	context.world_state.unlinking[entity] = nil
 	local by_key = state.link_states_of(context.world_state, collection_entity)
 	local key = state.linked_key(context.world_state, entity, collection_entity)
 	local link_state = if key then by_key[key] else nil

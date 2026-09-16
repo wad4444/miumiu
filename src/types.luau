@@ -111,7 +111,7 @@ export type Serdes = {
 	deserialize: (stored: any) -> any,
 }
 
-export type SyncKind = "guard" | "serialize" | "deserialize" | "migration" | "snapshot"
+export type SyncKind = "batch" | "guard" | "serialize" | "deserialize" | "migration" | "snapshot"
 
 export type Snapshot = (world: World, entity: Entity) -> any
 
@@ -585,6 +585,7 @@ export type WorldState = {
 	entities: { [Entity]: EntityState },
 	children: ChildIndex,
 	deleting: { [Entity]: boolean },
+	unlinking: { [Entity]: boolean },
 	cleanups: { Cleanup },
 	dropped_entities: { Entity },
 	captures: { Capture },

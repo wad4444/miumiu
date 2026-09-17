@@ -2,12 +2,14 @@
 
 ## 0.2.0 (unreleased)
 
-Ordered stores: `meta(entity, miumiu.ordered, { component, period?, map?, period_threshold?,
-poll_interval?, on_period_change? })` plus `pair(miumiu.field_of, collection)` ranks one
+Ordered stores: `meta(entity, miumiu.ordered, { component, period?, reset?, map?,
+period_threshold?, poll_interval?, on_period_change? })` plus `pair(miumiu.field_of, collection)` ranks one
 root field in an `OrderedDataStore` named by the entity's `jecs.Name`. Sessions push the
 score with the record's write that changed it, on the ordered store's own budget. With
 `period` the store is per period (`name_index`), the field resets to its initial when a
-record crosses into a new period, and `on_period_change(world, entity, value, place,
+record crosses into a new period unless `reset = false` (a per-period ranking of a value
+the crossing leaves alone, which may share its field with other stores), and
+`on_period_change(world, entity, value, place,
 period)` runs once per key and finished period on the key's next load, inside a batch
 that claims the change. `miumiu.get_ordered(world, entity)` returns the `Ordered`
 handle (`get_top`, `get_score`, `get_period`, `get_name`), `miumiu.is_ordered` tells it

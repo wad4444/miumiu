@@ -396,7 +396,8 @@ local function create_schema(world: World): Schema
 			error(messages.errors.ordered_name_clash(described, store.name, util.describe(world, owner)), 0)
 		end
 		local other = ranked[store.entry.id]
-		if other and (store.period ~= nil or other.period ~= nil) then
+		local resets = store.period ~= nil and store.reset
+		if other and (resets or (other.period ~= nil and other.reset)) then
 			error(
 				messages.errors.ordered_field_shared(
 					described,

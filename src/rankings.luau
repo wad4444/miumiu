@@ -177,6 +177,14 @@ local function create_store(
 		error(messages.errors.ordered_config_invalid(described, reasons.ordered_map), 0)
 	end
 	local period = resolve_period(described, config.period)
+	if config.reset ~= nil then
+		if type(config.reset) ~= "boolean" then
+			error(messages.errors.ordered_config_invalid(described, reasons.ordered_reset), 0)
+		end
+		if period == nil then
+			error(messages.errors.ordered_config_invalid(described, reasons.ordered_reset_period), 0)
+		end
+	end
 	local threshold = if config.period_threshold == nil then defaults.period_threshold else config.period_threshold
 	validate_number(described, threshold, reasons.ordered_threshold, 1, true)
 	local poll_interval = if config.poll_interval == nil then defaults.poll_interval else config.poll_interval
@@ -200,6 +208,7 @@ local function create_store(
 		initial = initial,
 		initial_score = nil,
 		period = period,
+		reset = config.reset ~= false,
 		map = config.map or default_map,
 		period_threshold = threshold,
 		poll_interval = poll_interval,
@@ -292,12 +301,14 @@ local function roll_store(store: OrderedStore, now: number, rolled: Rolled)
 		end
 		next_record.period = index
 		next_record.pushed = nil
-		local at = stamp_for(state, key, now)
-		local reset = reset_op(key, ops.deep_copy(store.initial), at)
-		table.insert(rolled.ops, reset)
-		rolled.resets[key] = math.max(rolled.resets[key] or 0, at)
-		state = ops.replay(state, { reset })
-		score = store.initial_score
+		if store.reset then
+			local at = stamp_for(state, key, now)
+			local reset = reset_op(key, ops.deep_copy(store.initial), at)
+			table.insert(rolled.ops, reset)
+			rolled.resets[key] = math.max(rolled.resets[key] or 0, at)
+			state = ops.replay(state, { reset })
+			score = store.initial_score
+		end
 	end
 	local pushed = next_record.pushed
 	local unranked = pushed == nil and (score == nil or score == store.initial_score)

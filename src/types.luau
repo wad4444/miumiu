@@ -200,6 +200,7 @@ export type OnPeriodChange = (world: World, entity: Entity, value: any, place: n
 export type OrderedConfig = {
 	component: Entity<any>,
 	period: PeriodConfig?,
+	reset: boolean?,
 	map: Map?,
 	period_threshold: number?,
 	poll_interval: number?,
@@ -214,6 +215,7 @@ export type OrderedStore = {
 	initial: any,
 	initial_score: number?,
 	period: PeriodFunction?,
+	reset: boolean,
 	map: Map,
 	period_threshold: number,
 	poll_interval: number,

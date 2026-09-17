@@ -35,6 +35,8 @@ local reasons = table.freeze({
 	ordered_poll = "poll_interval must be a number of at least 0",
 	ordered_callback = "on_period_change must be a function",
 	ordered_callback_period = "on_period_change needs a period",
+	ordered_reset = "reset must be a boolean",
+	ordered_reset_period = "reset needs a period: a store without one never resets its field",
 })
 
 local errors = table.freeze({

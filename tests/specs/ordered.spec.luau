@@ -253,6 +253,30 @@ return function()
 			end
 		)
 
+		it("keeps the field across a crossing and ranks it again in the new period when reset is false", function()
+			local t = setup()
+			local clock = create_clock(1)
+			utils.declare_ordered(t.world, t.player_data, "monthly", {
+				component = t.money,
+				period = clock.period,
+				reset = false,
+			})
+			local player = utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			expect(scores_of(t, "monthly_1").p1).to.equal(5)
+			clock.index = 2
+			session:sync()
+			expect(t.backend:dump("p1").data.money).to.equal(5)
+			miumiu.step(t.world)
+			expect(t.world:get(player, t.money)).to.equal(5)
+			expect(scores_of(t, "monthly_1").p1).to.equal(5)
+			expect(scores_of(t, "monthly_2").p1).to.equal(5)
+			t.world:set(player, t.money, 9)
+			session:sync()
+			expect(scores_of(t, "monthly_1").p1).to.equal(5)
+			expect(scores_of(t, "monthly_2").p1).to.equal(9)
+		end)
+
 		it("removes a field without an initial at the crossing", function()
 			local t = setup()
 			local clock = create_clock(1)
@@ -380,6 +404,29 @@ return function()
 				expect(#changes).to.equal(2)
 			end
 		)
+
+		it("runs for a store that keeps its field", function()
+			local t = setup()
+			local clock = create_clock(1)
+			local changes: { { value: any, place: number? } } = {}
+			utils.declare_ordered(t.world, t.player_data, "monthly", {
+				component = t.money,
+				period = clock.period,
+				reset = false,
+				poll_interval = 0,
+				on_period_change = function(_, _, value, place)
+					table.insert(changes, { value = value, place = place })
+				end,
+			})
+			utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			clock.index = 2
+			session:sync()
+			miumiu.step(t.world)
+			expect(#changes).to.equal(1)
+			expect(changes[1].value).to.equal(5)
+			expect(changes[1].place).to.equal(1)
+		end)
 
 		it("gives no place beyond period_threshold and still claims the change", function()
 			local t = setup()
@@ -715,6 +762,20 @@ return function()
 			world:set(twin, jecs.Name, string.rep("n", 40))
 			world:set(twin, miumiu.ordered, { component = money, period = 1 })
 			expect_build(world, "character DataStore limit")
+		end)
+
+		it("lets a store that keeps its field share it with another ordered store", function()
+			local world, collection, money = declare_world()
+			utils.declare_ordered(world, collection, "monthly", { component = money, period = 10, reset = false })
+			utils.declare_ordered(world, collection, "alltime", { component = money })
+			utils.declare_ordered(world, collection, "yearly", { component = money, period = 100, reset = false })
+			expect(#schema.create_schema(world).roots[collection].ordered).to.equal(3)
+			local weekly = utils.declare_ordered(world, collection, "weekly", { component = money, period = 5 })
+			expect_build(world, "feeds no other ordered store")
+			world:set(weekly, miumiu.ordered, { component = money, period = 5, reset = "x" :: any })
+			expect_build(world, "reset must be a boolean")
+			world:set(weekly, miumiu.ordered, { component = money, reset = true })
+			expect_build(world, "reset needs a period")
 		end)
 
 		it("reserves keys starting with miumiu. for saveables and child kinds", function()

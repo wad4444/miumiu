@@ -453,6 +453,13 @@ and the key's place among the top `period_threshold` (nil beyond them), inside a
 that claims the change, so the reward it writes lands with the claim or not at all.
 Omit `period` for an all-time ranking.
 
+`reset = false` gives a periodic store that does not clear its field: each period gets
+its own ranking, but a record entering one keeps the value it had, so the board shows
+where everyone stands rather than what they earned that period. A monthly board of a
+lifetime total is that, and since it resets nothing it may share its field with the
+all-time board. A field that a resetting store owns feeds no other ordered store, and
+the schema build says so.
+
 ```luau
 local weekly = miumiu.get_ordered(world, weekly_coins)
 local top = weekly:get_top(100)

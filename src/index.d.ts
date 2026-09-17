@@ -141,10 +141,12 @@ declare namespace miumiu {
 	/** `on_period_change` of an ordered store: runs once per key and finished period on the key's next load, on its loaded entity, inside a batch with the library's own claim, so the writes it makes (a reward) land with the claim or not at all; a throw is warned and it runs again on the next load. `value` is the field's final stored value for that period, `place` its rank among the top `period_threshold` or `undefined` beyond them, `period` the finished period's index. Must not yield. The library knows entities, not players: map the entity back to its `Player` yourself. */
 	export type OnPeriodChange<S = unknown> = (world: World, entity: Entity, value: S, place: number | undefined, period: number) => void;
 
-	/** `meta(entity, miumiu.ordered, config)` plus `meta(entity, pair(miumiu.field_of, collection))`: the entity's `Name` (at most 40 characters) names the OrderedDataStore that ranks `component`, a root field of that collection, by `map` of its stored form. With `period` the store is per period (`name_index`) and the field resets to its initial when a record crosses into a new one; `period_threshold` (default 10) is how many ranks `on_period_change` resolves and `poll_interval` (default 60) how many seconds after a period's end its final ranking is read. `S` is the field's stored form. */
+	/** `meta(entity, miumiu.ordered, config)` plus `meta(entity, pair(miumiu.field_of, collection))`: the entity's `Name` (at most 40 characters, and its period suffix must fit the 50-character DataStore limit) names the OrderedDataStore that ranks `component`, a root field of that collection, by `map` of its stored form. With `period` the store is per period (`name_index`) and the field resets to its initial when a record crosses into a new one, unless `reset` is `false`; `period_threshold` (default 10) is how many ranks `on_period_change` resolves and `poll_interval` (default 60) how many seconds after a period's end its final ranking is read. `S` is the field's stored form. */
 	export interface OrderedConfig<S = unknown> {
 		component: Entity<any>;
 		period?: PeriodConfig;
+		/** Needs `period`; defaults to `true`. `false` keeps the field across a crossing, so each period's ranking holds the value as it stands (a monthly board of a lifetime total) instead of what was earned inside that period; such a store may share its field with other ordered stores, since it resets nothing. */
+		reset?: boolean;
 		map?: Map<S>;
 		period_threshold?: number;
 		poll_interval?: number;

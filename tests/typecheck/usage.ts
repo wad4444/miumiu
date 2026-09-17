@@ -302,7 +302,12 @@ meta(weekly_coins, miumiu.ordered, weekly_config);
 export const all_time_coins = tag();
 meta(all_time_coins, Name, "all_time_coins");
 meta(all_time_coins, pair(miumiu.field_of, player_data));
-meta(all_time_coins, miumiu.ordered, { component: money, period: 86400 });
+meta(all_time_coins, miumiu.ordered, { component: money });
+
+export const monthly_coins = tag();
+meta(monthly_coins, Name, "monthly_coins");
+meta(monthly_coins, pair(miumiu.field_of, player_data));
+meta(monthly_coins, miumiu.ordered, { component: money, period: 30 * 86400, reset: false });
 
 export function read_leaderboard(world: World): OrderedEntry[] {
 	const weekly = miumiu.get_ordered(world, weekly_coins);

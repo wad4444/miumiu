@@ -258,6 +258,7 @@ jecs.meta(weekly_coins, miumiu.ordered, {
 |---|---|
 | `component` | a component saveable that is a root field of the collection the `field_of` pair names. An ordered store has exactly one pair, on a collection; a saveable two collections hold gets one ordered store per collection |
 | `period` | optional. `seconds`, `{ length, epoch? }` (`epoch` defaults to 0, so a 7-day period rolls over Thursday 00:00 UTC) or `function(now) -> Period`, with `Period = { index, start, finish }`; `index` must never decrease as `now` grows. Absent means all-time |
+| `reset` | optional, needs `period`; default `true`. `false` keeps the field across a crossing, so each period ranks the value as it stands rather than what was earned in it |
 | `map` | optional. `function(stored) -> integer?` over the stored form of the field; the default is `math.floor` of a number and nil for anything else. Nil is "not ranked" |
 | `on_period_change` | optional, needs `period`. `function(world, entity, value, place, period)`, run once per key and finished period, on the key's next load: `value` is the field's final stored value for that period, `place` its rank in the top `period_threshold` of the ranking or nil beyond them, `period` the finished period's index |
 | `period_threshold` | how many ranks `on_period_change` resolves; default 10 |
@@ -291,7 +292,13 @@ was in flight is stamped past it rather than tying with it and losing: a single 
 never ties with itself. The reset reaches the entities like any remote change, on the
 next `step`. A field a periodic store resets therefore feeds no other ordered store, and
 the build says so, while several all-time stores may share a field, each with its own
-`map` (wins and win rate from one stats table). A
+`map` (wins and win rate from one stats table). `reset = false` is the periodic store
+that does not own its field: the crossing moves it to the new period's store and leaves
+the field alone, so the first pull of each period puts the value as it stands into that
+period's ranking and the rest of the period tracks it. A board of totals per month, next
+to the all-time one, is that: `on_period_change` still fires with the value at the
+crossing, and such a store shares its field with any other store, since it resets
+nothing. A
 record that skipped several periods resets once, from the last period it was written
 in, and one that crosses a second period before its `on_period_change` ran keeps the
 earlier change owed. A record whose field has never scored belongs to no period until

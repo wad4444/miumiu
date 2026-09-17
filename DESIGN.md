@@ -120,7 +120,10 @@ Two modes, decided by who owns the entity:
   deleting for that step so an attached child hanging off it is reset rather than left
   with supplied values; queued cleanups run until none are left, so the reset lands in
   the same `step`. Owned children found under a parent when it loads and
-  absent from the record are deleted: the record is the truth for owned entities.
+  absent from the record are deleted: the record is the truth for owned entities. Two
+  roots linked to one key each mirror that record's owned children, so one stored child
+  is spawned once per root; a drop from either copy drops the entry and the other copy
+  goes on the next supply, and a root that unlinks takes only its own copies with it.
 - `attached`: the entity outlives the record (a plot claimed for a session). Its id is
   the value of the `id` component (a string or a number), authored by the game before
   the pair is added, and missing means an error at the `world:add`. The values the

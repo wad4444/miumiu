@@ -475,7 +475,8 @@ end)
 
 The other server sees the change within its `idle_interval` (default 60 s, plus one pull
 tick), or on its next write. If that player is online here as well, link the same key
-from both entities: they share one session and see each other's writes on the next step.
+from both entities: they share one session and see each other's writes on the next step,
+and each entity gets its own copy of every owned child in the record.
 
 ## Receipts
 

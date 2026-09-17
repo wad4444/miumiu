@@ -48,7 +48,7 @@ return function()
 	end
 
 	describe("ordered stores", function()
-		it("push the score of a root field after the write that changed it", function()
+		it("pushes the score of a root field after the write that changed it", function()
 			local t = setup()
 			utils.declare_ordered(t.world, t.player_data, "coins", { component = t.money })
 			local player = utils.link_entity(t, "p1")
@@ -67,7 +67,7 @@ return function()
 			expect(scores_of(t, "coins").p1).to.equal(7)
 		end)
 
-		it("leave a key whose score is still its initial's off the ranking until it scores", function()
+		it("leaves a key whose score is still its initial's off the ranking until it scores", function()
 			local t = setup()
 			utils.declare_ordered(t.world, t.player_data, "coins", { component = t.money })
 			local player = utils.link_entity(t, "p1")
@@ -83,7 +83,7 @@ return function()
 			expect(record_of(t, "p1", "coins").pushed).to.equal(0)
 		end)
 
-		it("push at load when the record's pushed score is behind, in a write of its own", function()
+		it("pushes at load when the record's pushed score is behind, in a write of its own", function()
 			local t = setup()
 			utils.declare_ordered(t.world, t.player_data, "coins", { component = t.money })
 			t.backend:seed("p1", { data = { money = 7 } })
@@ -100,7 +100,7 @@ return function()
 			expect(scores_of(t, "coins").p2).to.equal(nil)
 		end)
 
-		it("remove the entry when the map leaves the key unranked", function()
+		it("removes the entry when the map leaves the key unranked", function()
 			local t = setup()
 			utils.declare_ordered(t.world, t.player_data, "coins", {
 				component = t.money,
@@ -126,7 +126,7 @@ return function()
 			expect(scores_of(t, "coins").p1).to.equal(4)
 		end)
 
-		it("retry a failed push on the next pull and warn once until it recovers", function()
+		it("retries a failed push on the next pull and warn once until it recovers", function()
 			local t = setup({ pull_interval = never, retry_attempts = 1 })
 			utils.declare_ordered(t.world, t.player_data, "coins", { component = t.money })
 			local player = utils.link_entity(t, "p1")
@@ -148,7 +148,7 @@ return function()
 			expect(utils.warning_count(t.backend, "push again")).to.equal(1)
 		end)
 
-		it("map the stored form and leave bad results unranked with one warning each", function()
+		it("maps the stored form and leaves bad results unranked with one warning each", function()
 			local t = setup()
 			utils.declare_ordered(t.world, t.player_data, "stats", {
 				component = t.items,
@@ -189,7 +189,7 @@ return function()
 			expect(scores_of(t, "stats").p1).to.equal(3)
 		end)
 
-		it("share a field between all-time stores with different maps", function()
+		it("shares a field between all-time stores with different maps", function()
 			local t = setup()
 			utils.declare_ordered(t.world, t.player_data, "wins", {
 				component = t.items,
@@ -253,7 +253,7 @@ return function()
 			end
 		)
 
-		it("remove a field without an initial at the crossing", function()
+		it("removes a field without an initial at the crossing", function()
 			local t = setup()
 			local clock = create_clock(1)
 			utils.declare_ordered(t.world, t.player_data, "weekly", {
@@ -275,7 +275,7 @@ return function()
 			expect(t.world:has(player, t.items)).to.equal(false)
 		end)
 
-		it("count a record written before the store existed for the period it is first written in", function()
+		it("counts a record written before the store existed for the period it is first written in", function()
 			local t = setup()
 			local clock = create_clock(1)
 			utils.declare_ordered(t.world, t.player_data, "weekly", { component = t.money, period = clock.period })
@@ -294,7 +294,7 @@ return function()
 			expect(record_of(t, "p2", "weekly")).to.equal(nil)
 		end)
 
-		it("report the current period from every config form and validate a period function's result", function()
+		it("reports the current period from every config form and validates a period function's result", function()
 			local t = setup()
 			local score = utils.declare_saveable(t.world, "component", "score", { t.player_data })
 			local seconds =
@@ -566,13 +566,14 @@ return function()
 				local t = setup()
 				local clock = create_clock(3)
 				local coins_entity = utils.declare_ordered(t.world, t.player_data, "coins", { component = t.money })
-				local weekly_entity = utils.declare_ordered(
-					t.world,
-					t.player_data,
-					"weekly",
-					{ component = t.money, period = clock.period }
-				)
-				utils.link_entity(t, "p1", { money = 5 })
+				local weekly_entity = utils.declare_ordered(t.world, t.player_data, "weekly", {
+					component = t.items,
+					period = clock.period,
+					map = function(stored)
+						return stored.n
+					end,
+				})
+				utils.link_entity(t, "p1", { money = 5, items = { n = 5 } })
 				local coins = miumiu.get_ordered(t.world, coins_entity)
 				local weekly = miumiu.get_ordered(t.world, weekly_entity)
 				expect(coins:get_score("p1")).to.equal(5)
@@ -610,8 +611,14 @@ return function()
 			local t = setup({ pull_interval = never, retry_attempts = 1 })
 			local clock = create_clock(1)
 			utils.declare_ordered(t.world, t.player_data, "coins", { component = t.money })
-			utils.declare_ordered(t.world, t.player_data, "weekly", { component = t.money, period = clock.period })
-			utils.link_entity(t, "p1", { money = 5 })
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.items,
+				period = clock.period,
+				map = function(stored)
+					return stored.n
+				end,
+			})
+			utils.link_entity(t, "p1", { money = 5, items = { n = 2 } })
 			miumiu.wipe(t.world, t.player_data, "p1")
 			expect(scores_of(t, "coins").p1).to.equal(nil)
 			expect(scores_of(t, "weekly_1").p1).to.equal(nil)
@@ -700,9 +707,14 @@ return function()
 			world:set(twin, jecs.Name, "twin")
 			world:set(twin, miumiu.ordered, { component = money, period = 10 })
 			world:set(store, miumiu.ordered, { component = money, period = 20 })
-			expect_build(world, "both reset")
+			expect_build(world, "feeds no other ordered store")
 			world:set(store, miumiu.ordered, { component = money })
+			expect_build(world, "feeds no other ordered store")
+			world:set(twin, miumiu.ordered, { component = money })
 			expect(#schema.create_schema(world).roots[collection].ordered).to.equal(2)
+			world:set(twin, jecs.Name, string.rep("n", 40))
+			world:set(twin, miumiu.ordered, { component = money, period = 1 })
+			expect_build(world, "character DataStore limit")
 		end)
 
 		it("reserves keys starting with miumiu. for saveables and child kinds", function()
@@ -813,6 +825,348 @@ return function()
 			expect(#changes).to.equal(1)
 			expect(changes[1].period).to.equal(1)
 			expect(changes[1].value).to.equal(5)
+		end)
+
+		it("keeps a write journaled while the crossing write was in flight", function()
+			local t = setup({ pull_interval = never, retry_attempts = 1 })
+			local clock = create_clock(1)
+			utils.declare_ordered(t.world, t.player_data, "weekly", { component = t.money, period = clock.period })
+			local player = utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			clock.index = 2
+			local done = false
+			t.backend:delay_next("UpdateAsync", utils.timings.window, "after")
+			task.spawn(function()
+				session:sync()
+				done = true
+			end)
+			expect(utils.wait_until(function()
+				local record = t.backend:dump("p1")
+				return record ~= nil and record.data.money == 0
+			end)).to.equal(true)
+			t.world:set(player, t.money, 100)
+			expect(utils.wait_until(function()
+				return done
+			end)).to.equal(true)
+			session:sync()
+			miumiu.step(t.world)
+			expect(t.backend:dump("p1").data.money).to.equal(100)
+			expect(t.world:get(player, t.money)).to.equal(100)
+		end)
+
+		it("keeps writing the record when the period function throws, warning once", function()
+			local t = setup()
+			local broken = false
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.money,
+				period = function(): any
+					if broken then
+						error("boom")
+					end
+					return { index = 1, start = 0, finish = 100 }
+				end,
+			})
+			local player = utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			broken = true
+			t.world:set(player, t.money, 9)
+			session:sync()
+			expect(t.backend:dump("p1").data.money).to.equal(9)
+			expect(utils.warning_count(t.backend, "is skipped until it works again")).to.equal(1)
+			t.world:set(player, t.money, 11)
+			session:sync()
+			expect(t.backend:dump("p1").data.money).to.equal(11)
+			expect(utils.warning_count(t.backend, "is skipped until it works again")).to.equal(1)
+		end)
+
+		it("pushes the score of a write whose response failed and was retried", function()
+			local t = setup()
+			utils.declare_ordered(t.world, t.player_data, "coins", { component = t.money })
+			local player = utils.link_entity(t, "p1")
+			local session = utils.session_of(t, "p1")
+			t.world:set(player, t.money, 5)
+			t.backend:fail_next("UpdateAsync", "after")
+			session:sync()
+			expect(record_of(t, "p1", "coins").pushed).to.equal(5)
+			expect(scores_of(t, "coins").p1).to.equal(5)
+		end)
+
+		it("pushes into the period the record claims, not the one its own clock names", function()
+			local t = setup()
+			local behind = create_clock(1)
+			utils.declare_ordered(t.world, t.player_data, "weekly", { component = t.money, period = behind.period })
+			local player = utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			expect(scores_of(t, "weekly_1").p1).to.equal(5)
+
+			local ahead_world = jecs.world()
+			local ahead_collection = utils.create_collection(ahead_world, t.backend, { pull_interval = never })
+			local ahead_money = utils.declare_saveable(ahead_world, "component", "money", { ahead_collection })
+			ahead_world:set(ahead_money, ahead_money, 0)
+			utils.declare_ordered(ahead_world, ahead_collection, "weekly", {
+				component = ahead_money,
+				period = create_clock(2).period,
+			})
+			local mirror = ahead_world:entity()
+			ahead_world:set(mirror, jecs.pair(miumiu.data_link, ahead_collection), "p1")
+			expect(utils.wait_until(function()
+				miumiu.step(ahead_world)
+				return ahead_world:has(mirror, jecs.pair(miumiu.data_loaded, ahead_collection))
+			end)).to.equal(true)
+			miumiu.close(ahead_world, 0)
+			expect(record_of(t, "p1", "weekly").period).to.equal(2)
+
+			session:sync()
+			miumiu.step(t.world)
+			t.world:set(player, t.money, 9)
+			session:sync()
+			expect(scores_of(t, "weekly_1").p1).to.equal(5)
+			expect(scores_of(t, "weekly_2").p1).to.equal(9)
+		end)
+
+		it("loads a key whose stored bookkeeping has the wrong shape", function()
+			local t = setup()
+			local clock = create_clock(1)
+			utils.declare_ordered(t.world, t.player_data, "coins", { component = t.money })
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.items,
+				period = clock.period,
+				map = function(stored)
+					return stored.n
+				end,
+			})
+			t.backend:seed("p1", { data = { money = 4, [bookkeeping] = { coins = 7 } } })
+			t.backend:seed("p2", { data = { money = 4, [bookkeeping] = { weekly = { period = "x" } } } })
+			local first = utils.link_entity(t, "p1")
+			expect(t.world:get(first, t.data_error)).to.equal(nil)
+			expect(t.world:get(first, t.money)).to.equal(4)
+			expect(scores_of(t, "coins").p1).to.equal(4)
+			local second = utils.link_entity(t, "p2")
+			expect(t.world:get(second, t.data_error)).to.equal(nil)
+		end)
+
+		it("pushes a score it still owes before the session closes on unlink", function()
+			local t = setup({ pull_interval = never, retry_attempts = 1 })
+			utils.declare_ordered(t.world, t.player_data, "coins", { component = t.money })
+			local player = utils.link_entity(t, "p1")
+			local session = utils.session_of(t, "p1")
+			t.backend:fail_next("OrderedSetAsync", "before")
+			t.world:set(player, t.money, 5)
+			session:sync()
+			expect(scores_of(t, "coins").p1).to.equal(nil)
+			expect(record_of(t, "p1", "coins").pushed).to.equal(5)
+			t.world:remove(player, t.link)
+			miumiu.step(t.world)
+			expect(utils.wait_closed(session)).to.equal(true)
+			expect(scores_of(t, "coins").p1).to.equal(5)
+		end)
+
+		it("closes cleanly when only the ordered push keeps failing", function()
+			local t = setup({ pull_interval = never, retry_attempts = 5, retry_base = utils.timings.slow })
+			utils.declare_ordered(t.world, t.player_data, "coins", { component = t.money })
+			local player = utils.link_entity(t, "p1")
+			local session = utils.session_of(t, "p1")
+			t.world:set(player, t.money, 5)
+			for _ = 1, 8 do
+				t.backend:fail_next("OrderedSetAsync", "before")
+			end
+			miumiu.close(t.world, 1)
+			expect(utils.wait_closed(session)).to.equal(true)
+			local status: any = session:get_status()
+			expect(status.closure.kind).to.equal("clean")
+			expect(t.backend:dump("p1").data.money).to.equal(5)
+		end)
+
+		it("resolves a later finished period after an earlier change threw", function()
+			local t = setup()
+			local clock = create_clock(1)
+			local runs = 0
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.money,
+				period = clock.period,
+				poll_interval = 0,
+				on_period_change = function()
+					runs += 1
+					if runs == 1 then
+						error("boom")
+					end
+				end,
+			})
+			local player = utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			clock.index = 2
+			session:sync()
+			miumiu.step(t.world)
+			expect(runs).to.equal(1)
+			utils.journal(
+				session,
+				{ { kind = "drop", key = bookkeeping, path = { "weekly", "owed" }, at = os.time() } }
+			)
+			session:sync()
+			expect(record_of(t, "p1", "weekly").owed).to.equal(nil)
+			t.world:set(player, t.money, 9)
+			session:sync()
+			clock.index = 3
+			session:sync()
+			expect(record_of(t, "p1", "weekly").owed.period).to.equal(2)
+			miumiu.step(t.world)
+			expect(runs).to.equal(2)
+		end)
+
+		it("skips a change the record no longer owes", function()
+			local t = setup()
+			local clock = create_clock(1)
+			local runs = 0
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.money,
+				period = clock.period,
+				poll_interval = 0,
+				on_period_change = function()
+					runs += 1
+				end,
+			})
+			utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			clock.index = 2
+			session:sync()
+			utils.journal(
+				session,
+				{ { kind = "drop", key = bookkeeping, path = { "weekly", "owed" }, at = os.time() } }
+			)
+			session:sync()
+			miumiu.step(t.world)
+			expect(runs).to.equal(0)
+			expect(record_of(t, "p1", "weekly").owed).to.equal(nil)
+		end)
+
+		it("unranks the period the record names when wiping", function()
+			local t = setup()
+			local clock = create_clock(2)
+			utils.declare_ordered(t.world, t.player_data, "weekly", { component = t.money, period = clock.period })
+			utils.link_entity(t, "p1", { money = 5 })
+			expect(scores_of(t, "weekly_2").p1).to.equal(5)
+			clock.index = 3
+			miumiu.wipe(t.world, t.player_data, "p1")
+			expect(scores_of(t, "weekly_2").p1).to.equal(nil)
+		end)
+
+		it("wipes the record when a store's period cannot be resolved", function()
+			local t = setup()
+			local broken = false
+			utils.declare_ordered(t.world, t.player_data, "coins", { component = t.money })
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.items,
+				period = function(): any
+					if broken then
+						error("boom")
+					end
+					return { index = 1, start = 0, finish = 100 }
+				end,
+				map = function(stored)
+					return stored.n
+				end,
+			})
+			local player = utils.link_entity(t, "p1", { money = 5, items = { n = 2 } })
+			expect(scores_of(t, "weekly_1").p1).to.equal(2)
+			broken = true
+			miumiu.wipe(t.world, t.player_data, "p1")
+			expect(scores_of(t, "coins").p1).to.equal(nil)
+			expect(scores_of(t, "weekly_1").p1).to.equal(2)
+			expect(t.world:get(player, t.money)).to.equal(0)
+		end)
+
+		it("hands get_top entries that do not alias its finished-period cache", function()
+			local t = setup()
+			local clock = create_clock(1)
+			local store =
+				utils.declare_ordered(t.world, t.player_data, "weekly", { component = t.money, period = clock.period })
+			utils.link_entity(t, "p1", { money = 5 })
+			clock.index = 2
+			utils.session_of(t, "p1"):sync()
+			local handle = miumiu.get_ordered(t.world, store)
+			local first = handle:get_top(5, { period = 1 })
+			expect(first[1].score).to.equal(5)
+			first[1].score = 999
+			expect(handle:get_top(5, { period = 1 })[1].score).to.equal(5)
+		end)
+
+		it("does not warn about an unhooked refusal when its own change batch is refused", function()
+			local t = setup()
+			local clock = create_clock(1)
+			local runs = 0
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.money,
+				period = clock.period,
+				poll_interval = 0,
+				on_period_change = function()
+					runs += 1
+				end,
+			})
+			utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			clock.index = 2
+			session:sync()
+			miumiu.step(t.world)
+			expect(runs).to.equal(1)
+			utils.take_over(t.backend, "p1")
+			expect(function()
+				session:sync()
+			end).to.throw("newer server")
+			task.wait(utils.timings.grace)
+			expect(utils.warning_count(t.backend, "refused and rolled back")).to.equal(0)
+		end)
+
+		it("leaves a finished period's ranking unread while the session is closing", function()
+			local t = setup()
+			local clock = create_clock(1)
+			local runs = 0
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.money,
+				period = clock.period,
+				poll_interval = 0,
+				on_period_change = function()
+					runs += 1
+				end,
+			})
+			local player = utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			clock.index = 2
+			t.world:set(player, t.money, 7)
+			t.world:remove(player, t.link)
+			miumiu.step(t.world)
+			expect(utils.wait_closed(session)).to.equal(true)
+			expect(t.backend.calls.GetSortedAsync).to.equal(nil)
+			expect(record_of(t, "p1", "weekly").owed.period).to.equal(1)
+			expect(runs).to.equal(0)
+			utils.link_entity(t, "p1")
+			miumiu.step(t.world)
+			expect(runs).to.equal(1)
+			expect(t.backend.calls.GetSortedAsync).to.equal(1)
+		end)
+
+		it("leaves a change owed while the period function is failing", function()
+			local t = setup()
+			local runs = 0
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.money,
+				period = function(): any
+					error("boom")
+				end,
+				poll_interval = 0,
+				on_period_change = function()
+					runs += 1
+				end,
+			})
+			t.backend:seed("p1", {
+				data = { money = 5, [bookkeeping] = { weekly = { period = 2, owed = { period = 1, value = 5 } } } },
+			})
+			local player = utils.link_entity(t, "p1")
+			miumiu.step(t.world)
+			expect(t.world:get(player, t.data_error)).to.equal(nil)
+			expect(t.world:get(player, t.money)).to.equal(5)
+			expect(runs).to.equal(0)
+			expect(t.backend.calls.GetSortedAsync).to.equal(nil)
+			expect(record_of(t, "p1", "weekly").owed.period).to.equal(1)
 		end)
 	end)
 end

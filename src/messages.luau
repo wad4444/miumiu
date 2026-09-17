@@ -270,6 +270,11 @@ local errors = table.freeze({
 			`ordered store {entity} needs a jecs.Name of at most {limit} characters: the name is the OrderedDataStore's`
 		)
 	end,
+	ordered_name_long = function(entity: unknown, name: string, limit: number)
+		return prefixed(
+			`ordered store {entity} would use the store name "{name}", which is over the {limit}-character DataStore limit: shorten its jecs.Name or lengthen its period`
+		)
+	end,
 	ordered_name_clash = function(entity: unknown, name: string, other: unknown)
 		return prefixed(`ordered store {entity} is named "{name}", which {other} already uses as its store name`)
 	end,
@@ -285,7 +290,7 @@ local errors = table.freeze({
 	end,
 	ordered_field_shared = function(entity: unknown, component: unknown, other: unknown)
 		return prefixed(
-			`ordered stores {entity} and {other} both reset {component} per period: a field feeds at most one periodic store`
+			`ordered stores {entity} and {other} both rank {component}, which one of them resets every period: a field a periodic store resets feeds no other ordered store`
 		)
 	end,
 	not_ordered = function(entity: unknown)
@@ -420,6 +425,9 @@ local warnings = table.freeze({
 		return prefixed(
 			`{entity} of kind {tag} under {parent} is not a child: the parent does not hold that kind; pair(miumiu.field_of, target) declares where it nests`
 		)
+	end,
+	period_failed = function(name: string, err: unknown)
+		return prefixed(`period of ordered store "{name}" failed and the store is skipped until it works again: {err}`)
 	end,
 	map_failed = function(name: string, err: unknown)
 		return prefixed(`map of ordered store "{name}" failed and the key is not ranked: {err}`)

@@ -464,7 +464,8 @@ print(period.finish - os.time(), "seconds until the reset")
 `get_top` yields and costs one `GetSortedAsync` per hundred entries; `get_score(key)`
 reads one key; `get_period()` costs nothing. Read the top on your own schedule, once a
 minute is plenty. Every ordered write lands on the ordered store's own budget, and
-`wipe` removes the key from the collection's ordered stores too.
+`wipe` removes the key from the ordered stores of the collection too, from the period
+its own record names.
 
 ## Other players
 

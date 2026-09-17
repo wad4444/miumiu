@@ -9,6 +9,7 @@ local util = require("./util")
 
 type World = types.World
 type Entity<T = nil> = types.Entity<T>
+type Ordered = types.Ordered
 type OrderedEntry = types.OrderedEntry
 type OrderedInternal = types.OrderedInternal
 type OrderedStore = types.OrderedStore
@@ -45,7 +46,7 @@ local function get_top(self: OrderedInternal, count: number, options: TopOptions
 	end
 	local given: TopOptions = options or {}
 	local index = index_of(self, given.period)
-	return rankings.top(values.config, values.store, index, count, given.ascending == true, os.time())
+	return rankings.top(values.config, values.config, values.store, index, count, given.ascending == true, os.time())
 end
 
 local function get_score(self: OrderedInternal, key: string, period: number?): number?
@@ -84,7 +85,7 @@ local function create_ordered(store: OrderedStore, config: ResolvedCollectionCon
 	return ordered :: OrderedInternal
 end
 
-local function get_ordered(world: World, entity: Entity): OrderedInternal
+local function get_ordered(world: World, entity: Entity): Ordered
 	local world_state = state.get(world)
 	local existing = world_state.ordered[entity]
 	if existing then

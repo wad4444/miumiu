@@ -187,6 +187,8 @@ export type Fields = {
 
 export type Period = { index: number, start: number, finish: number }
 
+export type PeriodState = { kind: "none" } | { kind: "period", period: Period } | { kind: "failed" }
+
 export type PeriodFunction = (now: number) -> Period
 
 export type PeriodConfig = number | { length: number, epoch: number? } | PeriodFunction
@@ -225,7 +227,9 @@ export type Owed = { period: number, value: any }
 
 export type OrderedRecord = { period: number?, pushed: number?, owed: Owed? }
 
-export type Rolled = { state: State, ops: { Op }, pushes: { Push } }
+export type Rolled = { state: State, ops: { Op }, pushes: { Push }, resets: { [string]: number } }
+
+export type Periods = { [string]: number }
 
 export type Placing = { store: OrderedStore, value: any, place: number?, period: number }
 
@@ -529,12 +533,21 @@ export type Session = {
 export type Merge =
 	{ kind: "newer", message: string, groups: { Group }, resolution: Resolution }
 	| { kind: "unchanged", groups: { Group }, resolution: Resolution }
-	| { kind: "merged", record: StoredRecord, groups: { Group }, resolution: Resolution, pushes: { Push } }
+	| {
+		kind: "merged",
+		record: StoredRecord,
+		groups: { Group },
+		resolution: Resolution,
+		pushes: { Push },
+		resets: { [string]: number },
+	}
 
 export type Pull = {
 	merge: Merge,
 	record: StoredRecord?,
 	wrote: boolean,
+	pushes: { [string]: Push },
+	resets: { [string]: number },
 }
 
 export type SessionInternal = Session & {
@@ -552,7 +565,7 @@ export type SessionInternal = Session & {
 	internal_collection: CollectionState,
 	internal_pushes: { [string]: Push },
 	internal_placings: { [string]: Placing },
-	internal_failed_changes: { [string]: boolean },
+	internal_failed_changes: { [string]: number },
 	internal_base: State,
 	internal_migrate: Migrate,
 	internal_seed: Data?,
@@ -578,7 +591,7 @@ export type SessionInternal = Session & {
 	unload: (SessionInternal, retry: RetryConfig?) -> (),
 	discard: (SessionInternal, message: string) -> (),
 	get_placings: (SessionInternal) -> { [string]: Placing },
-	forget_placing: (SessionInternal, name: string, failed: boolean) -> (),
+	forget_placing: (SessionInternal, name: string, period: number, failed: boolean) -> (),
 }
 
 export type LinkPhase =

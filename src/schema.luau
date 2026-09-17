@@ -383,7 +383,7 @@ local function create_schema(world: World): Schema
 
 	local ordered: { [Entity]: OrderedStore } = {}
 	local by_name: { [string]: OrderedStore } = {}
-	local periodic: { [Entity<any>]: OrderedStore } = {}
+	local ranked: { [Entity<any>]: OrderedStore } = {}
 	for entity in world:each(ids.ordered) do
 		local store = rankings.create_store(world, entity, entries, known)
 		local described = util.describe(world, entity)
@@ -395,20 +395,18 @@ local function create_schema(world: World): Schema
 		if owner then
 			error(messages.errors.ordered_name_clash(described, store.name, util.describe(world, owner)), 0)
 		end
-		if store.period then
-			local other = periodic[store.entry.id]
-			if other then
-				error(
-					messages.errors.ordered_field_shared(
-						described,
-						util.describe(world, store.entry.id),
-						util.describe(world, other.entity)
-					),
-					0
-				)
-			end
-			periodic[store.entry.id] = store
+		local other = ranked[store.entry.id]
+		if other and (store.period ~= nil or other.period ~= nil) then
+			error(
+				messages.errors.ordered_field_shared(
+					described,
+					util.describe(world, store.entry.id),
+					util.describe(world, other.entity)
+				),
+				0
+			)
 		end
+		ranked[store.entry.id] = store
 		by_name[store.name] = store
 		ordered[entity] = store
 		table.insert(roots[store.collection].ordered, store)

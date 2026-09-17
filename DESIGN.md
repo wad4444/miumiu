@@ -269,8 +269,13 @@ characters so that a period suffix fits the 50 a DataStore name allows. The scor
 integer; Roblox documents ordered values as positive integers, so a negative score
 counts as nil with one warning per store. A lower-is-better metric reads with
 `ascending = true` rather than mapping. A throwing `map` is warned about once per
-store and counts as nil; it must not yield. `map`, `period` and `on_period_change` freeze with
-the schema, like `saveable`.
+store and counts as nil; it must not yield. A `period` that throws or returns a bad
+result is warned about once per store the same way, and the store is skipped entirely
+until it works again: no push, no reset, no bookkeeping, and no change resolved, while
+every other store and the record itself go on being written. `get_period`, which is the
+game asking directly, still throws. `map`, `period` and `on_period_change` freeze with
+the schema, like `saveable`. The name plus the widest period suffix must fit the
+50-character DataStore limit; the build resolves the current period once to check it.
 
 An all-time ranking lives in `GetOrderedDataStore(name)`; a periodic one in
 `GetOrderedDataStore(name .. "_" .. index)`, one store per period, so a new period
@@ -280,10 +285,13 @@ field is the score *for the period*: when a record's field belongs to an earlier
 than the one the pulling server is in, the pull's transform resets the field to its
 initial (removes it, when it has none) with a stamp of now, after landing the session's
 unwritten groups, so what was journaled up to that pull counts for the ending period and
-at most `pull_interval` of the new period's play lands with it. The reset reaches the
-entities like any remote change, on the next `step`. A field therefore feeds at most one
-periodic store (two would fight over the reset), while several all-time stores may
-share a field, each with its own `map` (wins and win rate from one stats table). A
+at most `pull_interval` of the new period's play lands with it. The reset is the
+session's own write, not another server's, so a write journaled while the crossing write
+was in flight is stamped past it rather than tying with it and losing: a single writer
+never ties with itself. The reset reaches the entities like any remote change, on the
+next `step`. A field a periodic store resets therefore feeds no other ordered store, and
+the build says so, while several all-time stores may share a field, each with its own
+`map` (wins and win rate from one stats table). A
 record that skipped several periods resets once, from the last period it was written
 in, and one that crosses a second period before its `on_period_change` ran keeps the
 earlier change owed. A record whose field has never scored belongs to no period until
@@ -295,7 +303,10 @@ without an initial is unranked.
 The record keeps its ranking bookkeeping in `data["miumiu.ordered"]`, one entry per
 ordered store name: `{ period, pushed, owed }`. `period` is the index the field's value
 belongs to, `pushed` the last score pushed to the store, `owed` the finished period and
-the field's final value there, until `on_period_change` has run. It is data like any other key
+the field's final value there, until `on_period_change` has run. An entry whose shape is
+wrong (a hand-written record, a newer build's field the reader does not know) is read as
+if the bad fields were absent, never as a reason to fail the key, and the fields the
+reader does not know survive its writes. It is data like any other key
 (in `get_truth`, the `pulled`
 payload, `context.stored`), managed by the transform and by ops the library journals;
 `miumiu.` is a reserved prefix for saveable and child keys, and `context.legacy` throws
@@ -305,30 +316,42 @@ Pushing. After every pull that wrote, and after a load, a session compares the s
 the merged field with `pushed`; when they differ, that same transform writes
 `pushed = score` (a load whose record is behind escalates its read to a write, like a
 migration) and then, still under the session's lock, `SetAsync(key, score)` goes to the
-current store (`RemoveAsync` for a nil score). A key whose score is still its
+store of the period *the record names*, not of the period this server's clock is in
+(`RemoveAsync` for a nil score), so a server whose clock trails the record writes into
+the ranking the record belongs to instead of reopening a finished one. A key whose score
+is still its
 initial's and was never pushed is not ranked, so a new store does not fill with zeros. A
 rollover first pushes the final score of the ending period to that period's store, when
-it differs from `pushed`. A push that fails after its retries is warned about and
-retried on the session's next pull; the record already claims it, so a server that dies
+it differs from `pushed`. A transform Roblox reran keeps every push its runs produced,
+so a write whose response was lost still pushes what its record claims. A push that
+fails after its retries is warned about and
+retried on the session's next pull, and a session that would otherwise close clean
+drains what it still owes first; the record already claims it, so a server that dies
 between the write and the push leaves the ranking behind until the next score change
 (the window is one request). A push is `SetAsync` of an absolute value, so a repeated
-one is harmless. Pushes ride the record's writes, so they cost at most one ordered write
+one is harmless. It goes out on the retry budget of the pull that produced it, so the
+final write of a `close` does not spend the whole budget on ordered retries. Pushes ride
+the record's writes, so they cost at most one ordered write
 per record write, on the `SetIncrementSortedAsync` budget, which nothing else in the
 library uses.
 
 Resets. When a transform rolls a record over and the store declares `on_period_change`, it
 records `owed = { period, value }`: the ending period and the field's final stored value
-in it. A session holding such a record resolves it once the ending period has been over
+in it. An open session holding such a record resolves it once the ending period has been over
 for `poll_interval` seconds (long enough for the final pushes of sessions that were dirty at
 rollover), by reading the top `period_threshold` entries of that period's ranking, once per server,
-store and period (cached; `get_top` of a finished period reads the same cache). The next
+store and period (cached; `get_top` of a finished period reads the same cache). A session
+already closing does not: the read would buy a change no `step` can run, and the next
+load makes it anyway. The next
 `step` then runs `on_period_change(world, entity, value, place, period)` on the first loaded,
 non-shallow entity of the key, `place` being the key's rank among those entries or nil
 beyond them, inside a `batch` whose group also carries a `drop` of `owed`: the
 callback's writes (a reward) and the claim land together or not at all, so a refused
 batch, a crash before the write or a throwing `on_period_change` (warned) leave it owed and the
 next load runs it again. A callback that writes nothing still journals the drop, riding
-the next write. It runs on the stepping thread and must not yield. The library knows no
+the next write. A change the session's own truth no longer owes (another holder settled
+it, and this session has merged that) is dropped instead of run, and a callback that
+threw blocks only that period: a later one resolves normally. It runs on the stepping thread and must not yield. The library knows no
 players, only entities and keys: the game maps the entity back to its `Player`. Each
 server decides from its own read of the finished ranking, so a late push that reshuffles
 the top between two servers' reads can hand one place to two keys; `poll_interval` is the window
@@ -341,7 +364,8 @@ meta, or a collection whose config fails, throws): `get_top(count, { period?, as
 yields and returns `{ { key, score } }` in rank order, one `GetSortedAsync` per hundred
 entries (`count` is an integer of at least 1; `period` defaults to the current one and
 is an error on an all-time store; a finished period is served from the change's cache
-once read, whole when the ranking is shorter than asked); `get_score(key, period?)`
+once read, whole when the ranking is shorter than asked, and the entries handed back are
+the caller's own to keep); `get_score(key, period?)`
 yields, one `GetAsync`; `get_period()` is the current `Period` without a request, or nil
 for an all-time store: `finish` is when the ranking next resets, for a countdown, and
 `index - 1` names the previous ranking for a "last week" page; `get_name()` is the
@@ -349,9 +373,12 @@ store's name. `miumiu.is_ordered(value)` tells a handle from anything else. The 
 keeps no cache of the current period: the game reads the top on its own schedule, one
 request per read.
 
-`wipe` also removes the key from every ordered store of the collection, the current
-period's, after the record write; a failed removal is warned about and leaves the entry
-until the next push. A `data_shallow` link pushes like any other holder but never runs
+`wipe` also removes the key from every ordered store of the collection, from the period
+its own record names (the current one when the record names none), after the record
+write; a store whose period cannot be resolved is skipped and a failed removal is warned
+about, and either way the entry stays until the next push and the wipe itself finishes.
+Entries in the stores of periods the key played in earlier stay: nothing on Roblox wipes
+an ordered store, and the record names only the period it last belonged to. A `data_shallow` link pushes like any other holder but never runs
 `on_period_change`. Migrations see the field through its component; a migration that rewrites it
 changes the score the next push carries. A `data_store_service` without
 `GetOrderedDataStore` fails the link of a collection that has an ordered store.

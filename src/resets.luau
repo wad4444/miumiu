@@ -1,6 +1,7 @@
 local types = require("./types")
 local batch = require("./batch")
 local capture = require("./capture")
+local hooks = require("./hooks")
 local ids = require("./ids")
 local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
@@ -27,14 +28,22 @@ end
 
 local function run_one(context: Context, loaded: SessionInternal, entity: Entity, name: string, placing: Placing)
 	local world = context.world
+	local owed = rankings.owed_of(loaded:get_truth(), name)
+	if owed == nil or owed.period ~= placing.period then
+		loaded:forget_placing(name, placing.period, false)
+		return
+	end
 	local on_period_change = placing.store.on_period_change :: OnPeriodChange
-	local ok, err = pcall(batch.batch, world, function()
-		on_period_change(world, entity, placing.value, placing.place, placing.period)
-		capture.record_ops(context, loaded, {
-			{ kind = "drop", key = rankings.record_key, path = { name, "owed" }, at = os.time() },
-		})
+	local ok, err = pcall(function()
+		local handle = batch.batch(world, function()
+			on_period_change(world, entity, placing.value, placing.place, placing.period)
+			capture.record_ops(context, loaded, {
+				{ kind = "drop", key = rankings.record_key, path = { name, "owed" }, at = os.time() },
+			})
+		end)
+		handle:hook(hooks.refused, function() end)
 	end)
-	loaded:forget_placing(name, not ok)
+	loaded:forget_placing(name, placing.period, not ok)
 	if not ok then
 		logging.warn(messages.warnings.period_change_failed(loaded:get_key(), name, err))
 	end

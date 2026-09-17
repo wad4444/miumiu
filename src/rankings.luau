@@ -20,9 +20,12 @@ type OrderedStore = types.OrderedStore
 type Owed = types.Owed
 type Period = types.Period
 type PeriodFunction = types.PeriodFunction
+type Periods = types.Periods
+type PeriodState = types.PeriodState
 type Placing = types.Placing
 type Push = types.Push
 type ResolvedCollectionConfig = types.ResolvedCollectionConfig
+type RetryConfig = types.RetryConfig
 type Rolled = types.Rolled
 type SchemaEntry = types.SchemaEntry
 type State = types.State
@@ -32,6 +35,7 @@ type TopCache = types.TopCache
 local record_key = "miumiu.ordered"
 local reserved_prefix = "miumiu."
 local name_limit = 40
+local store_limit = 50
 local page_limit = 100
 local defaults = { period_threshold = 10, poll_interval = 60 }
 
@@ -98,6 +102,39 @@ local function score_of(store: OrderedStore, stored: any): number?
 		return nil
 	end
 	return math.floor(result)
+end
+
+local function period_of(store: OrderedStore, now: number): Period?
+	local period = store.period
+	if period == nil then
+		return nil
+	end
+	local result: any = util.sync("period" :: SyncKind, store.name, period, now)
+	local valid = type(result) == "table"
+		and type(result.index) == "number"
+		and result.index % 1 == 0
+		and type(result.start) == "number"
+		and type(result.finish) == "number"
+	if not valid then
+		error(messages.errors.bad_period(store.name, typeof(result)), 0)
+	end
+	return result
+end
+
+local function current_period(store: OrderedStore, now: number): PeriodState
+	if store.period == nil then
+		return { kind = "none" }
+	end
+	local ok, result = pcall(period_of, store, now)
+	if ok then
+		return { kind = "period", period = result :: Period }
+	end
+	logging.warn_once(store.warned, "period_failed", messages.warnings.period_failed(store.name, result))
+	return { kind = "failed" }
+end
+
+local function store_name(store: OrderedStore, index: number?): string
+	return if index == nil then store.name else `{store.name}_{index}`
 end
 
 local function create_store(
@@ -170,33 +207,12 @@ local function create_store(
 		warned = {},
 	}
 	store.initial_score = if initial == nil then nil else score_of(store, initial)
+	local current = current_period(store, os.time())
+	local full = store_name(store, if current.kind == "period" then current.period.index else nil)
+	if #full > store_limit then
+		error(messages.errors.ordered_name_long(described, full, store_limit), 0)
+	end
 	return store
-end
-
-local function period_of(store: OrderedStore, now: number): Period?
-	local period = store.period
-	if period == nil then
-		return nil
-	end
-	local result: any = util.sync("period" :: SyncKind, store.name, period, now)
-	local valid = type(result) == "table"
-		and type(result.index) == "number"
-		and result.index % 1 == 0
-		and type(result.start) == "number"
-		and type(result.finish) == "number"
-	if not valid then
-		error(messages.errors.bad_period(store.name, typeof(result)), 0)
-	end
-	return result
-end
-
-local function store_name(store: OrderedStore, index: number?): string
-	return if index == nil then store.name else `{store.name}_{index}`
-end
-
-local function current_name(store: OrderedStore, now: number): string
-	local current = period_of(store, now)
-	return store_name(store, if current then current.index else nil)
 end
 
 local function records_of(truth: Data): { [string]: OrderedRecord }
@@ -204,13 +220,45 @@ local function records_of(truth: Data): { [string]: OrderedRecord }
 	return if type(records) == "table" then records else {}
 end
 
-local function owed_of(truth: Data, name: string): Owed?
-	local record = records_of(truth)[name]
-	return if record then record.owed else nil
+local function stored_record(truth: Data, name: string): OrderedRecord
+	local stored: any = records_of(truth)[name]
+	if type(stored) ~= "table" then
+		return {}
+	end
+	local record: OrderedRecord = table.clone(stored)
+	if type(record.period) ~= "number" then
+		record.period = nil
+	end
+	if type(record.pushed) ~= "number" then
+		record.pushed = nil
+	end
+	local owed: any = record.owed
+	if type(owed) ~= "table" or type(owed.period) ~= "number" then
+		record.owed = nil
+	end
+	return record
 end
 
-local function stamped_set(state: State, key: string, value: any, now: number): Op
-	local at = math.max(now, (state.stamps[key] or 0) + 1)
+local function owed_of(truth: Data, name: string): Owed?
+	return stored_record(truth, name).owed
+end
+
+local function periods_of(truth: Data): Periods
+	local periods: Periods = {}
+	for name in records_of(truth) do
+		local period = stored_record(truth, name).period
+		if period ~= nil then
+			periods[name] = period
+		end
+	end
+	return periods
+end
+
+local function stamp_for(state: State, key: string, now: number): number
+	return math.max(now, (state.stamps[key] or 0) + 1)
+end
+
+local function reset_op(key: string, value: any, at: number): Op
 	if value == nil then
 		return { kind = "remove", key = key, at = at }
 	end
@@ -222,25 +270,32 @@ local function stamped_put(state: State, path: { string }, value: any, now: numb
 	return { kind = "put", key = record_key, path = path, value = value, at = at }
 end
 
-local function roll_store(state: State, store: OrderedStore, now: number, rolled: { Op }, pushes: { Push }): State
+local function roll_store(store: OrderedStore, now: number, rolled: Rolled)
+	local current = current_period(store, now)
+	if current.kind == "failed" then
+		return
+	end
+	local index = if current.kind == "period" then current.period.index else nil
+	local state = rolled.state
 	local key = store.entry.key
-	local record: OrderedRecord = records_of(state.truth)[store.name] or {}
+	local record = stored_record(state.truth, store.name)
 	local next_record: OrderedRecord = table.clone(record)
 	local stored = state.truth[key]
 	local value = if stored == nil then store.initial else stored
 	local score = if value == nil then nil else score_of(store, value)
-	local current = period_of(store, now)
-	if current and record.period ~= nil and record.period < current.index then
+	if index ~= nil and record.period ~= nil and record.period < index then
 		if score ~= record.pushed then
-			table.insert(pushes, { name = store_name(store, record.period), score = score })
+			table.insert(rolled.pushes, { name = store_name(store, record.period), score = score })
 		end
 		if store.on_period_change and record.owed == nil then
 			next_record.owed = { period = record.period, value = ops.deep_copy(value) }
 		end
-		next_record.period = current.index
+		next_record.period = index
 		next_record.pushed = nil
-		local reset = stamped_set(state, key, ops.deep_copy(store.initial), now)
-		table.insert(rolled, reset)
+		local at = stamp_for(state, key, now)
+		local reset = reset_op(key, ops.deep_copy(store.initial), at)
+		table.insert(rolled.ops, reset)
+		rolled.resets[key] = math.max(rolled.resets[key] or 0, at)
 		state = ops.replay(state, { reset })
 		score = store.initial_score
 	end
@@ -248,30 +303,30 @@ local function roll_store(state: State, store: OrderedStore, now: number, rolled
 	local unranked = pushed == nil and (score == nil or score == store.initial_score)
 	if score ~= pushed and not unranked then
 		next_record.pushed = score
-		if current and next_record.period == nil then
-			next_record.period = current.index
+		if next_record.period == nil then
+			next_record.period = index
 		end
-		table.insert(pushes, { name = store_name(store, if current then current.index else nil), score = score })
+		table.insert(rolled.pushes, { name = store_name(store, next_record.period), score = score })
 	end
 	if
 		next_record.period == record.period
 		and next_record.pushed == record.pushed
 		and next_record.owed == record.owed
 	then
-		return state
+		rolled.state = state
+		return
 	end
 	local put = stamped_put(state, { store.name }, next_record, now)
-	table.insert(rolled, put)
-	return ops.replay(state, { put })
+	table.insert(rolled.ops, put)
+	rolled.state = ops.replay(state, { put })
 end
 
 local function roll(state: State, ordered: { OrderedStore }, now: number): Rolled
-	local rolled: { Op } = {}
-	local pushes: { Push } = {}
+	local rolled: Rolled = { state = state, ops = {}, pushes = {}, resets = {} }
 	for _, store in ordered do
-		state = roll_store(state, store, now, rolled, pushes)
+		roll_store(store, now, rolled)
 	end
-	return { state = state, ops = rolled, pushes = pushes }
+	return rolled
 end
 
 local function get_store(config: ResolvedCollectionConfig, name: string): OrderedDataStore
@@ -280,13 +335,13 @@ local function get_store(config: ResolvedCollectionConfig, name: string): Ordere
 	end)
 end
 
-local function push_one(config: ResolvedCollectionConfig, key: string, push: Push)
+local function push_one(config: ResolvedCollectionConfig, retry: RetryConfig, key: string, push: Push)
 	local store = get_store(config, push.name)
 	local score = push.score
 	if score == nil then
-		datastore.remove_ordered(store, key, config)
+		datastore.remove_ordered(store, key, retry)
 	else
-		datastore.set_ordered(store, key, score, config)
+		datastore.set_ordered(store, key, score, retry)
 	end
 end
 
@@ -294,13 +349,37 @@ local function score_at(config: ResolvedCollectionConfig, name: string, key: str
 	return datastore.get_ordered(get_store(config, name), key, config)
 end
 
-local function unrank(config: ResolvedCollectionConfig, ordered: { OrderedStore }, key: string, now: number)
+local function unrank(
+	config: ResolvedCollectionConfig,
+	retry: RetryConfig,
+	ordered: { OrderedStore },
+	key: string,
+	now: number,
+	periods: Periods
+)
 	for _, store in ordered do
-		local ok, err = pcall(datastore.remove_ordered, get_store(config, current_name(store, now)), key, config)
-		if not ok then
-			logging.warn(messages.warnings.unrank_failed(key, store.name, err))
+		local current = current_period(store, now)
+		local index = periods[store.name]
+		if index == nil and current.kind == "period" then
+			index = current.period.index
+		end
+		if current.kind ~= "failed" then
+			local ok, err = pcall(function()
+				datastore.remove_ordered(get_store(config, store_name(store, index)), key, retry)
+			end)
+			if not ok then
+				logging.warn(messages.warnings.unrank_failed(key, store.name, err))
+			end
 		end
 	end
+end
+
+local function copy_entries(entries: { OrderedEntry }, count: number): { OrderedEntry }
+	local copied: { OrderedEntry } = {}
+	for index = 1, math.min(count, #entries) do
+		table.insert(copied, { key = entries[index].key, score = entries[index].score })
+	end
+	return copied
 end
 
 local function cached_top(service: DataStoreService, name: string, count: number): { OrderedEntry }?
@@ -310,10 +389,10 @@ local function cached_top(service: DataStoreService, name: string, count: number
 		return nil
 	end
 	if #cache.entries >= count then
-		return table.move(cache.entries, 1, count, 1, {})
+		return copy_entries(cache.entries, count)
 	end
 	if cache.complete then
-		return table.clone(cache.entries)
+		return copy_entries(cache.entries, #cache.entries)
 	end
 	return nil
 end
@@ -327,9 +406,15 @@ local function remember_top(service: DataStoreService, name: string, cache: TopC
 	by_name[name] = cache
 end
 
-local function read_top(config: ResolvedCollectionConfig, name: string, count: number, ascending: boolean): TopCache
+local function read_top(
+	config: ResolvedCollectionConfig,
+	retry: RetryConfig,
+	name: string,
+	count: number,
+	ascending: boolean
+): TopCache
 	local store = get_store(config, name)
-	local pages = datastore.get_sorted(store, ascending, math.min(count, page_limit), config)
+	local pages = datastore.get_sorted(store, ascending, math.min(count, page_limit), retry)
 	local entries: { OrderedEntry } = {}
 	while true do
 		for _, entry in pages:GetCurrentPage() do
@@ -344,12 +429,13 @@ local function read_top(config: ResolvedCollectionConfig, name: string, count: n
 		if #entries == count then
 			return { entries = entries, complete = false }
 		end
-		datastore.next_page(pages, config)
+		datastore.next_page(pages, retry)
 	end
 end
 
 local function top(
 	config: ResolvedCollectionConfig,
+	retry: RetryConfig,
 	store: OrderedStore,
 	index: number?,
 	count: number,
@@ -365,11 +451,11 @@ local function top(
 			return cached
 		end
 	end
-	local read = read_top(config, name, count, ascending)
+	local read = read_top(config, retry, name, count, ascending)
 	if finished then
 		remember_top(config.data_store_service, name, read)
 	end
-	return table.clone(read.entries)
+	return copy_entries(read.entries, #read.entries)
 end
 
 local function place_of(entries: { OrderedEntry }, key: string): number?
@@ -382,18 +468,22 @@ local function place_of(entries: { OrderedEntry }, key: string): number?
 end
 
 local function is_due(store: OrderedStore, owed_period: number, now: number): boolean
-	local current = period_of(store, now) :: Period
-	return current.index > owed_period + 1 or now >= current.start + store.poll_interval
+	local current = current_period(store, now)
+	if current.kind ~= "period" then
+		return false
+	end
+	return current.period.index > owed_period + 1 or now >= current.period.start + store.poll_interval
 end
 
 local function resolve(
 	config: ResolvedCollectionConfig,
+	retry: RetryConfig,
 	store: OrderedStore,
 	key: string,
 	owed: Owed,
 	now: number
 ): Placing
-	local entries = top(config, store, owed.period, store.period_threshold, false, now)
+	local entries = top(config, retry, store, owed.period, store.period_threshold, false, now)
 	return { store = store, value = owed.value, place = place_of(entries, key), period = owed.period }
 end
 
@@ -404,6 +494,7 @@ return table.freeze({
 	period_of = period_of,
 	store_name = store_name,
 	owed_of = owed_of,
+	periods_of = periods_of,
 	roll = roll,
 	push_one = push_one,
 	score_at = score_at,

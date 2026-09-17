@@ -3,6 +3,7 @@ local ids = require("./ids")
 local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
+local rankings = require("./rankings")
 local state = require("./state")
 local util = require("./util")
 
@@ -14,6 +15,7 @@ type Fields = types.Fields
 type Holders = types.Holders
 type Initial = types.Initial
 type Named = types.Named
+type OrderedStore = types.OrderedStore
 type Schema = types.Schema
 type SchemaEntry = types.SchemaEntry
 
@@ -30,6 +32,7 @@ local frozen_ids = {
 	ids.child,
 	ids.migrations,
 	ids.from_foreign,
+	ids.ordered,
 }
 
 local function resolve_key(world: World, id: Entity): string
@@ -39,6 +42,9 @@ local function resolve_key(world: World, id: Entity): string
 	end
 	if string.find(key, "/", 1, true) then
 		error(messages.errors.saveable_key_invalid(util.describe(world, id), key), 0)
+	end
+	if rankings.is_reserved(key) then
+		error(messages.errors.reserved_key(util.describe(world, id), key), 0)
 	end
 	return key
 end
@@ -192,7 +198,7 @@ end
 
 local function fields_of(entries: { SchemaEntry }, kinds: { ChildKind }, target: Entity): Fields
 	local held = entries_of(entries, target)
-	return { entries = held, snapshots = snapshots_of(held), kinds = kinds_of(kinds, target) }
+	return { entries = held, snapshots = snapshots_of(held), kinds = kinds_of(kinds, target), ordered = {} }
 end
 
 local function create_kind(world: World, tag: Entity, entries: { SchemaEntry }): ChildKind
@@ -204,6 +210,9 @@ local function create_kind(world: World, tag: Entity, entries: { SchemaEntry }):
 	end
 	if type(config.key) ~= "string" or #config.key == 0 or string.find(config.key, "/", 1, true) then
 		error(messages.errors.child_config_invalid(described, reasons.child_key), 0)
+	end
+	if rankings.is_reserved(config.key) then
+		error(messages.errors.reserved_key(described, config.key), 0)
 	end
 	if config.mode ~= "owned" and config.mode ~= "attached" then
 		error(messages.errors.child_config_invalid(described, reasons.child_mode), 0)
@@ -359,11 +368,56 @@ local function create_schema(world: World): Schema
 		end
 	end
 	local roots: { [Entity]: Fields } = {}
+	local known: { [Entity]: boolean } = {}
+	local store_names: { [string]: Entity } = {}
 	for _, collection in collections do
 		roots[collection] = fields_of(entries, kinds, collection)
+		known[collection] = true
+		local store_name = world:get(collection, ids.collection)
+		if type(store_name) == "string" then
+			store_names[store_name] = collection
+		end
 	end
 	validate_targets(world, entries, kinds, collections)
 	validate_scoped(world, entries, kinds)
+
+	local ordered: { [Entity]: OrderedStore } = {}
+	local by_name: { [string]: OrderedStore } = {}
+	local periodic: { [Entity<any>]: OrderedStore } = {}
+	for entity in world:each(ids.ordered) do
+		local store = rankings.create_store(world, entity, entries, known)
+		local described = util.describe(world, entity)
+		local clash = by_name[store.name]
+		if clash then
+			error(messages.errors.ordered_name_clash(described, store.name, util.describe(world, clash.entity)), 0)
+		end
+		local owner = store_names[store.name]
+		if owner then
+			error(messages.errors.ordered_name_clash(described, store.name, util.describe(world, owner)), 0)
+		end
+		if store.period then
+			local other = periodic[store.entry.id]
+			if other then
+				error(
+					messages.errors.ordered_field_shared(
+						described,
+						util.describe(world, store.entry.id),
+						util.describe(world, other.entity)
+					),
+					0
+				)
+			end
+			periodic[store.entry.id] = store
+		end
+		by_name[store.name] = store
+		ordered[entity] = store
+		table.insert(roots[store.collection].ordered, store)
+	end
+	for _, root in roots do
+		table.sort(root.ordered, function(a, b)
+			return a.name < b.name
+		end)
+	end
 
 	warn_unguarded(entries)
 	return {
@@ -373,6 +427,7 @@ local function create_schema(world: World): Schema
 		kinds_by_relation = kinds_by_relation,
 		roots = roots,
 		named = named,
+		ordered = ordered,
 	}
 end
 

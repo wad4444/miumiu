@@ -4,6 +4,7 @@ local foreign = require("./foreign")
 local ids = require("./ids")
 local logging = require("./logging")
 local messages = require("./messages")
+local schema = require("./schema")
 local state = require("./state")
 local util = require("./util")
 
@@ -130,9 +131,15 @@ local function get(world: World, collection: Entity): CollectionState
 	end
 
 	local config = resolve_config(world, collection)
+	local ordered = schema.get(world).roots[collection].ordered
+	local service: any = config.data_store_service
+	if #ordered > 0 and type(service.GetOrderedDataStore) ~= "function" then
+		error(messages.errors.bad_ordered_service(util.describe(world, collection)), 0)
+	end
 	local created: CollectionState = {
 		config = config,
 		store = datastore.open(config.data_store_service, config.name),
+		ordered = ordered,
 	}
 	world_state.collections[collection] = created
 	return created

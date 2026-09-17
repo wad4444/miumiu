@@ -63,7 +63,7 @@ declare namespace miumiu {
 
 	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes and how long an unawaited single-key batch stays pending, warned under 6 s (the DataStore write cooldown); `idle_interval` (default 60, never under `pull_interval`) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off; `pull_interval = math.huge` runs no loop at all (only `sync`, `await`, unlink and `close` write). `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). Config is validated at link time: a bad value does not throw at `meta`, it lands as `pair(data_error, collection)` on every entity that links. */
 	export interface CollectionConfig {
-		data_store_service?: Pick<DataStoreService, "GetDataStore">;
+		data_store_service?: Pick<DataStoreService, "GetDataStore"> & Partial<Pick<DataStoreService, "GetOrderedDataStore">>;
 		pull_interval?: number;
 		idle_interval?: number;
 		retry_attempts?: number;
@@ -76,7 +76,7 @@ declare namespace miumiu {
 	/** What `Session.get_config()` returns: the config with defaults filled in, plus the collection's name, migrations and foreign source. */
 	export interface ResolvedCollectionConfig {
 		name: string;
-		data_store_service: Pick<DataStoreService, "GetDataStore">;
+		data_store_service: Pick<DataStoreService, "GetDataStore"> & Partial<Pick<DataStoreService, "GetOrderedDataStore">>;
 		pull_interval: number;
 		idle_interval: number;
 		retry_attempts: number;
@@ -123,6 +123,56 @@ declare namespace miumiu {
 	export interface Serdes<T = unknown, S = unknown> {
 		serialize: (value: T) => S;
 		deserialize: (stored: S) => T;
+	}
+
+	/** One period of a periodic ordered store: `index` names its store (`name_index`) and is what `get_top`, `get_score` and `on_period_change` take; `start` and `finish` bound it, and `finish` is the next reset. */
+	export interface Period {
+		index: number;
+		start: number;
+		finish: number;
+	}
+
+	/** `period` of an ordered store: a length in seconds (counted from the Unix epoch, so a week rolls over Thursday 00:00 UTC), `{ length, epoch }` to align it, or a function of now returning the `Period`; the index must never decrease as now grows. */
+	export type PeriodConfig = number | { length: number; epoch?: number } | ((now: number) => Period);
+
+	/** `map` of an ordered store: the integer the OrderedDataStore holds for the field's stored form, or `undefined` to leave the key unranked. The default floors a number and leaves anything else unranked. A negative or non-finite result is unranked with a warning. Must not yield. */
+	export type Map<S = unknown> = (stored: S) => number | undefined;
+
+	/** `on_period_change` of an ordered store: runs once per key and finished period on the key's next load, on its loaded entity, inside a batch with the library's own claim, so the writes it makes (a reward) land with the claim or not at all; a throw is warned and it runs again on the next load. `value` is the field's final stored value for that period, `place` its rank among the top `period_threshold` or `undefined` beyond them, `period` the finished period's index. Must not yield. The library knows entities, not players: map the entity back to its `Player` yourself. */
+	export type OnPeriodChange<S = unknown> = (world: World, entity: Entity, value: S, place: number | undefined, period: number) => void;
+
+	/** `meta(entity, miumiu.ordered, config)` plus `meta(entity, pair(miumiu.field_of, collection))`: the entity's `Name` (at most 40 characters) names the OrderedDataStore that ranks `component`, a root field of that collection, by `map` of its stored form. With `period` the store is per period (`name_index`) and the field resets to its initial when a record crosses into a new one; `period_threshold` (default 10) is how many ranks `on_period_change` resolves and `poll_interval` (default 60) how many seconds after a period's end its final ranking is read. `S` is the field's stored form. */
+	export interface OrderedConfig<S = unknown> {
+		component: Entity<any>;
+		period?: PeriodConfig;
+		map?: Map<S>;
+		period_threshold?: number;
+		poll_interval?: number;
+		on_period_change?: OnPeriodChange<S>;
+	}
+
+	/** One ranked key. */
+	export interface OrderedEntry {
+		key: string;
+		score: number;
+	}
+
+	/** Options of `Ordered.get_top`: `period` picks a period's store by index (default the current one; not allowed on an all-time store), `ascending` reads lowest first. */
+	export interface TopOptions {
+		period?: number;
+		ascending?: boolean;
+	}
+
+	/** The handle `get_ordered` returns: reads only, the sessions push scores. */
+	export interface Ordered {
+		/** The store's name, its entity's `Name`. */
+		get_name(): string;
+		/** The current period, without a request, or `undefined` for an all-time store. */
+		get_period(): Period | undefined;
+		/** The top `count` entries in rank order. Yields: one `GetSortedAsync` per hundred entries; a finished period's ranking is served from the cache once read. */
+		get_top(count: number, options?: TopOptions): OrderedEntry[];
+		/** The score stored for `key`, or `undefined` when it is not ranked. Yields, one `GetAsync`. */
+		get_score(key: string, period?: number): number | undefined;
 	}
 
 	/** A typed hook symbol; `Args` is what the callback receives. */
@@ -216,6 +266,10 @@ declare namespace miumiu {
 	export function hook(world: World, hook: RefusedHook, callback: (batch: Batch<unknown>, message: string) => void): () => void;
 	/** True for a `Batch` returned by `batch` or `delta`. */
 	export function is_batch(value: unknown): value is Batch<unknown>;
+	/** The `Ordered` handle behind `meta(entity, miumiu.ordered, config)`, one per world and entity; builds the schema on first use. Throws for an entity without the meta and for a collection whose config or `data_store_service` (no `GetOrderedDataStore`) is bad. */
+	export function get_ordered(world: World, entity: Entity): Ordered;
+	/** True for an `Ordered` returned by `get_ordered`. */
+	export function is_ordered(value: unknown): value is Ordered;
 	/** Route the library's warnings; omit to restore `warn`. */
 	export function set_warn(sink?: (message: string) => void): void;
 
@@ -245,6 +299,8 @@ declare namespace miumiu {
 	export const child: Entity<ChildConfig>;
 	/** The id an owned child is stored under; assigned by the library as soon as the entity carries both the kind tag and the pair, in either order, readable by the game. `undefined` until the first `step` on a child created before it. */
 	export const child_id: Entity<string>;
+	/** Declares an OrderedDataStore ranking one root field of a collection; see `OrderedConfig`. Read it through `get_ordered`. */
+	export const ordered: Entity<OrderedConfig<any>>;
 
 	/** `world.set(e, pair(data_link, c), key)` links an entity to a key and starts the load; `world.remove` unlinks, the final write follows, and the `closed` hook reports it. */
 	export const data_link: Entity<string>;

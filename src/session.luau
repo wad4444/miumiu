@@ -4,10 +4,12 @@ local commit = require("./commit")
 local datastore = require("./datastore")
 local foreign = require("./foreign")
 local hooks = require("./hooks")
+local logging = require("./logging")
 local messages = require("./messages")
 local mutex = require("./mutex")
 local ops = require("./ops")
 local pull_loop = require("./pull_loop")
+local rankings = require("./rankings")
 local symbol = require("./symbol")
 local util = require("./util")
 
@@ -24,6 +26,7 @@ type Migrated = types.Migrated
 type Mutex = types.Mutex
 type Op = types.Op
 type Pending = types.Pending
+type Placing = types.Placing
 type Pull = types.Pull
 type Resolution = types.Resolution
 type ResolvedCollectionConfig = types.ResolvedCollectionConfig
@@ -470,12 +473,15 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 	local landed = record.landed or {}
 	local landing =
 		land_groups({ truth = resolution.truth, stamps = resolution.stamps }, resolution.pending, landed, groups, now)
+	local rolled = rankings.roll(landing.state, self.internal_collection.ordered, now)
+	landing.state = rolled.state
 
 	local unchanged = landing.landed == landed
 		and landing.pending == original
 		and migrated.kind == "unchanged"
 		and not seeded
 		and not (old ~= nil and record.version == nil)
+		and #rolled.ops == 0
 	if unchanged then
 		return { kind = "unchanged", groups = groups, resolution = resolution }
 	end
@@ -484,6 +490,7 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 		record = build_record(self, record, landing, now),
 		groups = groups,
 		resolution = resolution,
+		pushes = rolled.pushes,
 	}
 end
 
@@ -518,6 +525,10 @@ local function run_read(self: SessionInternal, retry: RetryConfig): Pull?
 	local record: StoredRecord? = datastore.get_async(collection.store, self.internal_values.key, retry)
 	local declared = #collection.config.migrations
 	if record ~= nil and (record.version == nil or (record.migrations or 0) < declared) then
+		return nil
+	end
+	local read_state = if record then state_of(record) else empty_state()
+	if #rankings.roll(read_state, collection.ordered, os.time()).ops > 0 then
 		return nil
 	end
 	local merged = merge(self, record)
@@ -581,16 +592,81 @@ local function accept(self: SessionInternal, pull: Pull): Pull
 	return pull
 end
 
+local function queue_pushes(self: SessionInternal, pull: Pull)
+	local merge = pull.merge
+	if merge.kind ~= "merged" then
+		return
+	end
+	for _, push in merge.pushes do
+		self.internal_pushes[push.name] = push
+	end
+end
+
+local function push_scores(self: SessionInternal)
+	local values = self.internal_values
+	local config = self.internal_collection.config
+	local key = values.key
+	local failed_name: string? = nil
+	local failure: any = nil
+	for name, push in self.internal_pushes do
+		local ok, err = pcall(rankings.push_one, config, key, push)
+		if ok then
+			self.internal_pushes[name] = nil
+		elseif failed_name == nil then
+			failed_name = name
+			failure = err
+		end
+	end
+	if failed_name ~= nil then
+		if not values.push_failing then
+			values.push_failing = true
+			logging.warn(messages.warnings.push_failed(key, failed_name, failure))
+		end
+		return
+	end
+	if values.push_failing then
+		values.push_failing = false
+		logging.warn(messages.warnings.push_recovered(key))
+	end
+end
+
+local function resolve_owed(self: SessionInternal)
+	local collection = self.internal_collection
+	local key = self.internal_values.key
+	local truth = get_truth(self)
+	local now = os.time()
+	for _, store in collection.ordered do
+		local name = store.name
+		if store.on_period_change == nil or self.internal_placings[name] or self.internal_failed_changes[name] then
+			continue
+		end
+		local owed = rankings.owed_of(truth, name)
+		if owed == nil or not rankings.is_due(store, owed.period, now) then
+			continue
+		end
+		local ok, placing = pcall(rankings.resolve, collection.config, store, key, owed, now)
+		if ok then
+			self.internal_placings[name] = placing
+		else
+			logging.warn(messages.warnings.top_failed(key, name, placing))
+		end
+	end
+end
+
 local function pull_now(self: SessionInternal, retry: RetryConfig): boolean
 	local first = if is_idle(self) then run_read(self, retry) else nil
 	local pull = accept(self, first or run_update(self, retry))
 	local adopted = adopt(self, pull)
+	queue_pushes(self, pull)
 
 	if fetch_unknown(self, pull) then
 		pull = accept(self, run_update(self, retry))
 		adopted = adopt(self, pull) or adopted
+		queue_pushes(self, pull)
 	end
 	forget_state(self)
+	push_scores(self)
+	resolve_owed(self)
 
 	if self.internal_values.status.kind == "closing" and #self.internal_unwritten == 0 then
 		close(self, { kind = "clean" })
@@ -695,6 +771,7 @@ local function wipe_key(collection: CollectionState, key: string): StoredRecord
 	local result = datastore.update_async(collection.store, key, function(old: StoredRecord?)
 		return wiped_record(old, declared)
 	end, collection.config, user_ids_of(collection, key))
+	rankings.unrank(collection.config, collection.ordered, key, os.time())
 	return result.value :: StoredRecord
 end
 
@@ -705,6 +782,8 @@ local function wipe(self: SessionInternal)
 		local record = wipe_key(self.internal_collection, values.key)
 		table.clear(self.internal_unwritten)
 		table.clear(self.internal_awaiting)
+		table.clear(self.internal_pushes)
+		table.clear(self.internal_placings)
 		self.internal_seed = nil
 		values.touched = false
 		adopt_record(self, record)
@@ -712,6 +791,17 @@ local function wipe(self: SessionInternal)
 	end)
 	fire_landed(self)
 	refuse_watched(self, messages.errors.record_wiped(values.key))
+end
+
+local function get_placings(self: SessionInternal): { [string]: Placing }
+	return self.internal_placings
+end
+
+local function forget_placing(self: SessionInternal, name: string, failed: boolean)
+	self.internal_placings[name] = nil
+	if failed then
+		self.internal_failed_changes[name] = true
+	end
 end
 
 local function hook(self: SessionInternal, hook_symbol: Symbol, callback: Callback): () -> ()
@@ -739,8 +829,12 @@ local template = {
 		pulls = 0,
 		touched = false,
 		prepare = nil :: (() -> ())?,
+		push_failing = false,
 	},
 	internal_collection = (nil :: any) :: CollectionState,
+	internal_pushes = {},
+	internal_placings = {},
+	internal_failed_changes = {},
 	internal_base = empty_state(),
 	internal_migrate = (nil :: any) :: Migrate,
 	internal_seed = nil :: Data?,
@@ -774,6 +868,8 @@ local template = {
 	reopen = reopen,
 	prepare_with = prepare_with,
 	hook = hook,
+	get_placings = get_placings,
+	forget_placing = forget_placing,
 }
 
 local meta = {
@@ -795,6 +891,9 @@ local function create_session(collection: CollectionState, key: string, migrate:
 	session.internal_awaiting = {}
 	session.internal_watchers = {}
 	session.internal_landed = {}
+	session.internal_pushes = {}
+	session.internal_placings = {}
+	session.internal_failed_changes = {}
 	setmetatable(session, meta)
 	return session :: SessionInternal
 end

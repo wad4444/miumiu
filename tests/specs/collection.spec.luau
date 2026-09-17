@@ -182,12 +182,11 @@ return function()
 			local world = jecs.world()
 			local backend = utils.create_backend()
 			local entity = utils.create_collection(world, backend)
+			local other = utils.create_collection(world, utils.create_backend())
 			local first = collection.get(world, entity)
 			expect(collection.get(world, entity)).to.equal(first)
 			expect(first.config.name).to.equal(backend.name)
 			expect(type(first.store.UpdateAsync)).to.equal("function")
-
-			local other = utils.create_collection(world, utils.create_backend())
 			expect(collection.get(world, other)).never.to.equal(first)
 		end)
 

@@ -27,6 +27,14 @@ local reasons = table.freeze({
 	lazy = "lazy saveables are read at write time and cannot be expressed as a delta",
 	pair = "pairs are stored whole and cannot be expressed as a delta",
 	pair_table = "a stored set of pairs must be a table keyed by target name",
+	ordered_not_table = "the value must be a table",
+	ordered_component = "component must be a component saveable",
+	ordered_period = "period must be a number of seconds, { length, epoch } or a function of now",
+	ordered_map = "map must be a function",
+	ordered_threshold = "period_threshold must be an integer of at least 1",
+	ordered_poll = "poll_interval must be a number of at least 0",
+	ordered_callback = "on_period_change must be a function",
+	ordered_callback_period = "on_period_change needs a period",
 })
 
 local errors = table.freeze({
@@ -161,7 +169,7 @@ local errors = table.freeze({
 	end,
 	yielded = function(what: string, subject: string)
 		return prefixed(
-			`{what} for "{subject}" yielded; batch and delta functions, guards, serdes, snapshots and migrations must not yield`
+			`{what} for "{subject}" yielded; batch and delta functions, guards, serdes, snapshots, migrations, map and period functions must not yield`
 		)
 	end,
 	not_a_delta = function(key: string, reason: string)
@@ -251,6 +259,59 @@ local errors = table.freeze({
 		return prefixed(
 			`entity {entity} links to collection {collection} without a key: world:set(entity, pair(miumiu.data_link, collection), "key") needs a non-empty string`
 		)
+	end,
+	ordered_config_invalid = function(entity: unknown, why: string)
+		return prefixed(
+			`ordered store {entity} is misconfigured: {why}; meta(entity, miumiu.ordered, config) takes component, period, map, period_threshold, poll_interval and on_period_change`
+		)
+	end,
+	ordered_unnamed = function(entity: unknown, limit: number)
+		return prefixed(
+			`ordered store {entity} needs a jecs.Name of at most {limit} characters: the name is the OrderedDataStore's`
+		)
+	end,
+	ordered_name_clash = function(entity: unknown, name: string, other: unknown)
+		return prefixed(`ordered store {entity} is named "{name}", which {other} already uses as its store name`)
+	end,
+	ordered_scope = function(entity: unknown)
+		return prefixed(
+			`ordered store {entity} needs exactly one pair(miumiu.field_of, collection) naming the collection it ranks`
+		)
+	end,
+	ordered_field = function(entity: unknown, component: unknown, collection: unknown)
+		return prefixed(
+			`ordered store {entity} ranks {component}, which is not a root field of collection {collection}`
+		)
+	end,
+	ordered_field_shared = function(entity: unknown, component: unknown, other: unknown)
+		return prefixed(
+			`ordered stores {entity} and {other} both reset {component} per period: a field feeds at most one periodic store`
+		)
+	end,
+	not_ordered = function(entity: unknown)
+		return prefixed(`{entity} is not an ordered store: meta(entity, miumiu.ordered, config) is missing`)
+	end,
+	bad_ordered_service = function(collection: unknown)
+		return prefixed(
+			`collection {collection}: data_store_service must offer GetOrderedDataStore for the collection's ordered stores`
+		)
+	end,
+	reserved_key = function(id: unknown, key: string)
+		return prefixed(`{id} stores under "{key}": keys starting with "miumiu." are reserved`)
+	end,
+	legacy_reserved = function(key: string, stored_key: string)
+		return prefixed(`"{stored_key}" in record "{key}" is the library's own bookkeeping, not a legacy key`)
+	end,
+	bad_period = function(name: string, got: string)
+		return prefixed(
+			`period of ordered store "{name}" returned {got}: it must return \{ index, start, finish } with an integer index`
+		)
+	end,
+	bad_count = function(name: string, count: unknown)
+		return prefixed(`get_top on ordered store "{name}" takes a count of at least 1, got {tostring(count)}`)
+	end,
+	no_periods = function(name: string)
+		return prefixed(`ordered store "{name}" has no periods: get_top and get_score take no period for it`)
 	end,
 })
 
@@ -358,6 +419,37 @@ local warnings = table.freeze({
 	child_unheld = function(entity: unknown, tag: unknown, parent: unknown)
 		return prefixed(
 			`{entity} of kind {tag} under {parent} is not a child: the parent does not hold that kind; pair(miumiu.field_of, target) declares where it nests`
+		)
+	end,
+	map_failed = function(name: string, err: unknown)
+		return prefixed(`map of ordered store "{name}" failed and the key is not ranked: {err}`)
+	end,
+	map_invalid = function(name: string, got: string)
+		return prefixed(
+			`map of ordered store "{name}" returned {got}; a score is a non-negative integer, so the key is not ranked`
+		)
+	end,
+	push_failed = function(key: string, name: string, err: unknown)
+		return prefixed(
+			`score of "{key}" could not be pushed to ordered store "{name}", retrying on the next pull: {err}`
+		)
+	end,
+	push_recovered = function(key: string)
+		return prefixed(`scores of "{key}" push again`)
+	end,
+	top_failed = function(key: string, name: string, err: unknown)
+		return prefixed(
+			`finished ranking of ordered store "{name}" could not be read for "{key}", retrying on the next pull: {err}`
+		)
+	end,
+	period_change_failed = function(key: string, name: string, err: unknown)
+		return prefixed(
+			`on_period_change of ordered store "{name}" for "{key}" threw and was rolled back; it runs again on the next load: {err}`
+		)
+	end,
+	unrank_failed = function(key: string, name: string, err: unknown)
+		return prefixed(
+			`wipe of "{key}" could not remove it from ordered store "{name}"; the entry stays until the next push: {err}`
 		)
 	end,
 })

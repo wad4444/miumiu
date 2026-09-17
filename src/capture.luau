@@ -232,6 +232,10 @@ local function capture_ops(capture: Capture, sessions: { SessionInternal }, grou
 	end
 end
 
+local function record_ops(context: Context, session: SessionInternal, group_ops: { Op })
+	capture_ops(context.world_state.capture :: Capture, { session }, group_ops, nil)
+end
+
 local function forget_removal(world_state: WorldState, write: ComponentWrite)
 	if write.change == "removed" or write.entry.kind == "relation" then
 		state.forget_removing(world_state, write.entity, write.entry.key)
@@ -529,4 +533,5 @@ return table.freeze({
 	reject_unloaded = reject_unloaded,
 	flush_lazy = flush_lazy,
 	journal_component = journal_component,
+	record_ops = record_ops,
 })

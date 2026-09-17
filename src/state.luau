@@ -41,6 +41,7 @@ local function get(world: World): WorldState
 		link_states = {},
 		orphans = {},
 		events = {},
+		ordered = {},
 	}
 	states[world] = created
 	return created

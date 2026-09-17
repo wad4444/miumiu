@@ -7,6 +7,7 @@ local link = require("./link")
 local listeners = require("./listeners")
 local logging = require("./logging")
 local messages = require("./messages")
+local resets = require("./resets")
 local state = require("./state")
 local util = require("./util")
 
@@ -48,6 +49,7 @@ local function drain(context: Context)
 		while #events > 0 do
 			dispatch(context, table.remove(events, 1) :: Event)
 		end
+		resets.run_all(context)
 	until #world_state.cleanups == 0
 end
 

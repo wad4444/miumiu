@@ -416,6 +416,56 @@ unlink, unclaim and `close` write pending lazy values too, and a pull never sets
 pending value back. Inside `batch` a lazy write is recorded
 like any other; `delta` throws on it, since a value read at write time has no delta.
 
+## Leaderboards
+
+An ordered store ranks one root field in an `OrderedDataStore`, kept current by the
+sessions that write the record. Declare it on an entity of its own, scoped to the
+collection like a saveable; its `jecs.Name` is the store's name:
+
+```luau
+local coins_this_week = jecs.component() :: jecs.Entity<number>
+jecs.meta(coins_this_week, miumiu.saveable, "coins_this_week")
+jecs.meta(coins_this_week, jecs.pair(miumiu.field_of, player_data))
+jecs.meta(coins_this_week, coins_this_week, 0)
+
+local weekly_coins = jecs.tag()
+jecs.meta(weekly_coins, jecs.Name, "weekly_coins")
+jecs.meta(weekly_coins, jecs.pair(miumiu.field_of, player_data))
+jecs.meta(weekly_coins, miumiu.ordered, {
+	component = coins_this_week,
+	period = { length = 7 * 86400, epoch = 345600 },
+	period_threshold = 10,
+	on_period_change = function(world, entity, value, place, period)
+		if place then
+			world:set(entity, money, world:get(entity, money) + 1000 * (11 - place))
+		end
+	end,
+})
+```
+
+Every write of `coins_this_week` that changes its score pushes it with the record's
+next write (`map` turns a non-number field into the integer to rank by; the default
+floors a number). With `period` the store is per period, `weekly_coins_2831`: a new
+period starts on an empty store, the previous one stays readable, and the field resets
+to its initial when a record first pulls in the new period. `on_period_change` runs once
+per key and finished period, on the player's next load, with the field's final value
+and the key's place among the top `period_threshold` (nil beyond them), inside a batch
+that claims the change, so the reward it writes lands with the claim or not at all.
+Omit `period` for an all-time ranking.
+
+```luau
+local weekly = miumiu.get_ordered(world, weekly_coins)
+local top = weekly:get_top(100)
+local period = weekly:get_period()
+local last_week = weekly:get_top(10, { period = period.index - 1 })
+print(period.finish - os.time(), "seconds until the reset")
+```
+
+`get_top` yields and costs one `GetSortedAsync` per hundred entries; `get_score(key)`
+reads one key; `get_period()` costs nothing. Read the top on your own schedule, once a
+minute is plenty. Every ordered write lands on the ordered store's own budget, and
+`wipe` removes the key from the collection's ordered stores too.
+
 ## Other players
 
 There is no separate API for a player who is offline or on another server. Any key can

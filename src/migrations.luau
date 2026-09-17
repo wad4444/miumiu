@@ -6,6 +6,7 @@ local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
 local ops = require("./ops")
+local rankings = require("./rankings")
 local recorder = require("./recorder")
 local relations = require("./relations")
 local state = require("./state")
@@ -215,6 +216,9 @@ local function create_migration_context(
 	local function legacy(stored_key: string): Entity<any>
 		if schema.by_key[stored_key] then
 			error(messages.errors.legacy_is_saveable(key, stored_key), 0)
+		end
+		if rankings.is_reserved(stored_key) then
+			error(messages.errors.legacy_reserved(key, stored_key), 0)
 		end
 		local id = legacy_ids[stored_key]
 		if id then

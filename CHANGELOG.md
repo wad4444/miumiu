@@ -2,6 +2,20 @@
 
 ## 0.2.0 (unreleased)
 
+Ordered stores: `meta(entity, miumiu.ordered, { component, period?, map?, period_threshold?,
+poll_interval?, on_period_change? })` plus `pair(miumiu.field_of, collection)` ranks one
+root field in an `OrderedDataStore` named by the entity's `jecs.Name`. Sessions push the
+score with the record's write that changed it, on the ordered store's own budget. With
+`period` the store is per period (`name_index`), the field resets to its initial when a
+record crosses into a new period, and `on_period_change(world, entity, value, place,
+period)` runs once per key and finished period on the key's next load, inside a batch
+that claims the change. `miumiu.get_ordered(world, entity)` returns the `Ordered`
+handle (`get_top`, `get_score`, `get_period`, `get_name`), `miumiu.is_ordered` tells it
+apart. The record keeps its bookkeeping under `data["miumiu.ordered"]`; keys starting
+with `miumiu.` are reserved, for saveables, child kinds and `context.legacy`. `wipe`
+removes the key from the collection's ordered stores. A collection with an ordered
+store needs a `data_store_service` with `GetOrderedDataStore`.
+
 `Batch:await()` returns the `SettledOutcome` instead of throwing on a refusal, so a
 caller written for the throwing form must branch on the result. `Batch:get_result()`
 hands back what the function returned. `miumiu.hook(world, hooks.refused, fn)` hears

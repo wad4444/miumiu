@@ -4,6 +4,7 @@ local handle = require("@self/handle")
 local hooks = require("@self/hooks")
 local ids = require("@self/ids")
 local logging = require("@self/logging")
+local ordered = require("@self/ordered")
 local session = require("@self/session")
 local step = require("@self/step")
 
@@ -40,6 +41,14 @@ export type RefusedHook = types.RefusedHook
 export type PulledHook = types.PulledHook
 export type ClosedHook = types.ClosedHook
 export type WritingHook = types.WritingHook
+export type Ordered = types.Ordered
+export type OrderedConfig = types.OrderedConfig
+export type OrderedEntry = types.OrderedEntry
+export type Period = types.Period
+export type PeriodConfig = types.PeriodConfig
+export type Map = types.Map
+export type OnPeriodChange = types.OnPeriodChange
+export type TopOptions = types.TopOptions
 
 local miumiu = {
 	collection = ids.collection,
@@ -55,6 +64,7 @@ local miumiu = {
 	pairs = ids.pairs,
 	child = ids.child,
 	child_id = ids.child_id,
+	ordered = ids.ordered,
 
 	data_link = ids.data_link,
 	data_shallow = ids.data_shallow,
@@ -73,6 +83,8 @@ local miumiu = {
 	hook = step.hook :: types.WorldHook,
 	is_session = session.is_session,
 	is_batch = handle.is_batch,
+	get_ordered = ordered.get_ordered,
+	is_ordered = ordered.is_ordered,
 	set_warn = logging.set_warn,
 }
 

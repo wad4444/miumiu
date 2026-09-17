@@ -15,8 +15,22 @@ export type DataStore = {
 	UpdateAsync: (self: DataStore, key: string, transform: (old: any) -> (any, { number }?)) -> any,
 }
 
+export type DataStorePages = {
+	IsFinished: boolean,
+	GetCurrentPage: (self: DataStorePages) -> { { key: string, value: any } },
+	AdvanceToNextPageAsync: (self: DataStorePages) -> (),
+}
+
+export type OrderedDataStore = {
+	GetAsync: (self: OrderedDataStore, key: string) -> any,
+	SetAsync: (self: OrderedDataStore, key: string, value: number) -> (),
+	RemoveAsync: (self: OrderedDataStore, key: string) -> any,
+	GetSortedAsync: (self: OrderedDataStore, ascending: boolean, page_size: number) -> DataStorePages,
+}
+
 export type DataStoreService = {
 	GetDataStore: (self: DataStoreService, name: string) -> DataStore,
+	GetOrderedDataStore: (self: DataStoreService, name: string) -> OrderedDataStore,
 }
 
 export type UpdateResult<T> = { kind: "written", value: T } | { kind: "unchanged", value: T? }
@@ -111,7 +125,7 @@ export type Serdes = {
 	deserialize: (stored: any) -> any,
 }
 
-export type SyncKind = "batch" | "guard" | "serialize" | "deserialize" | "migration" | "snapshot"
+export type SyncKind = "batch" | "guard" | "serialize" | "deserialize" | "migration" | "snapshot" | "map" | "period"
 
 export type Snapshot = (world: World, entity: Entity) -> any
 
@@ -168,6 +182,72 @@ export type Fields = {
 	entries: { SchemaEntry },
 	snapshots: { ComponentEntry },
 	kinds: { ChildKind },
+	ordered: { OrderedStore },
+}
+
+export type Period = { index: number, start: number, finish: number }
+
+export type PeriodFunction = (now: number) -> Period
+
+export type PeriodConfig = number | { length: number, epoch: number? } | PeriodFunction
+
+export type Map = (stored: any) -> number?
+
+export type OnPeriodChange = (world: World, entity: Entity, value: any, place: number?, period: number) -> ()
+
+export type OrderedConfig = {
+	component: Entity<any>,
+	period: PeriodConfig?,
+	map: Map?,
+	period_threshold: number?,
+	poll_interval: number?,
+	on_period_change: OnPeriodChange?,
+}
+
+export type OrderedStore = {
+	entity: Entity,
+	name: string,
+	collection: Entity,
+	entry: ComponentEntry,
+	initial: any,
+	initial_score: number?,
+	period: PeriodFunction?,
+	map: Map,
+	period_threshold: number,
+	poll_interval: number,
+	on_period_change: OnPeriodChange?,
+	warned: Warned,
+}
+
+export type Push = { name: string, score: number? }
+
+export type Owed = { period: number, value: any }
+
+export type OrderedRecord = { period: number?, pushed: number?, owed: Owed? }
+
+export type Rolled = { state: State, ops: { Op }, pushes: { Push } }
+
+export type Placing = { store: OrderedStore, value: any, place: number?, period: number }
+
+export type OrderedEntry = { key: string, score: number }
+
+export type TopCache = { entries: { OrderedEntry }, complete: boolean }
+
+export type TopOptions = { period: number?, ascending: boolean? }
+
+export type Ordered = {
+	get_name: (Ordered) -> string,
+	get_period: (Ordered) -> Period?,
+	get_top: (Ordered, count: number, options: TopOptions?) -> { OrderedEntry },
+	get_score: (Ordered, key: string, period: number?) -> number?,
+}
+
+export type OrderedInternal = Ordered & {
+	symbol: Symbol,
+	internal_values: {
+		store: OrderedStore,
+		config: ResolvedCollectionConfig,
+	},
 }
 
 export type ChildMode = "owned" | "attached"
@@ -206,6 +286,7 @@ export type Schema = {
 	kinds_by_relation: { [Entity]: { ChildKind } },
 	roots: { [Entity]: Fields },
 	named: Named,
+	ordered: { [Entity]: OrderedStore },
 }
 
 export type Change = "added" | "changed" | "removed"
@@ -356,6 +437,7 @@ export type ResolvedCollectionConfig = {
 export type CollectionState = {
 	config: ResolvedCollectionConfig,
 	store: DataStore,
+	ordered: { OrderedStore },
 }
 
 export type Mutex = {
@@ -447,7 +529,7 @@ export type Session = {
 export type Merge =
 	{ kind: "newer", message: string, groups: { Group }, resolution: Resolution }
 	| { kind: "unchanged", groups: { Group }, resolution: Resolution }
-	| { kind: "merged", record: StoredRecord, groups: { Group }, resolution: Resolution }
+	| { kind: "merged", record: StoredRecord, groups: { Group }, resolution: Resolution, pushes: { Push } }
 
 export type Pull = {
 	merge: Merge,
@@ -465,8 +547,12 @@ export type SessionInternal = Session & {
 		pulls: number,
 		touched: boolean,
 		prepare: (() -> ())?,
+		push_failing: boolean,
 	},
 	internal_collection: CollectionState,
+	internal_pushes: { [string]: Push },
+	internal_placings: { [string]: Placing },
+	internal_failed_changes: { [string]: boolean },
 	internal_base: State,
 	internal_migrate: Migrate,
 	internal_seed: Data?,
@@ -491,6 +577,8 @@ export type SessionInternal = Session & {
 	resolve_group: (SessionInternal, id: string, message: string) -> SettledOutcome,
 	unload: (SessionInternal, retry: RetryConfig?) -> (),
 	discard: (SessionInternal, message: string) -> (),
+	get_placings: (SessionInternal) -> { [string]: Placing },
+	forget_placing: (SessionInternal, name: string, failed: boolean) -> (),
 }
 
 export type LinkPhase =
@@ -603,6 +691,7 @@ export type WorldState = {
 	link_states: { [Entity]: { [string]: LinkState } },
 	orphans: { [SessionInternal]: () -> () },
 	events: { Event },
+	ordered: { [Entity]: OrderedInternal },
 }
 
 export type Context = {

@@ -13,8 +13,12 @@ type Session = miumiu.Session
 type Entity<T = nil> = miumiu.Entity<T>
 type DataStore = types.DataStore
 type DataStoreGetOptions = types.DataStoreGetOptions
+type DataStorePages = types.DataStorePages
 type DataStoreService = types.DataStoreService
 type Event = types.Event
+type OrderedConfig = types.OrderedConfig
+type OrderedDataStore = types.OrderedDataStore
+type OrderedEntry = types.OrderedEntry
 type LinkState = types.LinkState
 type Migration = miumiu.Migration
 type Op = miumiu.Op
@@ -64,7 +68,10 @@ export type Failure = {
 export type Backend = {
 	name: string,
 	service: DataStoreService,
+	plain_service: DataStoreService,
 	store: DataStore,
+	ordered: (self: Backend, name: string) -> OrderedDataStore,
+	sorted: (self: Backend, name: string) -> { OrderedEntry },
 	failures: { Failure },
 	delays: { Delay },
 	calls: { [string]: number },
@@ -194,6 +201,60 @@ local function proxy_store(backend: Backend, inner: any): DataStore
 	}
 end
 
+local function proxy_pages(backend: Backend, inner: any): DataStorePages
+	local pages: DataStorePages
+	pages = {
+		IsFinished = inner.IsFinished,
+		GetCurrentPage = function()
+			return inner:GetCurrentPage()
+		end,
+		AdvanceToNextPageAsync = function()
+			guarded(backend, "AdvanceToNextPageAsync", function()
+				inner:AdvanceToNextPageAsync()
+			end)
+			pages.IsFinished = inner.IsFinished
+		end,
+	}
+	return pages
+end
+
+local function proxy_ordered(backend: Backend, inner: any): OrderedDataStore
+	return {
+		GetAsync = function(_, key: string)
+			return guarded(backend, "OrderedGetAsync", function()
+				return inner:GetAsync(key)
+			end)
+		end,
+		SetAsync = function(_, key: string, value: number)
+			return guarded(backend, "OrderedSetAsync", function()
+				return inner:SetAsync(key, value)
+			end)
+		end,
+		RemoveAsync = function(_, key: string)
+			return guarded(backend, "OrderedRemoveAsync", function()
+				return inner:RemoveAsync(key)
+			end)
+		end,
+		GetSortedAsync = function(_, ascending: boolean, page_size: number)
+			return guarded(backend, "GetSortedAsync", function()
+				return proxy_pages(backend, inner:GetSortedAsync(ascending, page_size))
+			end)
+		end,
+	}
+end
+
+local function ordered(self: Backend, name: string): OrderedDataStore
+	return mock:GetOrderedDataStore(`{self.name}/{name}`)
+end
+
+local function sorted(self: Backend, name: string): { OrderedEntry }
+	local entries: { OrderedEntry } = {}
+	for _, entry in self:ordered(name):GetSortedAsync(false, 100):GetCurrentPage() do
+		table.insert(entries, { key = entry.key, score = entry.value })
+	end
+	return entries
+end
+
 local function fail_next(self: Backend, op: string, mode: FailMode, message: string?, skip: number?)
 	table.insert(self.failures, {
 		op = op,
@@ -235,14 +296,23 @@ local function create_backend(): Backend
 	counter += 1
 	local name = `Spec{counter}`
 	local backend: Backend
+	local plain_service = {
+		GetDataStore = function(_, store_name: string): DataStore
+			return proxy_store(backend, mock:GetDataStore(store_name))
+		end,
+	}
 	backend = {
 		name = name,
 		service = {
-			GetDataStore = function(_, store_name: string): DataStore
-				return proxy_store(backend, mock:GetDataStore(store_name))
+			GetDataStore = plain_service.GetDataStore,
+			GetOrderedDataStore = function(_, store_name: string): OrderedDataStore
+				return proxy_ordered(backend, mock:GetOrderedDataStore(`{name}/{store_name}`))
 			end,
 		},
+		plain_service = plain_service :: any,
 		store = mock:GetDataStore(name),
+		ordered = ordered,
+		sorted = sorted,
 		failures = {},
 		delays = {},
 		calls = {},
@@ -311,9 +381,13 @@ end
 
 local function open_session(backend: Backend, key: string, overrides: Overrides?): SessionInternal
 	local config = create_config(backend, overrides)
-	local loaded = session.load_session({ config = config, store = open_store(backend) }, key, function(truth)
-		return truth
-	end)
+	local loaded = session.load_session(
+		{ config = config, store = open_store(backend), ordered = {} },
+		key,
+		function(truth)
+			return truth
+		end
+	)
 	table.insert(live_sessions, loaded)
 	return loaded
 end
@@ -440,6 +514,14 @@ end
 
 local function anything(): boolean
 	return true
+end
+
+local function declare_ordered(world: World, collection: Entity, name: string, config: OrderedConfig): Entity
+	local entity = world:entity()
+	world:set(entity, jecs.Name, name)
+	world:add(entity, jecs.pair(miumiu.field_of, collection))
+	world:set(entity, miumiu.ordered, config)
+	return entity
 end
 
 local function create_fixture(overrides: Overrides?): Fixture
@@ -639,6 +721,7 @@ return table.freeze({
 	declare_relations = declare_relations,
 	create_fixture = create_fixture,
 	create_set_serdes = create_set_serdes,
+	declare_ordered = declare_ordered,
 	link_state = link_state,
 	session_of = session_of,
 	events = events,

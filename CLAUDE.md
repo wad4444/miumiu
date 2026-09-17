@@ -41,12 +41,16 @@ src/link.luau         link lifecycle: link/unlink/loaded/load_failed/closed/pull
 src/step.luau         the event loop, get_session, wipe, close, the world-level hook
 src/batch.luau        batch/delta: capture, single-key groups journaled and settled through the session's watch (await flushes them), shared commit in the background, rollback
 src/handle.luau       Batch: the handle batch/delta return (outcome, result and keys via hold/get_result/get_keys, landed/refused hooks, await, which runs the flush installed by flush_with; cake-style class)
+src/rankings.luau     ordered stores, storage side: declaration discovery and validation (create_store), period math, map to score, the transform-side roll (period reset, push bookkeeping under data["miumiu.ordered"], owed changes), push_one, unrank on wipe, top reads with the finished-period cache, owed resolution (is_due, resolve)
+src/ordered.luau      Ordered: the handle get_ordered returns (get_name, get_period, get_top, get_score; cake-style class), is_ordered
+src/resets.luau       runs on_period_change at step for each session's resolved placings, inside a batch that carries the drop of the claim (capture.record_ops)
 src/index.d.ts        the roblox-ts surface
 tests/specs/          TestEZ specs, never inside src
 tests/coverage.luau   block instrumenter used by the runner
 tests/coverage_check.luau  self-check: instruments fixtures and asserts the marker counts
 tests/run.luau        Lune runner
 tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
+.claude/skills/sweep/ the review-sweep skill: reviewer briefs, the apply pass, the ledger of known-opens and probed paths, patch helpers
 ```
 
 ## Style
@@ -151,8 +155,10 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
   collection, session, logging, state, ids, util, callbacks) get a unit spec; world behaviour is split by phase into
   `link.spec`, `write.spec`, `unlink.spec` (unlink and `close`), `batch.spec`,
   `migrations.spec` (migrations and foreign import), `children.spec` (child kinds,
-  snapshots, lazy, wipe) and `pairs.spec` (saveable pairs), each ending in a `regressions`
-  block, and those cover capture/reconcile/step/link/migrations/listeners/children/relations.
+  snapshots, lazy, wipe), `pairs.spec` (saveable pairs) and `ordered.spec` (ordered
+  stores: pushes, periods, `on_period_change`, the `Ordered` handle, the `rankings.roll`
+  unit), each ending in a `regressions`
+  block, and those cover capture/reconcile/step/link/migrations/listeners/children/relations/rankings/resets.
   Specs never read `internal_*` fields; `utils.journal`, `utils.session_of` and
   `state.get(world)` cover what the public surface does not; `schema.create_schema`,
   and `collection.resolve_config` are spec seams, exported for the unit specs and unused

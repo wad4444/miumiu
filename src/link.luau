@@ -167,14 +167,28 @@ local function load(
 		key,
 		context.world_state.warned
 	)
+	local world_state = context.world_state
+	world_state.pending_loads += 1
+
 	return task.defer(function()
 		local ok, result = pcall(session.load_session, collection_state, key, migrate, function()
 			return is_receiving(context, link())
 		end)
 		if ok then
-			table.insert(context.world_state.events, { kind = "loaded", link = link(), session = result })
+			table.insert(world_state.events, { kind = "loaded", link = link(), session = result })
 		else
-			table.insert(context.world_state.events, { kind = "load_failed", link = link(), err = tostring(result) })
+			table.insert(world_state.events, { kind = "load_failed", link = link(), err = tostring(result) })
+		end
+
+		world_state.pending_loads -= 1
+		if world_state.pending_loads > 0 then
+			return
+		end
+
+		local waiting = world_state.load_waiters
+		world_state.load_waiters = {}
+		for _, wake in waiting do
+			wake()
 		end
 	end)
 end
@@ -367,6 +381,34 @@ end
 local function has_stashed_puts(context: Context, link_state: LinkState): boolean
 	local by_key = context.world_state.pending_root_puts[link_state.collection]
 	return by_key ~= nil and by_key[link_state.key] ~= nil
+end
+
+local function owes_a_stashed_put(world_state: WorldState): boolean
+	for _, by_key in world_state.pending_root_puts do
+		if next(by_key) ~= nil then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function settle_loads(context: Context, deadline: number)
+	local world_state = context.world_state
+	if world_state.pending_loads == 0 or not owes_a_stashed_put(world_state) then
+		return
+	end
+
+	local waiting = coroutine.running()
+	local timeout = task.delay(math.max(deadline - os.time(), 0), function()
+		world_state.load_waiters[waiting] = nil
+		task.spawn(waiting)
+	end)
+	world_state.load_waiters[waiting] = function()
+		task.cancel(timeout)
+		task.spawn(waiting)
+	end
+	coroutine.yield()
 end
 
 local function detach(context: Context, link_state: LinkState): SessionInternal?
@@ -658,6 +700,7 @@ return table.freeze({
 	on_closed = on_closed,
 	on_pulled = on_pulled,
 	resolve_drops = resolve_drops,
+	settle_loads = settle_loads,
 	run_cleanups = run_cleanups,
 	resupply = resupply,
 	wipe_key = wipe_key,

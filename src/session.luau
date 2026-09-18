@@ -14,6 +14,7 @@ local symbol = require("./symbol")
 local util = require("./util")
 
 type Callback = types.Callback
+type Entity<T = nil> = types.Entity<T>
 type Claim = types.Claim
 type Closure = types.Closure
 type CollectionState = types.CollectionState
@@ -168,6 +169,10 @@ end
 
 local function discard(self: SessionInternal, message: string)
 	close(self, { kind = "abandoned", message = message })
+end
+
+local function get_collection(self: SessionInternal): Entity
+	return self.internal_collection.entity
 end
 
 local function get_key(self: SessionInternal): string
@@ -1017,6 +1022,7 @@ local template = {
 	internal_cache = nil :: State?,
 	internal_before_last = nil :: State?,
 
+	get_collection = get_collection,
 	get_key = get_key,
 	get_truth = get_truth,
 	get_stamps = get_stamps,

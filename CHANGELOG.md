@@ -24,6 +24,16 @@ with `miumiu.` are reserved, for saveables, child kinds and `context.legacy`. `w
 removes the key from the collection's ordered stores. A collection with an ordered
 store needs a `data_store_service` with `GetOrderedDataStore`.
 
+`Batch:get_keys()` returns `{ collection, key }` records instead of bare key strings,
+since a batch may span collections and two collections may use one key string. The
+exported type `Map` (an ordered store's score function) is now `ScoreMap`, in both the
+Luau and the roblox-ts surface, because `Map` read as a dictionary and shadowed the
+global `Map<K, V>` inside the TypeScript definitions. Both are breaking and land before
+0.2.0 ships. `close` now waits, inside its budget, for a load that still owes a child
+put stashed while its root was deleted, so the put is written instead of lost with the
+session that would have written it; a second `close` on the same world joins the first
+instead of returning while the write is still in flight.
+
 Two collections of one world can no longer name the same store, an ordered config
 field the library does not know fails the schema build, and a collection config that is
 not a table fails the link. `idle_interval` is unconstrained when `pull_interval` is

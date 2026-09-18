@@ -217,7 +217,10 @@ export function transfer(world: World, sender: Entity, receiver: Entity, amount:
 		paid.silence();
 		return false;
 	}
-	group.hook(miumiu.hooks.landed, () => print("transferred", group.get_keys().size()));
+	group.hook(miumiu.hooks.landed, () => {
+		const [first] = group.get_keys();
+		print("transferred", group.get_keys().size(), first?.key, first?.collection);
+	});
 	group.hook(miumiu.hooks.refused, (message: string) => print("refused", message));
 	// @ts-expect-error a batch never fires session hooks
 	group.hook(miumiu.hooks.pulled, () => {});

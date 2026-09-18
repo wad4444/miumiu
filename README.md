@@ -218,7 +218,8 @@ values the batch still holds, fires `refused`, and warns when nothing hooked or 
 it in the same frame. `batch:await()` yields until the group is in every record and
 returns the outcome, `{ kind = "landed" }` or `{ kind = "refused", message = ... }`,
 never throwing. The handle also has `get_outcome()` (the same record, `pending` until
-then), `is_settled()`, `get_keys()` (the stored keys it touched), `get_result()`,
+then), `is_settled()`, `get_keys()` (the keys it touched, each as `{ collection, key }`,
+since two collections can use one key string), `get_result()`,
 what the function returned, there as soon as
 `batch` returns, and `silence()`, which accepts a refusal without the warning. Hooks and the rollback run on the thread that wrote or refused the
 batch: an `await`, a `sync`, `wipe`, `close`, the pull loop, the unlink's final write, or

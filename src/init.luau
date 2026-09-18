@@ -46,7 +46,7 @@ export type OrderedConfig = types.OrderedConfig
 export type OrderedEntry = types.OrderedEntry
 export type Period = types.Period
 export type PeriodConfig = types.PeriodConfig
-export type Map = types.Map
+export type ScoreMap = types.ScoreMap
 export type OnPeriodChange = types.OnPeriodChange
 export type TopOptions = types.TopOptions
 

@@ -389,7 +389,7 @@ end
 local function open_session(backend: Backend, key: string, overrides: Overrides?): SessionInternal
 	local config = create_config(backend, overrides)
 	local loaded = session.load_session(
-		{ config = config, store = open_store(backend), ordered = {}, holder = next_holder() },
+		{ entity = 0 :: any, config = config, store = open_store(backend), ordered = {}, holder = next_holder() },
 		key,
 		function(truth)
 			return truth

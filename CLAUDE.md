@@ -143,7 +143,8 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 - Anything run inside a `removed` hook only reads: no `world:add/set/remove/delete`.
 - Plain `task.spawn` / `task.wait`; `task.defer` only for the load thread (a same-frame
   cancel never reaches storage) and for `handle.refuse`'s unhooked-refusal warning (a
-  `hook(refused)` or `await` in the same frame silences it). Timestamps are `os.time()`.
+  `hook(refused)` or `await` in the same frame silences it); `task.delay` only for the
+  deadline on `link.settle_loads`, where `close` waits for a load it does not control. Timestamps are `os.time()`.
   Never `os.clock()`: benchmarking only, in specs too. The `tick` shim
   MockDataStoreService needs in `tests/run.luau` is the one place it appears.
 - Nothing touches `DataStoreService` at require time; the module must load on the client.

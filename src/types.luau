@@ -193,7 +193,7 @@ export type PeriodFunction = (now: number) -> Period
 
 export type PeriodConfig = number | { length: number, epoch: number? } | PeriodFunction
 
-export type Map = (stored: any) -> number?
+export type ScoreMap = (stored: any) -> number?
 
 export type OnPeriodChange = (world: World, entity: Entity, value: any, place: number, period: number) -> ()
 
@@ -201,7 +201,7 @@ export type OrderedConfig = {
 	component: Entity<any>,
 	period: PeriodConfig?,
 	reset: boolean?,
-	map: Map?,
+	map: ScoreMap?,
 	period_threshold: number?,
 	poll_interval: number?,
 	on_period_change: OnPeriodChange?,
@@ -216,7 +216,7 @@ export type OrderedStore = {
 	initial_score: number?,
 	period: PeriodFunction?,
 	reset: boolean,
-	map: Map,
+	map: ScoreMap,
 	period_threshold: number,
 	poll_interval: number,
 	on_period_change: OnPeriodChange?,
@@ -453,6 +453,7 @@ export type ResolvedCollectionConfig = {
 }
 
 export type CollectionState = {
+	entity: Entity,
 	config: ResolvedCollectionConfig,
 	store: DataStore,
 	ordered: { OrderedStore },
@@ -484,6 +485,8 @@ export type LandedHook = Symbol<"landed">
 export type RefusedHook = Symbol<"refused">
 
 export type SettledOutcome = { kind: "landed" } | { kind: "refused", message: string }
+export type BatchKey = { collection: Entity, key: string }
+
 export type Outcome = { kind: "pending" } | SettledOutcome
 
 export type BatchHook =
@@ -493,7 +496,7 @@ export type BatchHook =
 export type Batch = {
 	get_outcome: (Batch) -> Outcome,
 	get_result: (Batch) -> any,
-	get_keys: (Batch) -> { string },
+	get_keys: (Batch) -> { BatchKey },
 	is_settled: (Batch) -> boolean,
 	hook: BatchHook,
 	await: (Batch) -> SettledOutcome,
@@ -513,9 +516,9 @@ export type BatchInternal = Batch & {
 	},
 	internal_hooks: CallbackRegistry,
 	internal_waiters: { thread },
-	internal_keys: { string },
+	internal_keys: { BatchKey },
 	enter: (BatchInternal) -> (),
-	hold: (BatchInternal, result: any, keys: { string }) -> (),
+	hold: (BatchInternal, result: any, keys: { BatchKey }) -> (),
 	land: (BatchInternal) -> (),
 	refuse: (BatchInternal, id: string, message: string, heard: boolean) -> (),
 	flush_with: (BatchInternal, flush: () -> ()) -> (),
@@ -535,6 +538,7 @@ export type SessionHook =
 	& ((Session, WritingHook, callback: () -> ()) -> () -> ())
 
 export type Session = {
+	get_collection: (Session) -> Entity,
 	get_key: (Session) -> string,
 	get_truth: (Session) -> Data,
 	get_stamps: (Session) -> Stamps,
@@ -723,6 +727,8 @@ export type WorldState = {
 	links: { [Entity]: { [Entity]: string } },
 	link_states: { [Entity]: { [string]: LinkState } },
 	orphans: { [SessionInternal]: () -> () },
+	pending_loads: number,
+	load_waiters: { [thread]: () -> () },
 	events: { Event },
 	ordered: { [Entity]: OrderedInternal },
 }

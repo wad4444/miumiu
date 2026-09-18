@@ -139,6 +139,9 @@ end
 
 local function close_world(world: World, world_state: WorldState, budget: number?)
 	local context = contexts.create_context(world)
+	local deadline = os.time() + (budget or close_budget)
+	link.settle_loads(context, deadline)
+
 	local guard = util.create_guard()
 	local events = world_state.events
 	world_state.events = {}
@@ -167,7 +170,6 @@ local function close_world(world: World, world_state: WorldState, budget: number
 	world_state.pending_puts = {}
 	world_state.pending_root_puts = {}
 
-	local deadline = os.time() + (budget or close_budget)
 	util.join_all(detached.sessions, function(loaded)
 		unload_until(loaded, deadline)
 	end)

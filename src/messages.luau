@@ -1,3 +1,7 @@
+local types = require("./types")
+
+type BatchKey = types.BatchKey
+
 local function prefixed(message: string): string
 	return `miumiu: {message}`
 end
@@ -334,8 +338,13 @@ local errors = table.freeze({
 })
 
 local warnings = table.freeze({
-	batch_refused = function(id: string, keys: { string }, message: string)
-		return prefixed(`batch {id} on "{table.concat(keys, '", "')}" refused and rolled back: {message}`)
+	batch_refused = function(id: string, keys: { BatchKey }, message: string)
+		local named: { string } = {}
+		for _, held in keys do
+			table.insert(named, held.key)
+		end
+
+		return prefixed(`batch {id} on "{table.concat(named, '", "')}" refused and rolled back: {message}`)
 	end,
 	rollback_failed = function(id: string, err: unknown)
 		return prefixed(`rollback of batch {id} threw and may be incomplete: {err}`)

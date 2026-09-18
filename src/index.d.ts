@@ -136,20 +136,26 @@ declare namespace miumiu {
 	export type PeriodConfig = number | { length: number; epoch?: number } | ((now: number) => Period);
 
 	/** `map` of an ordered store: the integer the OrderedDataStore holds for the field's stored form, or `undefined` to leave the key unranked. The default floors a number and leaves anything else unranked. A negative or non-finite result is unranked with a warning. Must not yield. */
-	export type Map<S = unknown> = (stored: S) => number | undefined;
+	export type ScoreMap<S = unknown> = (stored: S) => number | undefined;
 
 	/** `on_period_change` of an ordered store: runs for the keys that placed within `period_threshold` of a finished period's ranking, exactly once per key and period across every server, on the loaded entity of whichever holder took the change. A record that skipped periods gets one call per period, in order, and `value` is the field as that period held it. Every call of one change runs inside one batch that also carries the library's claim, so the writes it makes (a reward) land with the claim or not at all; a throw is warned and a later load runs it again. Must not yield. The library knows entities, not players: map the entity back to its `Player` yourself. */
 	export type OnPeriodChange<S = unknown> = (world: World, entity: Entity, value: S, place: number, period: number) => void;
 
-	/** `meta(entity, miumiu.ordered, config)` plus `meta(entity, pair(miumiu.field_of, collection))`: the entity's `Name` (at most 40 characters, and its period suffix must fit the 50-character DataStore limit) names the OrderedDataStore that ranks `component`, a root field of that collection, by `map` of its stored form. With `period` the store is per period (`name_index`) and the field resets to its initial when a record crosses into a new one, unless `reset` is `false`, which keeps the field across the crossing so each period's ranking holds the value as it stands (a monthly board of a lifetime total) and lets the store share its field with others, since it resets nothing; `period_threshold` (default 10) is how many ranks `on_period_change` resolves and `poll_interval` (default 60) how many seconds after a period's end its final ranking is read. `S` is the field's stored form. A field this config does not know fails the schema build. */
+	/** `meta(entity, miumiu.ordered, config)` plus `meta(entity, pair(miumiu.field_of, collection))`: the entity's `Name` (at most 40 characters, and its period suffix must fit the 50-character DataStore limit) names the OrderedDataStore that ranks `component`, a root field of that collection, by `map` of its stored form (see `ScoreMap`). With `period` the store is per period (`name_index`) and the field resets to its initial when a record crosses into a new one, unless `reset` is `false`, which keeps the field across the crossing so each period's ranking holds the value as it stands (a monthly board of a lifetime total) and lets the store share its field with others, since it resets nothing; `period_threshold` (default 10) is how many ranks `on_period_change` resolves and `poll_interval` (default 60) how many seconds after a period's end its final ranking is read. `S` is the field's stored form. A field this config does not know fails the schema build. */
 	export interface OrderedConfig<S = unknown> {
 		component: Entity<any>;
 		period?: PeriodConfig;
 		reset?: boolean;
-		map?: Map<S>;
+		map?: ScoreMap<S>;
 		period_threshold?: number;
 		poll_interval?: number;
 		on_period_change?: OnPeriodChange<S>;
+	}
+
+	/** One key a batch wrote, named by the collection it belongs to: two collections can use the same key string. */
+	export interface BatchKey {
+		collection: Entity;
+		key: string;
 	}
 
 	/** One ranked key. */
@@ -206,7 +212,7 @@ declare namespace miumiu {
 		/** What the function returned, available as soon as `batch` returns. A nested call returns the outer handle, so it reports the outer function's result. `undefined` for a batch refused on a closed world, whose function never ran. */
 		get_result(): T;
 		/** The stored keys the batch touched, in the order they were first written; empty for a batch that captured nothing. Available as soon as `batch` returns. */
-		get_keys(): readonly string[];
+		get_keys(): readonly BatchKey[];
 		/** True once landed or refused. */
 		is_settled(): boolean;
 		/** Connect to `landed` or `refused`; fires at once if already settled. Returns a disconnect. Callbacks are pcalled and a throw is warned, never raised. */
@@ -253,7 +259,7 @@ declare namespace miumiu {
 
 	/** Drain queued link/unlink/load/pull events into the world. Call every Heartbeat. No-op after `close`. Unlink, then `step`, then delete the entity: a root deleted while linked keeps its record, and its owned children are deleted with it on the next `step`. */
 	export function step(world: World): void;
-	/** Unload every session and stop stepping. The first thing it does is detach every link, so write leave-time state before calling it or in a `writing` hook; a saveable write made after it began is dropped. Yields until every final write lands or `budget` seconds (default 25) pass. Call from `BindToClose`. */
+	/** Unload every session and stop stepping. The first thing it does is detach every link, so write leave-time state before calling it or in a `writing` hook; a saveable write made after it began is dropped. Yields until every final write lands or `budget` seconds (default 25) pass, and a second call on the same world joins the first rather than returning early. A load still in flight is cancelled, unless it owes a child pair claimed while its root was deleted, which the budget waits out so the pair is written. Call from `BindToClose`. */
 	export function close(world: World, budget?: number): void;
 	/** The open session behind `pair(data_link, collection) = key`, or undefined while loading, failed, unlinked or writing its final record after an unlink. `collection` is the collection tag. */
 	export function get_session(world: World, collection: Entity, key: string): Session | undefined;

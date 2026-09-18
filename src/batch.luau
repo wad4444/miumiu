@@ -22,6 +22,7 @@ type World = types.World
 type Entity<T = nil> = types.Entity<T>
 type Batch = types.Batch
 type Capture = types.Capture
+type BatchKey = types.BatchKey
 type CaptureEntry = types.CaptureEntry
 type Context = types.Context
 type Data = types.Data
@@ -353,10 +354,10 @@ local function shared_config(entries: { CaptureEntry }, id: string): ResolvedCol
 	return first
 end
 
-local function keys_of(entries: { CaptureEntry }): { string }
-	local keys: { string } = {}
+local function keys_of(entries: { CaptureEntry }): { BatchKey }
+	local keys: { BatchKey } = {}
 	for _, entry in entries do
-		table.insert(keys, entry.session:get_key())
+		table.insert(keys, { collection = entry.session:get_collection(), key = entry.session:get_key() })
 	end
 
 	return keys

@@ -607,8 +607,9 @@ end)
   refused means the group is dropped from every session, the world rolled back (values
   the batch still holds) and a warning when nothing hooked or awaited the handle in the
   same frame. The handle: `get_outcome` (`pending`, `landed`, `refused` with the
-  message), `get_result` (what the function returned), `get_keys` (the stored keys it
-  touched), `is_settled`, `silence` (accept a refusal without the unhooked warning),
+  message), `get_result` (what the function returned), `get_keys` (the keys it
+  touched, each as `{ collection, key }`, since two collections can use one key string),
+  `is_settled`, `silence` (accept a refusal without the unhooked warning),
   `hook(landed | refused)` (fires at once when
   already settled, pcalled and warned like session hooks), `await` (yields until settled
   and returns the outcome, never throws: the durability point). A nested `batch` or `delta`
@@ -815,14 +816,25 @@ miumiu.wipe(world, c, key)             -> one write: empty record, every stored 
                                           re-initialises its entities, an unloaded key is
                                           wiped straight in the store; a failed write
                                           throws and keeps everything
-miumiu.close(world, budget?)           -> cancel loads, unload every session, disconnect
-                                          listeners, reset; yields until done; every
+miumiu.close(world, budget?)           -> wait out the loads that owe a stashed child
+                                          put, cancel the rest, unload every session,
+                                          disconnect listeners, reset; yields until
+                                          done; a second call joins the first; every
                                           later step is a no-op
 ```
 
 A link without a string key, or whose collection fails to resolve, gets
 `pair(data_error, c)` at the next `step` and nothing else. Setting the link to the key it
 already has is a no-op.
+
+A child pair claimed under a root whose load is still in flight is held as a stashed
+put, and the load that lands consumes it (Children). That gives `close` an invariant to
+keep: **every stashed child put is journaled into its key's session, or abandoned with
+the record untouched, before `close` returns** - it is never dropped while the load that
+would have written it is still running. So `close` waits, inside its budget, for any load
+still in flight while a stashed put is owed, and only then drains the `loaded` events;
+loads that owe nothing are cancelled as before. A budget that runs out abandons the wait,
+and the put with it, rather than holding the shutdown open.
 
 `close` collects every session it can reach: those behind loaded links, those whose
 `loaded` event is still queued, and every session an unlink handed to its final write

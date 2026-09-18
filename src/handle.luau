@@ -6,6 +6,7 @@ local messages = require("./messages")
 local symbol = require("./symbol")
 
 type BatchInternal = types.BatchInternal
+type BatchKey = types.BatchKey
 type BatchPhase = types.BatchPhase
 type Callback = types.Callback
 type Outcome = types.Outcome
@@ -23,7 +24,7 @@ local function get_result(self: BatchInternal): any
 	return if phase.kind == "held" then phase.result else nil
 end
 
-local function get_keys(self: BatchInternal): { string }
+local function get_keys(self: BatchInternal): { BatchKey }
 	return self.internal_keys
 end
 
@@ -100,7 +101,7 @@ local function enter(self: BatchInternal)
 	self.internal_values.phase = { kind = "running" }
 end
 
-local function hold(self: BatchInternal, result: any, keys: { string })
+local function hold(self: BatchInternal, result: any, keys: { BatchKey })
 	self.internal_values.phase = { kind = "held", result = result }
 	self.internal_keys = table.freeze(table.clone(keys))
 end

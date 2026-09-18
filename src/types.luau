@@ -195,7 +195,7 @@ export type PeriodConfig = number | { length: number, epoch: number? } | PeriodF
 
 export type Map = (stored: any) -> number?
 
-export type OnPeriodChange = (world: World, entity: Entity, value: any, place: number?, period: number) -> ()
+export type OnPeriodChange = (world: World, entity: Entity, value: any, place: number, period: number) -> ()
 
 export type OrderedConfig = {
 	component: Entity<any>,
@@ -225,7 +225,9 @@ export type OrderedStore = {
 
 export type Push = { name: string, score: number? }
 
-export type Owed = { period: number, value: any }
+export type Owed = { from: number, last: number, value: any, taken: string?, taken_at: number? }
+
+export type Claim = { id: string, timeout: number }
 
 export type OrderedRecord = { period: number?, pushed: number?, owed: Owed? }
 
@@ -233,7 +235,9 @@ export type Rolled = { state: State, ops: { Op }, pushes: { Push }, resets: { [s
 
 export type Periods = { [string]: number }
 
-export type Placing = { store: OrderedStore, value: any, place: number?, period: number }
+export type PeriodPlace = { period: number, value: any, place: number }
+
+export type Placing = { store: OrderedStore, from: number, periods: { PeriodPlace } }
 
 export type OrderedEntry = { key: string, score: number }
 
@@ -444,6 +448,7 @@ export type CollectionState = {
 	config: ResolvedCollectionConfig,
 	store: DataStore,
 	ordered: { OrderedStore },
+	holder: string,
 }
 
 export type Mutex = {
@@ -556,6 +561,7 @@ export type SessionInternal = Session & {
 	symbol: Symbol,
 	internal_values: {
 		key: string,
+		id: string,
 		status: SessionStatus,
 		version: number,
 		written: string?,

@@ -379,10 +379,17 @@ local function open_store(backend: Backend): DataStore
 	return datastore.open(backend.service, backend.name)
 end
 
+local holders = 0
+
+local function next_holder(): string
+	holders += 1
+	return `holder-{holders}`
+end
+
 local function open_session(backend: Backend, key: string, overrides: Overrides?): SessionInternal
 	local config = create_config(backend, overrides)
 	local loaded = session.load_session(
-		{ config = config, store = open_store(backend), ordered = {} },
+		{ config = config, store = open_store(backend), ordered = {}, holder = next_holder() },
 		key,
 		function(truth)
 			return truth

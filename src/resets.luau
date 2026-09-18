@@ -28,22 +28,19 @@ end
 
 local function run_one(context: Context, loaded: SessionInternal, entity: Entity, name: string, placing: Placing)
 	local world = context.world
-	local owed = rankings.owed_of(loaded:get_truth(), name)
-	if owed == nil or owed.period ~= placing.period then
-		loaded:forget_placing(name, placing.period, false)
-		return
-	end
 	local on_period_change = placing.store.on_period_change :: OnPeriodChange
 	local ok, err = pcall(function()
 		local handle = batch.batch(world, function()
-			on_period_change(world, entity, placing.value, placing.place, placing.period)
+			for _, placed in placing.periods do
+				on_period_change(world, entity, placed.value, placed.place, placed.period)
+			end
 			capture.record_ops(context, loaded, {
 				{ kind = "drop", key = rankings.record_key, path = { name, "owed" }, at = os.time() },
 			})
 		end)
 		handle:hook(hooks.refused, function() end)
 	end)
-	loaded:forget_placing(name, placing.period, not ok)
+	loaded:forget_placing(name, placing.from, not ok)
 	if not ok then
 		logging.warn(messages.warnings.period_change_failed(loaded:get_key(), name, err))
 	end

@@ -291,9 +291,7 @@ const weekly_config: OrderedConfig<number> = {
 	period_threshold: 10,
 	poll_interval: 60,
 	on_period_change: (world, entity, value, place, period) => {
-		if (place !== undefined) {
-			world.set(entity, money, (world.get(entity, money) ?? 0) + value * (11 - place));
-		}
+		world.set(entity, money, (world.get(entity, money) ?? 0) + value * (11 - place));
 		print(period);
 	},
 };

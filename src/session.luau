@@ -14,6 +14,7 @@ local symbol = require("./symbol")
 local util = require("./util")
 
 type Callback = types.Callback
+type Claim = types.Claim
 type Closure = types.Closure
 type CollectionState = types.CollectionState
 type Data = types.Data
@@ -445,6 +446,13 @@ local function build_record(self: SessionInternal, record: StoredRecord, landing
 	return next_record
 end
 
+local function claim_of(self: SessionInternal): Claim?
+	if self.internal_values.status.kind ~= "open" then
+		return nil
+	end
+	return { id = self.internal_collection.holder, timeout = self.internal_collection.config.commit_timeout }
+end
+
 local function merge(self: SessionInternal, old: StoredRecord?): Merge
 	local groups = table.clone(self.internal_unwritten)
 	for _, group in groups do
@@ -475,7 +483,7 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 	local landed = record.landed or {}
 	local landing =
 		land_groups({ truth = resolution.truth, stamps = resolution.stamps }, resolution.pending, landed, groups, now)
-	local rolled = rankings.roll(landing.state, self.internal_collection.ordered, now)
+	local rolled = rankings.roll(landing.state, self.internal_collection.ordered, now, claim_of(self))
 	landing.state = rolled.state
 
 	local unchanged = landing.landed == landed
@@ -545,7 +553,7 @@ local function run_read(self: SessionInternal, retry: RetryConfig): Pull?
 		return nil
 	end
 	local read_state = if record then state_of(record) else empty_state()
-	if #rankings.roll(read_state, collection.ordered, os.time()).ops > 0 then
+	if #rankings.roll(read_state, collection.ordered, os.time(), claim_of(self)).ops > 0 then
 		return nil
 	end
 	local merged = merge(self, record)
@@ -658,32 +666,42 @@ local function push_scores(self: SessionInternal, retry: RetryConfig)
 	end
 end
 
+local function drop_owed(self: SessionInternal, name: string)
+	journal(self, {
+		id = util.create_guid(),
+		ops = { { kind = "drop", key = rankings.record_key, path = { name, "owed" }, at = os.time() } },
+		kind = "single",
+	})
+end
+
 local function resolve_owed(self: SessionInternal, retry: RetryConfig)
 	local collection = self.internal_collection
-	local key = self.internal_values.key
+	local values = self.internal_values
 	local truth = get_truth(self)
 	local now = os.time()
-	if self.internal_values.status.kind ~= "open" then
+	if values.status.kind ~= "open" then
 		return
 	end
 	for _, store in collection.ordered do
 		local name = store.name
-		if store.on_period_change == nil or self.internal_placings[name] then
-			continue
-		end
 		local owed = rankings.owed_of(truth, name)
-		if owed == nil or self.internal_failed_changes[name] == owed.period then
+		if owed == nil or owed.taken ~= collection.holder then
+			self.internal_placings[name] = nil
 			continue
 		end
-		if not rankings.is_due(store, owed.period, now) then
+		if self.internal_placings[name] or self.internal_failed_changes[name] == owed.from then
 			continue
 		end
-		local ok, placing = pcall(rankings.resolve, collection.config, retry, store, key, owed, now)
-		if ok then
-			self.internal_placings[name] = placing
-		else
-			logging.warn(messages.warnings.top_failed(key, name, placing))
+		local ok, placing = pcall(rankings.resolve, collection.config, retry, store, values.key, owed, now)
+		if not ok then
+			logging.warn(messages.warnings.top_failed(values.key, name, placing))
+			continue
 		end
+		if #placing.periods == 0 then
+			drop_owed(self, name)
+			continue
+		end
+		self.internal_placings[name] = placing
 	end
 end
 
@@ -867,6 +885,7 @@ local template = {
 	symbol = session_symbol,
 	internal_values = {
 		key = "",
+
 		status = table.freeze({ kind = "open" }) :: SessionStatus,
 		version = 0,
 		written = nil :: string?,

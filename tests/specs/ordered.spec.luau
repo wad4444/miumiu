@@ -428,21 +428,24 @@ return function()
 			expect(changes[1].place).to.equal(1)
 		end)
 
-		it("gives no place beyond period_threshold and still claims the change", function()
+		it("does not run beyond period_threshold and settles the change without a callback", function()
 			local t = setup()
 			local clock = create_clock(1)
 			local changes: { Change } = {}
 			declare_weekly(t, clock, changes, { period_threshold = 1 })
-			local p1 = utils.link_entity(t, "p1", { money = 5 })
-			utils.link_entity(t, "p2", { money = 9 })
+			utils.link_entity(t, "p1", { money = 5 })
+			local p2 = utils.link_entity(t, "p2", { money = 9 })
 			clock.index = 2
 			utils.session_of(t, "p1"):sync()
 			miumiu.step(t.world)
-			expect(#changes).to.equal(1)
-			expect(changes[1].entity).to.equal(p1)
-			expect(changes[1].place).to.equal(nil)
+			expect(#changes).to.equal(0)
 			utils.session_of(t, "p1"):sync()
 			expect(record_of(t, "p1", "weekly").owed).to.equal(nil)
+			utils.session_of(t, "p2"):sync()
+			miumiu.step(t.world)
+			expect(#changes).to.equal(1)
+			expect(changes[1].entity).to.equal(p2)
+			expect(changes[1].place).to.equal(1)
 		end)
 
 		it("waits poll_interval after the period's end, or for the period after that", function()
@@ -457,10 +460,10 @@ return function()
 			session:sync()
 			miumiu.step(t.world)
 			expect(#changes).to.equal(0)
-			expect(record_of(t, "p1", "weekly").owed.period).to.equal(1)
+			expect(record_of(t, "p1", "weekly").owed.from).to.equal(1)
 			clock.index = 3
 			session:sync()
-			expect(record_of(t, "p1", "weekly").owed.period).to.equal(1)
+			expect(record_of(t, "p1", "weekly").owed.from).to.equal(1)
 			miumiu.step(t.world)
 			expect(#changes).to.equal(1)
 			expect(changes[1].period).to.equal(1)
@@ -492,7 +495,7 @@ return function()
 			expect(attempts).to.equal(1)
 			expect(utils.warning_count(t.backend, "threw and was rolled back")).to.equal(1)
 			session:sync()
-			expect(record_of(t, "p1", "weekly").owed.period).to.equal(1)
+			expect(record_of(t, "p1", "weekly").owed.from).to.equal(1)
 			miumiu.step(t.world)
 			expect(attempts).to.equal(1)
 			t.world:remove(player, t.link)
@@ -519,7 +522,7 @@ return function()
 			expect(function()
 				session:sync()
 			end).to.throw("newer server")
-			expect(record_of(t, "p1", "weekly").owed.period).to.equal(1)
+			expect(record_of(t, "p1", "weekly").owed.from).to.equal(1)
 		end)
 
 		it("does not run on a shallow link but does on a plain link of the same key", function()
@@ -880,7 +883,7 @@ return function()
 			session:sync()
 			clock.index = 3
 			session:sync()
-			expect(record_of(t, "p1", "weekly").owed.period).to.equal(1)
+			expect(record_of(t, "p1", "weekly").owed.from).to.equal(1)
 			expect(record_of(t, "p1", "weekly").period).to.equal(3)
 			miumiu.step(t.world)
 			expect(#changes).to.equal(1)
@@ -1069,7 +1072,7 @@ return function()
 			session:sync()
 			clock.index = 3
 			session:sync()
-			expect(record_of(t, "p1", "weekly").owed.period).to.equal(2)
+			expect(record_of(t, "p1", "weekly").owed.from).to.equal(2)
 			miumiu.step(t.world)
 			expect(runs).to.equal(2)
 		end)
@@ -1197,7 +1200,7 @@ return function()
 			miumiu.step(t.world)
 			expect(utils.wait_closed(session)).to.equal(true)
 			expect(t.backend.calls.GetSortedAsync).to.equal(nil)
-			expect(record_of(t, "p1", "weekly").owed.period).to.equal(1)
+			expect(record_of(t, "p1", "weekly").owed.from).to.equal(1)
 			expect(runs).to.equal(0)
 			utils.link_entity(t, "p1")
 			miumiu.step(t.world)
@@ -1219,7 +1222,10 @@ return function()
 				end,
 			})
 			t.backend:seed("p1", {
-				data = { money = 5, [bookkeeping] = { weekly = { period = 2, owed = { period = 1, value = 5 } } } },
+				data = {
+					money = 5,
+					[bookkeeping] = { weekly = { period = 2, owed = { from = 1, last = 1, value = 5 } } },
+				},
 			})
 			local player = utils.link_entity(t, "p1")
 			miumiu.step(t.world)
@@ -1227,7 +1233,144 @@ return function()
 			expect(t.world:get(player, t.money)).to.equal(5)
 			expect(runs).to.equal(0)
 			expect(t.backend.calls.GetSortedAsync).to.equal(nil)
-			expect(record_of(t, "p1", "weekly").owed.period).to.equal(1)
+			expect(record_of(t, "p1", "weekly").owed.from).to.equal(1)
+		end)
+
+		it("runs the change on one holder only, and on the other once its lease expires", function()
+			local t = setup()
+			local clock = create_clock(1)
+			local runs = 0
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.money,
+				period = clock.period,
+				poll_interval = 0,
+				on_period_change = function()
+					runs += 1
+				end,
+			})
+			utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			clock.index = 2
+			session:sync()
+			miumiu.step(t.world)
+			expect(runs).to.equal(1)
+
+			local other_world = jecs.world()
+			local other_collection = utils.create_collection(other_world, t.backend, {
+				pull_interval = never,
+				commit_timeout = utils.timings.window,
+			})
+			local other_money = utils.declare_saveable(other_world, "component", "money", { other_collection })
+			other_world:set(other_money, other_money, 0)
+			local other_runs = 0
+			utils.declare_ordered(other_world, other_collection, "weekly", {
+				component = other_money,
+				period = clock.period,
+				poll_interval = 0,
+				on_period_change = function()
+					other_runs += 1
+				end,
+			})
+			local mirror = other_world:entity()
+			other_world:set(mirror, jecs.pair(miumiu.data_link, other_collection), "p1")
+			expect(utils.wait_until(function()
+				miumiu.step(other_world)
+				return other_world:has(mirror, jecs.pair(miumiu.data_loaded, other_collection))
+			end)).to.equal(true)
+			miumiu.step(other_world)
+			expect(other_runs).to.equal(0)
+			expect(record_of(t, "p1", "weekly").owed.from).to.equal(1)
+			miumiu.close(other_world, 0)
+		end)
+
+		it("takes over a change whose holder went away without running it", function()
+			local t = setup()
+			local clock = create_clock(2)
+			local runs = 0
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.money,
+				period = clock.period,
+				poll_interval = 0,
+				on_period_change = function(_, _, value, place, period)
+					runs += 1
+					expect(value).to.equal(5)
+					expect(place).to.equal(1)
+					expect(period).to.equal(1)
+				end,
+			})
+			t.backend:ordered("weekly_1"):SetAsync("p1", 5)
+			t.backend:seed("p1", {
+				data = {
+					money = 0,
+					[bookkeeping] = {
+						weekly = { period = 2, owed = { from = 1, last = 1, value = 5, taken = "gone", taken_at = 0 } },
+					},
+				},
+			})
+			utils.link_entity(t, "p1")
+			miumiu.step(t.world)
+			expect(runs).to.equal(1)
+			utils.session_of(t, "p1"):sync()
+			expect(record_of(t, "p1", "weekly").owed).to.equal(nil)
+		end)
+
+		it("runs once for every finished period a record skipped, in order", function()
+			local t = setup()
+			local clock = create_clock(1)
+			local changes: { { period: number, value: any, place: number } } = {}
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.money,
+				period = clock.period,
+				poll_interval = 0,
+				on_period_change = function(_, _, value, place, period)
+					table.insert(changes, { period = period, value = value, place = place })
+				end,
+			})
+			utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			for index = 2, 4 do
+				t.backend:ordered(`weekly_{index}`):SetAsync("p1", index * 10)
+			end
+			clock.index = 5
+			session:sync()
+			miumiu.step(t.world)
+			expect(#changes).to.equal(4)
+			expect(changes[1].period).to.equal(1)
+			expect(changes[1].value).to.equal(5)
+			expect(changes[1].place).to.equal(1)
+			for index = 2, 4 do
+				expect(changes[index].period).to.equal(index)
+				expect(changes[index].value).to.equal(0)
+				expect(changes[index].place).to.equal(1)
+			end
+			session:sync()
+			expect(record_of(t, "p1", "weekly").owed).to.equal(nil)
+			expect(record_of(t, "p1", "weekly").period).to.equal(5)
+		end)
+
+		it("keeps the value a store that never resets held through every skipped period", function()
+			local t = setup()
+			local clock = create_clock(1)
+			local changes: { { period: number, value: any } } = {}
+			utils.declare_ordered(t.world, t.player_data, "monthly", {
+				component = t.money,
+				period = clock.period,
+				reset = false,
+				poll_interval = 0,
+				on_period_change = function(_, _, value, _, period)
+					table.insert(changes, { period = period, value = value })
+				end,
+			})
+			utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			t.backend:ordered("monthly_2"):SetAsync("p1", 5)
+			clock.index = 3
+			session:sync()
+			miumiu.step(t.world)
+			expect(#changes).to.equal(2)
+			expect(changes[1].value).to.equal(5)
+			expect(changes[2].period).to.equal(2)
+			expect(changes[2].value).to.equal(5)
 		end)
 	end)
 end

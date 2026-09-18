@@ -18,10 +18,12 @@ type OrderedEntry = types.OrderedEntry
 type OrderedRecord = types.OrderedRecord
 type OrderedStore = types.OrderedStore
 type Owed = types.Owed
+type Claim = types.Claim
 type Period = types.Period
 type PeriodFunction = types.PeriodFunction
 type Periods = types.Periods
 type PeriodState = types.PeriodState
+type PeriodPlace = types.PeriodPlace
 type Placing = types.Placing
 type Push = types.Push
 type ResolvedCollectionConfig = types.ResolvedCollectionConfig
@@ -242,7 +244,7 @@ local function stored_record(truth: Data, name: string): OrderedRecord
 		record.pushed = nil
 	end
 	local owed: any = record.owed
-	if type(owed) ~= "table" or type(owed.period) ~= "number" then
+	if type(owed) ~= "table" or type(owed.from) ~= "number" or type(owed.last) ~= "number" then
 		record.owed = nil
 	end
 	return record
@@ -279,7 +281,25 @@ local function stamped_put(state: State, path: { string }, value: any, now: numb
 	return { kind = "put", key = record_key, path = path, value = value, at = at }
 end
 
-local function roll_store(store: OrderedStore, now: number, rolled: Rolled)
+local function is_due(store: OrderedStore, owed: Owed, period: Period, now: number): boolean
+	return period.index > owed.from + 1 or now >= period.start + store.poll_interval
+end
+
+local function claim_owed(store: OrderedStore, owed: Owed, period: Period, now: number, claim: Claim?): Owed?
+	if claim == nil then
+		return nil
+	end
+	local held = owed.taken ~= nil and (owed.taken == claim.id or now - (owed.taken_at or 0) <= claim.timeout)
+	if held or not is_due(store, owed, period, now) then
+		return nil
+	end
+	local taken = table.clone(owed)
+	taken.taken = claim.id
+	taken.taken_at = now
+	return taken
+end
+
+local function roll_store(store: OrderedStore, now: number, rolled: Rolled, claim: Claim?)
 	local current = current_period(store, now)
 	if current.kind == "failed" then
 		return
@@ -293,11 +313,21 @@ local function roll_store(store: OrderedStore, now: number, rolled: Rolled)
 	local value = if stored == nil then store.initial else stored
 	local score = if value == nil then nil else score_of(store, value)
 	if index ~= nil and record.period ~= nil and record.period < index then
-		if score ~= record.pushed then
+		local ending = record.pushed == nil and (score == nil or score == store.initial_score)
+		if score ~= record.pushed and not ending then
 			table.insert(rolled.pushes, { name = store_name(store, record.period), score = score })
 		end
-		if store.on_period_change and record.owed == nil then
-			next_record.owed = { period = record.period, value = ops.deep_copy(value) }
+		if store.on_period_change then
+			local owed = record.owed
+			next_record.owed = if owed
+				then {
+					from = owed.from,
+					last = index - 1,
+					value = owed.value,
+					taken = owed.taken,
+					taken_at = owed.taken_at,
+				}
+				else { from = record.period, last = index - 1, value = ops.deep_copy(value) }
 		end
 		next_record.period = index
 		next_record.pushed = nil
@@ -319,6 +349,10 @@ local function roll_store(store: OrderedStore, now: number, rolled: Rolled)
 		end
 		table.insert(rolled.pushes, { name = store_name(store, next_record.period), score = score })
 	end
+	local owed = next_record.owed
+	if owed and current.kind == "period" then
+		next_record.owed = claim_owed(store, owed, current.period, now, claim) or owed
+	end
 	if
 		next_record.period == record.period
 		and next_record.pushed == record.pushed
@@ -332,10 +366,10 @@ local function roll_store(store: OrderedStore, now: number, rolled: Rolled)
 	rolled.state = ops.replay(state, { put })
 end
 
-local function roll(state: State, ordered: { OrderedStore }, now: number): Rolled
+local function roll(state: State, ordered: { OrderedStore }, now: number, claim: Claim?): Rolled
 	local rolled: Rolled = { state = state, ops = {}, pushes = {}, resets = {} }
 	for _, store in ordered do
-		roll_store(store, now, rolled)
+		roll_store(store, now, rolled, claim)
 	end
 	return rolled
 end
@@ -478,14 +512,6 @@ local function place_of(entries: { OrderedEntry }, key: string): number?
 	return nil
 end
 
-local function is_due(store: OrderedStore, owed_period: number, now: number): boolean
-	local current = current_period(store, now)
-	if current.kind ~= "period" then
-		return false
-	end
-	return current.period.index > owed_period + 1 or now >= current.period.start + store.poll_interval
-end
-
 local function resolve(
 	config: ResolvedCollectionConfig,
 	retry: RetryConfig,
@@ -494,8 +520,16 @@ local function resolve(
 	owed: Owed,
 	now: number
 ): Placing
-	local entries = top(config, retry, store, owed.period, store.period_threshold, false, now)
-	return { store = store, value = owed.value, place = place_of(entries, key), period = owed.period }
+	local periods: { PeriodPlace } = {}
+	for period = owed.from, owed.last do
+		local entries = top(config, retry, store, period, store.period_threshold, false, now)
+		local place = place_of(entries, key)
+		if place ~= nil then
+			local value = if period == owed.from or not store.reset then owed.value else store.initial
+			table.insert(periods, { period = period, value = ops.deep_copy(value), place = place })
+		end
+	end
+	return { store = store, from = owed.from, periods = periods }
 end
 
 return table.freeze({
@@ -511,6 +545,5 @@ return table.freeze({
 	score_at = score_at,
 	unrank = unrank,
 	top = top,
-	is_due = is_due,
 	resolve = resolve,
 })

@@ -448,10 +448,12 @@ next write (`map` turns a non-number field into the integer to rank by; the defa
 floors a number). With `period` the store is per period, `weekly_coins_2831`: a new
 period starts on an empty store, the previous one stays readable, and the field resets
 to its initial when a record first pulls in the new period. `on_period_change` runs once
-per key and finished period, on the player's next load, with the field's final value
-and the key's place among the top `period_threshold` (nil beyond them), inside a batch
-that claims the change, so the reward it writes lands with the claim or not at all.
-Omit `period` for an all-time ranking.
+once per key and finished period, for the players who placed within `period_threshold`,
+with the field's value for that period and their rank, inside a batch that claims the
+change, so the reward it writes lands with the claim or not at all. The claim is taken by
+a write, so exactly one server runs it however many hold the key, and a player who missed
+three periods gets one call per period they placed in, in order. Omit `period` for an
+all-time ranking.
 
 `reset = false` gives a periodic store that does not clear its field: each period gets
 its own ranking, but a record entering one keeps the value it had, so the board shows

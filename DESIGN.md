@@ -260,9 +260,9 @@ jecs.meta(weekly_coins, miumiu.ordered, {
 | `period` | optional. `seconds`, `{ length, epoch? }` (`epoch` defaults to 0, so a 7-day period rolls over Thursday 00:00 UTC) or `function(now) -> Period`, with `Period = { index, start, finish }`; `index` must never decrease as `now` grows. Absent means all-time |
 | `reset` | optional, needs `period`; default `true`. `false` keeps the field across a crossing, so each period ranks the value as it stands rather than what was earned in it |
 | `map` | optional. `function(stored) -> integer?` over the stored form of the field; the default is `math.floor` of a number and nil for anything else. Nil is "not ranked" |
-| `on_period_change` | optional, needs `period`. `function(world, entity, value, place, period)`, run once per key and finished period, on the key's next load: `value` is the field's final stored value for that period, `place` its rank in the top `period_threshold` of the ranking or nil beyond them, `period` the finished period's index |
-| `period_threshold` | how many ranks `on_period_change` resolves; default 10 |
-| `poll_interval` | seconds after a period's end before its ranking is read for `on_period_change`; default 60 |
+| `on_period_change` | optional, needs `period`. `function(world, entity, value, place, period)`, run once per key and finished period, for the keys that placed within `period_threshold` of that period's ranking: `value` is the field as that period held it, `place` its rank, `period` the finished period's index. Every period a record skipped is delivered, in order |
+| `period_threshold` | how many ranks `on_period_change` reaches; a key below them is never called; default 10 |
+| `poll_interval` | seconds after a period's end before its ranking is read for `on_period_change`; default 60. A change whose holder never delivered it is taken over after `commit_timeout` |
 
 Its entity's `jecs.Name`, required, is the `OrderedDataStore` name: unique among the
 world's ordered stores, different from every collection's store, and at most 40
@@ -309,8 +309,9 @@ without an initial is unranked.
 
 The record keeps its ranking bookkeeping in `data["miumiu.ordered"]`, one entry per
 ordered store name: `{ period, pushed, owed }`. `period` is the index the field's value
-belongs to, `pushed` the last score pushed to the store, `owed` the finished period and
-the field's final value there, until `on_period_change` has run. An entry whose shape is
+belongs to, `pushed` the last score pushed to the store, `owed` the finished periods no
+holder has delivered yet, with the value they carry and the lease naming the holder that
+took them, until `on_period_change` has run. An entry whose shape is
 wrong (a hand-written record, a newer build's field the reader does not know) is read as
 if the bad fields were absent, never as a reason to fail the key, and the fields the
 reader does not know survive its writes. It is data like any other key
@@ -342,28 +343,45 @@ the record's writes, so they cost at most one ordered write
 per record write, on the `SetIncrementSortedAsync` budget, which nothing else in the
 library uses.
 
-Resets. When a transform rolls a record over and the store declares `on_period_change`, it
-records `owed = { period, value }`: the ending period and the field's final stored value
-in it. An open session holding such a record resolves it once the ending period has been over
-for `poll_interval` seconds (long enough for the final pushes of sessions that were dirty at
-rollover), by reading the top `period_threshold` entries of that period's ranking, once per server,
-store and period (cached; `get_top` of a finished period reads the same cache). A session
-already closing does not: the read would buy a change no `step` can run, and the next
-load makes it anyway. The next
-`step` then runs `on_period_change(world, entity, value, place, period)` on the first loaded,
-non-shallow entity of the key, `place` being the key's rank among those entries or nil
-beyond them, inside a `batch` whose group also carries a `drop` of `owed`: the
-callback's writes (a reward) and the claim land together or not at all, so a refused
-batch, a crash before the write or a throwing `on_period_change` (warned) leave it owed and the
-next load runs it again. A callback that writes nothing still journals the drop, riding
-the next write. A change the session's own truth no longer owes (another holder settled
-it, and this session has merged that) is dropped instead of run, and a callback that
-threw blocks only that period: a later one resolves normally. It runs on the stepping thread and must not yield. The library knows no
-players, only entities and keys: the game maps the entity back to its `Player`. Each
-server decides from its own read of the finished ranking, so a late push that reshuffles
-the top between two servers' reads can hand one place to two keys; `poll_interval` is the window
-against that. Absent players are not swept: `on_period_change` reaches a key when it is next
-loaded, which is when someone is there to receive the reward.
+Changes. When a transform rolls a record over and the store declares `on_period_change`,
+it records `owed = { from, last, value }`: the first finished period nobody has delivered
+yet, the last one, and the field's stored value as the crossing found it. A record that
+crosses again before its change is delivered extends `last` and keeps `from`, so a key
+away for three periods owes all three, not the newest.
+
+Delivery is exactly once per key and period, not once per holder, so it is arbitrated by
+a write rather than a read. A transform that finds an owed entry that is due, and whose
+`taken` is either absent or older than `commit_timeout`, stamps it with the holder's id
+and the time in the same `UpdateAsync` that writes the record; a second server's
+transform then sees a fresh lease and leaves it alone. Only the holder named by the
+record resolves and runs the change, and if that holder dies before running it the lease
+goes stale and the next one takes it over. A session already closing takes no lease: it
+could not run the change anyway, and the next load will. Two entities of one world linked
+to the same key share one session, so they were never at risk of running it twice.
+
+Due means the ending period has been over for `poll_interval` seconds, long enough for
+the final pushes of sessions that were dirty at the rollover. The holder then reads the
+top `period_threshold` entries of each owed period's ranking, once per server, store and
+period (cached; `get_top` of a finished period reads the same cache), and keeps the
+periods the key placed in. `on_period_change` is for the keys that placed: a period the
+key is not in the top of does not call it, and a key that placed in none settles the
+change with a `drop` and no call at all.
+
+The next `step` then runs `on_period_change(world, entity, value, place, period)` on the
+first loaded, non-shallow entity of the key, once per placed period in order, `place`
+always being a rank within `period_threshold`; the value is the field as that period held
+it, which for the first is the value the crossing found and for the rest is the initial,
+or that same value for a store that does not reset. Every call of one change runs inside
+one `batch` whose group also carries the `drop` of `owed`: the callback's writes (a
+reward) and the claim land together or not at all, so a refused batch, a crash before the
+write or a throwing `on_period_change` (warned) leave it owed and a later load runs it
+again. It runs on the stepping thread and must not yield. A callback that threw blocks
+only that change: a later period's resolves normally, and another load on the same server
+retries this one. The library knows no players, only entities and keys: the game maps the
+entity back to its `Player`. A late push that reshuffles a finished ranking after the
+holder read it changes nobody's place, since only that one read decides. Absent players
+are not swept: `on_period_change` reaches a key when it is next loaded, which is when
+someone is there to receive the reward.
 
 Reading. `miumiu.get_ordered(world, weekly_coins)` returns the `Ordered` handle behind
 the declaration (one per world and entity, built with the schema; an entity without the

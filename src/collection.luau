@@ -140,6 +140,7 @@ local function get(world: World, collection: Entity): CollectionState
 		config = config,
 		store = datastore.open(config.data_store_service, config.name),
 		ordered = ordered,
+		holder = util.create_guid(),
 	}
 	world_state.collections[collection] = created
 	return created

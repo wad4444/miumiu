@@ -9,9 +9,12 @@ score with the record's write that changed it, on the ordered store's own budget
 `period` the store is per period (`name_index`), the field resets to its initial when a
 record crosses into a new period unless `reset = false` (a per-period ranking of a value
 the crossing leaves alone, which may share its field with other stores), and
-`on_period_change(world, entity, value, place,
-period)` runs once per key and finished period on the key's next load, inside a batch
-that claims the change. `miumiu.get_ordered(world, entity)` returns the `Ordered`
+`on_period_change(world, entity, value, place, period)` runs for the keys that placed
+within `period_threshold` of a finished period's ranking, exactly once per key and period
+however many servers hold the key, inside a batch that claims the change. The claim is a
+lease taken by a write, so one holder delivers it and a holder that dies without doing so
+is taken over after `commit_timeout`; a record that skipped periods gets one call per
+period it placed in, in order. `miumiu.get_ordered(world, entity)` returns the `Ordered`
 handle (`get_top`, `get_score`, `get_period`, `get_name`), `miumiu.is_ordered` tells it
 apart. The record keeps its bookkeeping under `data["miumiu.ordered"]`; keys starting
 with `miumiu.` are reserved, for saveables, child kinds and `context.legacy`. `wipe`

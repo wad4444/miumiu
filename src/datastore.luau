@@ -22,6 +22,7 @@ local function get_fresh_options(): DataStoreGetOptions
 		options.UseCache = false
 		fresh_options = options :: any
 	end
+
 	return fresh_options :: DataStoreGetOptions
 end
 
@@ -90,6 +91,7 @@ local function update_async<T>(
 	if transform_error ~= nil then
 		error(transform_error, 0)
 	end
+
 	return result
 end
 

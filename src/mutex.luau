@@ -8,6 +8,7 @@ local function lock(self: MutexInternal)
 	if phase.kind == "closed" then
 		error(phase.reason, 0)
 	end
+
 	if phase.kind == "free" then
 		values.phase = { kind = "locked" }
 		return
@@ -35,6 +36,7 @@ local function unlock(self: MutexInternal)
 		if self.internal_values.phase.kind == "locked" then
 			self.internal_values.phase = { kind = "free" }
 		end
+
 		return
 	end
 	task.spawn(waiter, true)

@@ -573,5 +573,43 @@ return function()
 			expect(utils.wait_closed(session)).to.equal(true)
 			expect(t.backend:dump("p1").data.battery).to.equal(7)
 		end)
+
+		it("close called twice returns only once the final write landed", function()
+			local t = setup({ pull_interval = never })
+			local player = utils.link_entity(t, "p1")
+			t.world:set(player, t.money, 5)
+			t.backend:delay_next("UpdateAsync", utils.timings.window, "before")
+			task.spawn(function()
+				miumiu.close(t.world, utils.timings.long)
+			end)
+			task.wait()
+			miumiu.close(t.world, utils.timings.long)
+			local record = t.backend:dump("p1")
+			expect(record ~= nil and record.data.money == 5).to.equal(true)
+		end)
+
+		it("spends one storage attempt on a commit lookup during close", function()
+			local t = setup({
+				pull_interval = never,
+				commit_timeout = utils.timings.commit_timeout,
+				retry_attempts = 4,
+				retry_base = 0,
+			})
+			local id = utils.fresh_id("group")
+			t.backend:seed("p1", {
+				data = { money = 1 },
+				version = 1,
+				pending = { [id] = { created = os.time(), ops = { utils.set("money", 9, os.time()) } } },
+			})
+			local player = utils.link_entity(t, "p1")
+			t.world:set(player, t.money, 7)
+			local before = t.backend.calls.GetAsync or 0
+			for _ = 1, 8 do
+				t.backend:fail_next("GetAsync", "before", "commit store down")
+			end
+			miumiu.close(t.world, utils.timings.long)
+			expect(t.backend:dump("p1").data.money).to.equal(7)
+			expect((t.backend.calls.GetAsync or 0) - before).to.equal(1)
+		end)
 	end)
 end

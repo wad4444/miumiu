@@ -39,6 +39,7 @@ local function record(index: ChildIndex, entity: Entity, kind: ChildKind, parent
 		by_key = {}
 		index.by_parent[parent] = by_key
 	end
+
 	local list = by_key[kind.key]
 	if not list then
 		list = {}
@@ -52,12 +53,21 @@ local function forget(index: ChildIndex, entity: Entity): ChildRecord?
 	if not existing then
 		return nil
 	end
+
 	index.by_entity[entity] = nil
-	local by_key = index.by_parent[existing.parent]
-	local list = if by_key then by_key[existing.kind.key] else nil
+	local by_key: { [string]: { [string]: Entity } } = index.by_parent[existing.parent] or {}
+	local list = by_key[existing.kind.key]
 	if list then
 		list[existing.id] = nil
+		if next(list) == nil then
+			by_key[existing.kind.key] = nil
+		end
 	end
+
+	if next(by_key) == nil then
+		index.by_parent[existing.parent] = nil
+	end
+
 	return existing
 end
 
@@ -70,6 +80,7 @@ local function each_child(index: ChildIndex, parent: Entity, fn: (Entity, ChildR
 	if not by_key then
 		return
 	end
+
 	for _, list in by_key do
 		for _, child in list do
 			fn(child, index.by_entity[child] :: ChildRecord)
@@ -94,20 +105,24 @@ local function resolve_id(world: World, entity: Entity, kind: ChildKind): string
 	if kind.mode ~= "attached" then
 		return world:get(entity, ids.child_id)
 	end
+
 	local value = world:get(entity, kind.id)
 	if value == nil then
 		return nil
 	end
+
 	if type(value) ~= "string" and type(value) ~= "number" then
 		error(
 			messages.errors.child_id_invalid(util.describe(world, entity), describe_kind(world, kind), typeof(value)),
 			0
 		)
 	end
+
 	local id = tostring(value)
 	if string.find(id, "/", 1, true) then
 		error(messages.errors.child_id_slash(util.describe(world, entity), describe_kind(world, kind), id), 0)
 	end
+
 	return id
 end
 
@@ -130,10 +145,12 @@ local function ancestry(world_state: WorldState, entity: Entity): Ancestry?
 			end
 			return { root = current, path = path, kind = top.kind }
 		end
+
 		local link = index.by_entity[current]
 		if not link then
 			return nil
 		end
+
 		table.insert(segments, link.id)
 		table.insert(segments, link.kind.key)
 		top = link
@@ -147,6 +164,7 @@ local function lookup_entity(index: ChildIndex, root: Entity, path: { string }):
 		local list = children_of(index, current, path[position])
 		current = list[path[position + 1]]
 	end
+
 	return current
 end
 
@@ -160,6 +178,7 @@ local function removing_field(
 	if removal == nil or removal.kind ~= "field" then
 		return false
 	end
+
 	if world:has(entity, entry.id) then
 		return true
 	end
@@ -182,6 +201,7 @@ local function removing_targets(
 		removing[entry.key] = nil
 		return nil
 	end
+
 	return removal.targets
 end
 
@@ -213,6 +233,7 @@ local function pack_fields(
 			end
 		end
 	end
+
 	return packed
 end
 
@@ -248,6 +269,7 @@ local function pack(
 			packed[nested.key] = group
 		end
 	end
+
 	return packed
 end
 
@@ -257,6 +279,7 @@ local function kind_of(world: World, kinds: { ChildKind }, entity: Entity): Chil
 			return kind
 		end
 	end
+
 	return nil
 end
 
@@ -289,6 +312,7 @@ local function stored_children(data: Data, kind: ChildKind): StoredChildren
 	if type(group) ~= "table" then
 		return { named = {}, skipped = false }
 	end
+
 	local named: { [string]: Data } = {}
 	local skipped = false
 	for id, child in group do
@@ -298,6 +322,7 @@ local function stored_children(data: Data, kind: ChildKind): StoredChildren
 			skipped = true
 		end
 	end
+
 	return { named = named, skipped = skipped }
 end
 

@@ -37,17 +37,21 @@ local function is_still_ours(context: Context, undo: Undo): boolean
 	if undo.kind == "component" then
 		return world:get(undo.entity, undo.entry.id) == undo.value
 	end
+
 	if undo.kind == "relation" then
 		local packed =
 			relations.pack(world, undo.entry, undo.entity, nil, context.schema.named, context.world_state.warned)
 		return ops.deep_equal(packed, undo.value)
 	end
+
 	if undo.kind == "child" then
 		return ops.deep_equal(children.pack_fields_of(context, undo.entity, undo.child), undo.value)
 	end
+
 	if undo.kind == "pair" and undo.present and children.child_of(context.world_state.children, undo.entity) then
 		return false
 	end
+
 	return world:has(undo.entity, undo.id) ~= undo.present
 end
 
@@ -55,6 +59,7 @@ local function is_carried(undo: Undo): boolean
 	if undo.kind == "pair" or undo.kind == "mark" then
 		return false
 	end
+
 	return undo.carried
 end
 
@@ -77,40 +82,50 @@ local function undo_one(context: Context, undo: Undo, carried: boolean)
 			end
 			return
 		end
+
 		world:remove(undo.entity, undo.id)
 		if kind.mode == "attached" then
 			reconcile.reset_child(context, undo.entity, kind)
 		end
+
 		return
 	end
+
 	if undo.kind == "mark" then
 		if undo.present then
 			world:add(undo.entity, undo.id)
 		else
 			world:remove(undo.entity, undo.id)
 		end
+
 		return
 	end
+
 	if undo.kind == "child" then
 		if carried then
 			reconcile.rewrite_fields(context, undo.entity, undo.child, undo.previous)
 		else
 			reconcile.restore_fields(context, undo.entity, undo.child, undo.previous)
 		end
+
 		return
 	end
+
 	if undo.kind == "relation" then
 		reconcile.write_entry(context, undo.entity, undo.entry, undo.previous)
 		return
 	end
+
 	if undo.kind == "tag" then
 		if undo.present then
 			world:add(undo.entity, undo.id)
 		else
 			world:remove(undo.entity, undo.id)
 		end
+
 		return
 	end
+
 	reconcile.write_entry(context, undo.entity, undo.entry, undo.previous)
 end
 
@@ -118,9 +133,11 @@ local function applied_id(undo: Undo): Entity<any>?
 	if undo.kind == "pair" or undo.kind == "child" then
 		return nil
 	end
+
 	if undo.kind == "component" or undo.kind == "relation" then
 		return undo.entry.id
 	end
+
 	return undo.id
 end
 
@@ -130,6 +147,7 @@ local function collect_keys(touched: Touched, undo: Undo)
 		keys = {}
 		touched[undo.entity] = keys
 	end
+
 	if undo.kind == "component" or undo.kind == "relation" then
 		keys[undo.entry.key] = true
 	elseif undo.kind == "tag" then
@@ -150,6 +168,7 @@ local function undo_all(context: Context, captured: Capture, touched: Touched)
 		if not world:contains(undo.entity) then
 			continue
 		end
+
 		if not is_still_ours(context, undo) then
 			if undo.kind == "child" then
 				local ok, err =
@@ -169,10 +188,12 @@ local function undo_all(context: Context, captured: Capture, touched: Touched)
 				undo_one(context, undo, false)
 			end)
 		end
+
 		if not ok and first_error == nil then
 			first_error = err
 		end
 	end
+
 	if first_error ~= nil then
 		error(first_error, 0)
 	end
@@ -189,10 +210,12 @@ local function inherit_previous(mine: Undo, other: Undo)
 	if mine.entity ~= other.entity or mine.kind ~= other.kind then
 		return
 	end
+
 	if mine.kind == "child" and other.kind == "child" then
 		for key in mine.value do
 			inherit_field(mine.previous, mine.value, other.previous, key)
 		end
+
 		for key in mine.previous do
 			if mine.value[key] == nil then
 				inherit_field(mine.previous, mine.value, other.previous, key)
@@ -254,6 +277,7 @@ local function open_entries(entries: { CaptureEntry }): { CaptureEntry }
 			table.insert(open, entry)
 		end
 	end
+
 	return open
 end
 
@@ -275,9 +299,11 @@ local function rollback(context: Context, captured: Capture)
 			end
 		end
 	end
+
 	for _, entry in open_entries(captured.entries) do
 		link.resupply(context, entry.session)
 	end
+
 	if not ok then
 		error(err, 0)
 	end
@@ -323,6 +349,7 @@ local function shared_config(entries: { CaptureEntry }, id: string): ResolvedCol
 			error(messages.errors.batch_mixed_stores(id), 0)
 		end
 	end
+
 	return first
 end
 
@@ -331,6 +358,7 @@ local function keys_of(entries: { CaptureEntry }): { string }
 	for _, entry in entries do
 		table.insert(keys, entry.session:get_key())
 	end
+
 	return keys
 end
 
@@ -359,10 +387,12 @@ local function flush_single(context: Context, captured: Capture, entry: CaptureE
 	if batch:is_settled() then
 		return
 	end
+
 	local resolved, outcome = pcall(session.resolve_group, session, id, tostring(err))
 	if not resolved or batch:is_settled() then
 		return
 	end
+
 	if outcome.kind == "landed" then
 		settle(captured.entries, id)
 		land(context, captured)
@@ -379,6 +409,7 @@ local function commit_single(context: Context, captured: Capture, entry: Capture
 		fail(context, captured, id, err)
 		return
 	end
+
 	session:watch(id, function(outcome)
 		settle_single(context, captured, outcome)
 	end)
@@ -389,7 +420,7 @@ end
 
 local function mark_or_confirm(config: ResolvedCollectionConfig, id: string, created: number)
 	local ok, err = pcall(commit.mark, config, id)
-	if ok or commit.fetch(config, id, created) == "committed" then
+	if ok or commit.fetch(config, config, id, created) == "committed" then
 		return
 	end
 	error(err, 0)
@@ -425,6 +456,7 @@ local function commit_capture(context: Context, captured: Capture)
 		land(context, captured)
 		return
 	end
+
 	if #entries == 1 then
 		commit_single(context, captured, entries[1])
 		return
@@ -443,6 +475,7 @@ local function run(world: World, fn: () -> any, is_delta: boolean): Batch
 		if not ok then
 			error(err, 0)
 		end
+
 		return outer.batch
 	end
 
@@ -454,6 +487,7 @@ local function run(world: World, fn: () -> any, is_delta: boolean): Batch
 		callbacks.fire(world_state.hooks, hooks.refused, refused, refused, message)
 		return refused
 	end
+
 	local context = contexts.create_context(world)
 	listeners.install(context)
 	local captured: Capture = {
@@ -475,6 +509,7 @@ local function run(world: World, fn: () -> any, is_delta: boolean): Batch
 			ok, result = false, err
 		end
 	end
+
 	if not ok then
 		try_rollback(context, captured, captured.id)
 		forget_capture(context, captured)

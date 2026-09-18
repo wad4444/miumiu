@@ -34,8 +34,10 @@ local function index_of(self: OrderedInternal, period: number?): number?
 		if period ~= nil then
 			error(messages.errors.no_periods(store.name), 0)
 		end
+
 		return nil
 	end
+
 	return period or current.index
 end
 
@@ -44,6 +46,7 @@ local function get_top(self: OrderedInternal, count: number, options: TopOptions
 	if type(count) ~= "number" or count < 1 or count % 1 ~= 0 then
 		error(messages.errors.bad_count(values.store.name, count), 0)
 	end
+
 	local given: TopOptions = options or {}
 	local index = index_of(self, given.period)
 	return rankings.top(values.config, values.config, values.store, index, count, given.ascending == true, os.time())
@@ -91,10 +94,12 @@ local function get_ordered(world: World, entity: Entity): Ordered
 	if existing then
 		return existing
 	end
+
 	local store = schema.get(world).ordered[entity]
 	if store == nil then
 		error(messages.errors.not_ordered(util.describe(world, entity)), 0)
 	end
+
 	local created = create_ordered(store, collection.get(world, store.collection).config)
 	world_state.ordered[entity] = created
 	return created

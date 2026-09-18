@@ -41,15 +41,19 @@ local function validate_foreign(described: string, name: string, source: Foreign
 	if not foreign.is_supported(source.type) then
 		error(messages.errors.unknown_foreign(described, tostring(source.type)), 0)
 	end
+
 	if type(source.name) ~= "string" or #source.name == 0 then
 		error(messages.errors.foreign_unnamed(described), 0)
 	end
+
 	if source.name == name then
 		error(messages.errors.foreign_name_clash(described, name), 0)
 	end
+
 	if type(source.source) ~= "table" or type(source.source.createCollection) ~= "function" then
 		error(messages.errors.foreign_no_source(described, source.type), 0)
 	end
+
 	if type(source.options) ~= "table" then
 		error(messages.errors.foreign_no_options(described, source.type), 0)
 	end
@@ -72,19 +76,23 @@ local function validate_config(described: string, config: ResolvedCollectionConf
 	if type(config.commit_store) ~= "string" or #config.commit_store == 0 then
 		error(messages.errors.bad_commit_store(described), 0)
 	end
+
 	if config.user_ids ~= nil and type(config.user_ids) ~= "function" then
 		error(messages.errors.bad_user_ids(described), 0)
 	end
+
 	for field in given :: { [string]: any } do
 		if not known_fields[field] then
 			error(messages.errors.bad_config_field(described, tostring(field)), 0)
 		end
 	end
+
 	local service: any = config.data_store_service
 	local default = service == datastore.get_default_service()
 	if not default and (type(service) ~= "table" or type(service.GetDataStore) ~= "function") then
 		error(messages.errors.bad_service(described), 0)
 	end
+
 	if default and config.pull_interval < write_cooldown then
 		logging.warn(messages.warnings.fast_pull(described, config.pull_interval, write_cooldown))
 	end
@@ -100,6 +108,7 @@ local function resolve_config(world: World, collection: Entity): ResolvedCollect
 	if type(name) ~= "string" or #name == 0 then
 		error(messages.errors.collection_unnamed(described), 0)
 	end
+
 	local given: CollectionConfig = world:get(collection, ids.config) or {}
 	if type(given) ~= "table" then
 		error(messages.errors.config_not_table(described), 0)
@@ -141,6 +150,7 @@ local function get(world: World, collection: Entity): CollectionState
 	if #ordered > 0 and type(service.GetOrderedDataStore) ~= "function" then
 		error(messages.errors.bad_ordered_service(util.describe(world, collection)), 0)
 	end
+
 	local created: CollectionState = {
 		config = config,
 		store = datastore.open(config.data_store_service, config.name),

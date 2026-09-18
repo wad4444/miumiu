@@ -38,10 +38,12 @@ local function watch_pairs(world: World, entry: RelationEntry, named: Named, sin
 			deleted = deleted,
 		})
 	end
+
 	local function settled(entity: Entity)
 		forget_removing(world, entity, entry.key)
 		emit(entity, nil, false)
 	end
+
 	return {
 		world:added(entry.id, settled),
 		world:changed(entry.id, settled),
@@ -82,6 +84,7 @@ local function watch_names(world: World, named: Named): { () -> () }
 			)
 		end
 	end
+
 	local function forget(entity: Entity)
 		local old = names[entity]
 		if old == nil then
@@ -94,13 +97,16 @@ local function watch_names(world: World, named: Named): { () -> () }
 			named[old] = next(holders) :: any
 		end
 	end
+
 	local function remember(entity: Entity, _, name: string)
 		forget(entity)
 		learn(entity, name)
 	end
+
 	for entity in world:each(jecs.Name) do
 		learn(entity, world:get(entity, jecs.Name))
 	end
+
 	return {
 		world:added(jecs.Name, remember),
 		world:changed(jecs.Name, remember),
@@ -114,6 +120,7 @@ local function watch(world: World, entry: SchemaEntry, named: Named, sink: Recor
 	if entry.kind == "relation" then
 		return watch_pairs(world, entry, named, sink)
 	end
+
 	local function emit(change: Change): (Entity, any, any) -> ()
 		return function(entity, _, value)
 			forget_removing(world, entity, entry.key)
@@ -127,6 +134,7 @@ local function watch(world: World, entry: SchemaEntry, named: Named, sink: Recor
 			})
 		end
 	end
+
 	return {
 		world:added(entry.id, emit("added")),
 		world:changed(entry.id, emit("changed")),
@@ -218,19 +226,23 @@ local function install(world: World, schema: Schema, named: Named, sink: Recorde
 			table.insert(disconnects, disconnect)
 		end
 	end
+
 	for relation, kinds in schema.kinds_by_relation do
 		for _, disconnect in watch_relation(world, relation, kinds, sink) do
 			table.insert(disconnects, disconnect)
 		end
 	end
+
 	for _, kind in schema.kinds do
 		for _, disconnect in watch_kind(world, kind, sink) do
 			table.insert(disconnects, disconnect)
 		end
 	end
+
 	for _, disconnect in watch_names(world, named) do
 		table.insert(disconnects, disconnect)
 	end
+
 	return disconnects
 end
 

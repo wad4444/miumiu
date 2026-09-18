@@ -45,6 +45,7 @@ local function decode(world: World, entity: Entity, entry: ComponentEntry, value
 		logging.warn(messages.warnings.deserialize_failed(entry.key, util.describe(world, entity), result))
 		return rejected
 	end
+
 	if result == nil then
 		logging.warn(
 			messages.warnings.deserialize_failed(
@@ -55,11 +56,13 @@ local function decode(world: World, entity: Entity, entry: ComponentEntry, value
 		)
 		return rejected
 	end
+
 	local checked = codec.check_guard(entry, result)
 	if checked.kind == "rejected" then
 		logging.warn(messages.warnings.stored_rejected(entry.key, util.describe(world, entity), checked.reason))
 		return rejected
 	end
+
 	return { kind = "ok", value = result }
 end
 
@@ -80,6 +83,7 @@ local function apply_component(
 		supplied[key] = nil
 		return
 	end
+
 	if supplied[key] == value then
 		return
 	end
@@ -89,10 +93,12 @@ local function apply_component(
 	if current == value then
 		return
 	end
+
 	local decoded = decode(world, entity, entry, value)
 	if decoded.kind == "rejected" or ops.deep_equal(current, decoded.value) then
 		return
 	end
+
 	world:set(entity, entry.id, decoded.value)
 end
 
@@ -114,6 +120,7 @@ local function apply_relation(
 		supplied[key] = nil
 		return
 	end
+
 	if type(value) ~= "table" then
 		if supplied[key] ~= value then
 			supplied[key] = value
@@ -125,6 +132,7 @@ local function apply_relation(
 				)
 			)
 		end
+
 		return
 	end
 	supplied[key] = nil
@@ -144,6 +152,7 @@ local function apply(
 		if entity_state.lazy[entry.key] then
 			return
 		end
+
 		local value = known.truth[entry.key]
 		local stamped = strict or known.stamps[entry.key] ~= nil
 		state.with_applying(world_state, entity, entry.id, function()
@@ -165,6 +174,7 @@ local function apply_initials(context: Context, entity: Entity, collection: Enti
 		if initial.kind == "none" or world:has(entity, entry.id) then
 			continue
 		end
+
 		local value = initial.value
 		state.with_applying(world_state, entity, entry.id, function()
 			if entry.kind == "tag" then
@@ -183,12 +193,14 @@ local function with_initials(entries: { SchemaEntry }, data: Data): Data
 		if filled[entry.key] ~= nil or initial.kind == "none" then
 			continue
 		end
+
 		if entry.kind == "tag" then
 			filled[entry.key] = true
 		else
 			filled[entry.key] = codec.stored_form(entry, ops.deep_copy(initial.value))
 		end
 	end
+
 	return filled
 end
 
@@ -310,6 +322,7 @@ local function supply_children(context: Context, entity: Entity, kinds: { ChildK
 				messages.warnings.child_group_array(kind.key)
 			)
 		end
+
 		local present = table.clone(children.children_of(index, entity, kind.key))
 		local guard = util.create_guard()
 		for id, child_data in stored.named do
@@ -340,6 +353,7 @@ local function supply_children(context: Context, entity: Entity, kinds: { ChildK
 				supply_children(context, child, kind.kinds, child_data, false)
 			end)
 		end
+
 		for _, child in present do
 			guard.run(function()
 				if kind.mode == "owned" then
@@ -353,6 +367,7 @@ local function supply_children(context: Context, entity: Entity, kinds: { ChildK
 				end
 			end)
 		end
+
 		guard.rethrow()
 	end)
 end
@@ -384,6 +399,7 @@ local function reconcile(context: Context, entity: Entity, known: State, collect
 	if not context.world:contains(entity) then
 		return
 	end
+
 	local entity_state = state.entity_state(context.world_state, entity)
 	local root = context.schema.roots[collection]
 	local guard = util.create_guard()
@@ -417,6 +433,7 @@ local function snapshot_fields(context: Context, entity: Entity, snapshots: { Co
 	if not world:contains(entity) then
 		return
 	end
+
 	for _, entry in snapshots do
 		local snapshot = entry.snapshot :: Snapshot
 		local ok, value = pcall(util.sync, "snapshot" :: SyncKind, entry.key, snapshot, world, entity)
@@ -428,10 +445,12 @@ local function snapshot_fields(context: Context, entity: Entity, snapshots: { Co
 			)
 			continue
 		end
+
 		if value ~= nil and not ops.deep_equal(world:get(entity, entry.id), value) then
 			world:set(entity, entry.id, value)
 		end
 	end
+
 	children.each_child(context.world_state.children, entity, function(child, held)
 		snapshot_fields(context, child, held.kind.snapshots)
 	end)

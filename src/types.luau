@@ -706,6 +706,7 @@ export type WorldState = {
 	schema: Schema?,
 	disconnects: { () -> () },
 	phase: WorldPhase,
+	closing: { thread }?,
 	applying: Applying?,
 	capture: Capture?,
 	entities: { [Entity]: EntityState },

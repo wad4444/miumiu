@@ -22,6 +22,7 @@ local function receiver_of(context: Context, link_state: LinkState): Entity?
 			return entity
 		end
 	end
+
 	return nil
 end
 
@@ -32,6 +33,7 @@ local function run_one(context: Context, loaded: SessionInternal, entity: Entity
 		loaded:forget_placing(name, placing, false)
 		return
 	end
+
 	local on_period_change = placing.store.on_period_change :: OnPeriodChange
 	local ok, err = pcall(function()
 		local handle = batch.batch(world, function()

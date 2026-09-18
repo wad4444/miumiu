@@ -20,6 +20,7 @@ local function targets_of(world: World, entity: Entity, relation: Entity<any>): 
 		if target == nil then
 			return targets
 		end
+
 		table.insert(targets, target)
 		index += 1
 	end
@@ -32,9 +33,11 @@ local function sync<T...>(what: SyncKind, subject: string, fn: (...any) -> T...,
 		coroutine.close(thread)
 		error(messages.errors.yielded(what, subject), 0)
 	end
+
 	if not result[1] then
 		error(result[2], 0)
 	end
+
 	return table.unpack(result, 2, result.n)
 end
 
@@ -47,6 +50,7 @@ local function own<T>(original: T, current: T): T
 	if current == original then
 		return table.clone(original :: any) :: any
 	end
+
 	return current
 end
 
@@ -58,14 +62,17 @@ local function create_guard(): ErrorGuard
 			failed = err
 		end
 	end
+
 	local function rethrow()
 		if failed ~= nil then
 			error(failed, 0)
 		end
 	end
+
 	local function get_error(): any
 		return failed
 	end
+
 	return { run = run, rethrow = rethrow, get_error = get_error }
 end
 
@@ -77,6 +84,7 @@ local function run_all<T>(items: { T }, fn: (T) -> ())
 			first_error = err
 		end
 	end
+
 	if first_error ~= nil then
 		error(first_error, 0)
 	end
@@ -94,9 +102,11 @@ local function join_all<T>(items: { T }, fn: (T) -> ())
 			remaining -= 1
 		end)
 	end
+
 	while remaining > 0 do
 		task.wait()
 	end
+
 	if first_error ~= nil then
 		error(first_error, 0)
 	end
@@ -108,11 +118,13 @@ local function cached<K, V>(cache: { [K]: { [string]: V } }, owner: K, name: str
 		by_name = {}
 		cache[owner] = by_name
 	end
+
 	local value = by_name[name]
 	if value == nil then
 		value = create()
 		by_name[name] = value
 	end
+
 	return value
 end
 

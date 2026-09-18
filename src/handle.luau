@@ -35,12 +35,14 @@ local function hook(self: BatchInternal, hook_symbol: Symbol, callback: Callback
 	if hook_symbol ~= (hooks.landed :: any) and hook_symbol ~= (hooks.refused :: any) then
 		error(messages.errors.hook_unknown(tostring(hook_symbol), "hooks.landed or hooks.refused"), 0)
 	end
+
 	local outcome = self.internal_values.outcome
 	if outcome.kind == "landed" and hook_symbol == (hooks.landed :: any) then
 		callbacks.invoke(hook_symbol, self, callback)
 	elseif outcome.kind == "refused" and hook_symbol == (hooks.refused :: any) then
 		callbacks.invoke(hook_symbol, self, callback, outcome.message)
 	end
+
 	return callbacks.connect(self.internal_hooks, hook_symbol, callback)
 end
 
@@ -55,10 +57,12 @@ local function await(self: BatchInternal): SettledOutcome
 		values.flush = nil
 		flush()
 	end
+
 	if not is_settled(self) then
 		table.insert(self.internal_waiters, coroutine.running())
 		coroutine.yield()
 	end
+
 	return self.internal_values.outcome :: SettledOutcome
 end
 
@@ -74,6 +78,7 @@ local function settle(self: BatchInternal, outcome: Outcome)
 	if is_settled(self) then
 		return
 	end
+
 	self.internal_values.outcome = table.freeze(outcome)
 	self.internal_values.flush = nil
 	if outcome.kind == "refused" then
@@ -81,6 +86,7 @@ local function settle(self: BatchInternal, outcome: Outcome)
 	else
 		callbacks.fire(self.internal_hooks, hooks.landed, self)
 	end
+
 	local waiters = table.clone(self.internal_waiters)
 	table.clear(self.internal_waiters)
 	for _, waiter in waiters do

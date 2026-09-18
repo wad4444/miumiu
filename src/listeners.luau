@@ -31,6 +31,7 @@ local function queued_key(world_state: WorldState, entity: Entity, collection: E
 			return event.key
 		end
 	end
+
 	return state.linked_key(world_state, entity, collection)
 end
 

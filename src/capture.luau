@@ -43,9 +43,11 @@ local function root_owner(context: Context, entity: Entity, holders: Holders): O
 			table.insert(sessions, open)
 		end
 	end
+
 	if unsaved then
 		return { kind = "unsaved" }
 	end
+
 	return { kind = "root", sessions = sessions }
 end
 
@@ -54,18 +56,22 @@ local function owner_of(context: Context, entity: Entity, entry: SchemaEntry): O
 	if world_state.links[entity] then
 		return root_owner(context, entity, entry.holders)
 	end
+
 	local held = children.child_of(world_state.children, entity)
 	if held and not entry.holders[held.kind.tag] then
 		return { kind = "unsaved" }
 	end
+
 	local ancestry = children.ancestry(world_state, entity)
 	if not ancestry then
 		return { kind = "root", sessions = {} }
 	end
+
 	local root = root_owner(context, ancestry.root, ancestry.kind.holders)
 	if root.kind == "unsaved" then
 		return root
 	end
+
 	return { kind = "child", sessions = root.sessions, ancestry = ancestry }
 end
 
@@ -73,6 +79,7 @@ local function sessions_of(owner: Owner): { SessionInternal }
 	if owner.kind == "unsaved" then
 		return {}
 	end
+
 	return owner.sessions
 end
 
@@ -125,6 +132,7 @@ local function validate_write(context: Context, write: ComponentWrite)
 	if entry.kind ~= "component" or write.change == "removed" then
 		return
 	end
+
 	local checked = codec.check_guard(entry, write.value)
 	if checked.kind == "ok" then
 		return
@@ -148,6 +156,7 @@ local function delta_ops(session: SessionInternal, entry: SchemaEntry, previous:
 	if previous ~= nil and known.truth[entry.key] == nil and known.stamps[entry.key] == nil then
 		table.insert(group_ops, 1, { kind = "init", key = entry.key, value = stored_previous })
 	end
+
 	return group_ops
 end
 
@@ -157,6 +166,7 @@ local function entry_for(capture: Capture, session: SessionInternal): CaptureEnt
 			return entry
 		end
 	end
+
 	local created: CaptureEntry = { session = session, ops = {}, coalesced = {} }
 	table.insert(capture.entries, created)
 	return created
@@ -226,6 +236,7 @@ local function capture_ops(capture: Capture, sessions: { SessionInternal }, grou
 			end
 			target.coalesced[coalesce] = #target.ops + 1
 		end
+
 		for _, op in group_ops do
 			table.insert(target.ops, op)
 		end
@@ -256,6 +267,7 @@ local function shadow_fields(shadow: Data, entries: { SchemaEntry }): Data
 			fields[entry.key] = codec.stored_form(entry, value)
 		end
 	end
+
 	return fields
 end
 
@@ -268,6 +280,7 @@ local function record_child(context: Context, capture: Capture, entity: Entity)
 		existing.value = value
 		return
 	end
+
 	local shadow = state.entity_state(world_state, entity).shadow
 	local undo: ChildUndo = {
 		kind = "child",
@@ -285,11 +298,13 @@ local function is_prefix_of(prefix: { string }, path: { string }): boolean
 	if #path < #prefix then
 		return false
 	end
+
 	for index, segment in prefix do
 		if path[index] ~= segment then
 			return false
 		end
 	end
+
 	return true
 end
 
@@ -320,6 +335,7 @@ local function mark_carried_children(world_state: WorldState, ancestry: Ancestry
 		if undo.kind ~= "child" then
 			return
 		end
+
 		local other = children.ancestry(world_state, undo.entity)
 		if other and other.root == ancestry.root and is_prefix_of(ancestry.path, other.path) then
 			undo.carried = true
@@ -335,6 +351,7 @@ local function record_component(context: Context, capture: Capture, owner: Held,
 		capture_ops(capture, owner.sessions, { child_put(context, owner.ancestry) }, coalesce_key(owner.ancestry))
 		return
 	end
+
 	if capture.delta then
 		local reason = if entry.kind == "tag"
 			then messages.reasons.tag
@@ -349,6 +366,7 @@ local function record_component(context: Context, capture: Capture, owner: Held,
 			error(messages.errors.not_a_delta(entry.key, reason), 0)
 		end
 	end
+
 	local previous = remember(context.world_state, write)
 	if entry.kind == "tag" then
 		table.insert(capture.undo, {
@@ -401,6 +419,7 @@ local function reject_unloaded(context: Context, write: Write)
 	if write.kind == "component" then
 		forget_removal(context.world_state, write)
 	end
+
 	if write.kind == "component" and write.change == "added" then
 		state.with_applying(context.world_state, write.entity, write.entry.id, function()
 			world:remove(write.entity, write.entry.id)
@@ -423,6 +442,7 @@ local function journal_component(context: Context, write: ComponentWrite, flushi
 		warn_unsaved(context, write)
 		return
 	end
+
 	if #owner.sessions == 0 then
 		local existing = world_state.entities[write.entity]
 		if capture and not (existing and existing.dropped) then
@@ -442,15 +462,18 @@ local function journal_component(context: Context, write: ComponentWrite, flushi
 		record_component(context, capture, owner, write)
 		return
 	end
+
 	if not flushing and write.change == "changed" and entity_state.shadow[write.entry.key] == write.value then
 		return
 	end
+
 	if is_lazy(write.entry) and not flushing then
 		remember(world_state, write)
 		entity_state.lazy[write.entry.key] = true
 		for _, session in owner.sessions do
 			session:touch()
 		end
+
 		return
 	end
 
@@ -459,6 +482,7 @@ local function journal_component(context: Context, write: ComponentWrite, flushi
 		if owner.kind == "child" then
 			return child_put(context, owner.ancestry)
 		end
+
 		return codec.op_for(write.entry, write.change, write.value)
 	end)
 	if not encoded then
@@ -480,6 +504,7 @@ local function flush_lazy(context: Context, entity: Entity, entries: { SchemaEnt
 	if not world:contains(entity) then
 		return
 	end
+
 	local entity_state = state.entity_state(context.world_state, entity)
 	for _, entry in entries do
 		if not is_lazy(entry) or not entity_state.lazy[entry.key] then
@@ -496,6 +521,7 @@ local function flush_lazy(context: Context, entity: Entity, entries: { SchemaEnt
 			deleted = false,
 		}, true)
 	end
+
 	children.each_child(context.world_state.children, entity, function(child, held)
 		flush_lazy(context, child, held.kind.entries)
 	end)
@@ -507,19 +533,23 @@ local function emit_child(context: Context, ancestry: Ancestry?, op_for: (Ancest
 	if capture then
 		undo(capture)
 	end
+
 	if not ancestry then
 		return
 	end
+
 	local sessions = ancestry_sessions(context, ancestry)
 	if #sessions == 0 then
 		return
 	end
+
 	local coalesce = coalesce_key(ancestry)
 	local op = op_for(ancestry)
 	if capture then
 		capture_ops(capture, sessions, { op }, coalesce)
 		return
 	end
+
 	if op.kind == "put" then
 		mark_carried_children(world_state, ancestry)
 	end

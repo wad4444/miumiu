@@ -1874,5 +1874,30 @@ return function()
 				schema.create_schema(world)
 			end).to.throw("without /")
 		end)
+
+		it("dispatches an unlink queued by on_period_change in the same step", function()
+			local t = setup({ pull_interval = never })
+			local clock = create_clock(1)
+			local unlinked = false
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.money,
+				period = clock.period,
+				poll_interval = 0,
+				on_period_change = function(world, entity)
+					world:remove(entity, t.link)
+					unlinked = true
+				end,
+			})
+			local player = utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			clock.index = 2
+			session:sync()
+			expect(utils.wait_until(function()
+				miumiu.step(t.world)
+				return unlinked
+			end)).to.equal(true)
+			expect(#utils.events(t)).to.equal(0)
+			expect(t.world:has(player, t.loaded)).to.equal(false)
+		end)
 	end)
 end

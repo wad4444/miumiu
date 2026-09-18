@@ -12,6 +12,7 @@ local function connect(registry: CallbackRegistry, hook: Symbol, callback: Callb
 		callbacks = {}
 		registry[hook] = callbacks
 	end
+
 	table.insert(callbacks, callback)
 	return function()
 		local index = table.find(callbacks, callback)
@@ -38,6 +39,7 @@ local function fire(registry: CallbackRegistry, hook: Symbol, owner: unknown, ..
 	if not callbacks then
 		return
 	end
+
 	for _, callback in table.clone(callbacks) do
 		invoke(hook, owner, callback, ...)
 	end

@@ -60,12 +60,14 @@ local function stamps_of(record: StoredRecord): Stamps
 	if type(stored) ~= "table" then
 		return {}
 	end
+
 	local stamps: Stamps = {}
 	for key, at in stored do
 		if type(key) == "string" and type(at) == "number" then
 			stamps[key] = at
 		end
 	end
+
 	return stamps
 end
 
@@ -94,6 +96,7 @@ local function fire_landed(self: SessionInternal)
 	if #landed == 0 then
 		return
 	end
+
 	self.internal_landed = {}
 	local watchers = self.internal_watchers
 	for _, id in landed do
@@ -118,6 +121,7 @@ local function resolve_watched(self: SessionInternal, message: string)
 	if next(watchers) == nil then
 		return
 	end
+
 	self.internal_watchers = {}
 	local collection = self.internal_collection
 	local ok, record = pcall(datastore.get_async, collection.store, self.internal_values.key, collection.config)
@@ -137,6 +141,7 @@ local function settle_watched(self: SessionInternal)
 	if status.kind ~= "closed" then
 		return
 	end
+
 	local closure = status.closure
 	if closure.kind ~= "clean" then
 		resolve_watched(self, closure.message)
@@ -157,6 +162,7 @@ local function close(self: SessionInternal, closure: Closure)
 			refuse_watched(self, closure.message)
 		end
 	end
+
 	callbacks.fire(self.internal_hooks, hooks.closed, self, closure)
 end
 
@@ -185,13 +191,16 @@ local function get_state(self: SessionInternal): State
 	if cached then
 		return cached
 	end
+
 	local state = self.internal_base
 	for _, group in self.internal_awaiting do
 		state = ops.replay(state, group.ops)
 	end
+
 	for _, group in self.internal_unwritten do
 		state = ops.replay(state, group.ops)
 	end
+
 	self.internal_cache = state
 	return state
 end
@@ -227,9 +236,11 @@ local function floor_of(state: State, op: Op, resets: { [string]: number }): num
 	if op.kind == "set" or op.kind == "remove" then
 		return math.max(state.stamps[op.key] or 0, reset)
 	end
+
 	if op.kind == "put" or op.kind == "drop" then
 		return math.max(ops.path_floor(state.stamps, op.key, op.path), reset)
 	end
+
 	return 0
 end
 
@@ -239,6 +250,7 @@ local function bump(op: Op, floor: number): Op
 		bumped.at = floor + 1
 		return bumped
 	end
+
 	return op
 end
 
@@ -249,6 +261,7 @@ local function stamp_after(state: State, group_ops: { Op }, resets: { [string]: 
 		table.insert(adjusted, stamped)
 		state = ops.replay(state, { stamped })
 	end
+
 	return adjusted
 end
 
@@ -256,12 +269,14 @@ local function coalesced_slot(self: SessionInternal, coalesce: string?): number?
 	if coalesce == nil then
 		return nil
 	end
+
 	local unwritten = self.internal_unwritten
 	for index = #unwritten, 1, -1 do
 		if unwritten[index].coalesce == coalesce then
 			return index
 		end
 	end
+
 	return nil
 end
 
@@ -270,6 +285,7 @@ local function journal(self: SessionInternal, group: Group)
 	if #group.ops == 0 then
 		return
 	end
+
 	local slot = coalesced_slot(self, group.coalesce)
 	local base: State
 	if slot then
@@ -285,6 +301,7 @@ local function journal(self: SessionInternal, group: Group)
 	else
 		base = get_state(self)
 	end
+
 	local adjusted = stamp_after(base, group.ops, self.internal_resets)
 	table.insert(self.internal_unwritten, {
 		id = group.id,
@@ -328,6 +345,7 @@ local function resolve_group(self: SessionInternal, id: string, message: string)
 	if self.internal_values.status.kind == "closed" then
 		settle_watched(self)
 	end
+
 	return outcome
 end
 
@@ -344,6 +362,7 @@ local function forget_written(self: SessionInternal, written: { Group }): { Grou
 			end
 		end
 	end
+
 	return removed
 end
 
@@ -359,6 +378,7 @@ local function forget_settled(self: SessionInternal, record: StoredRecord, decid
 	for _, id in decided do
 		remove_group(self.internal_awaiting, id)
 	end
+
 	local pending = table_or_empty(record.pending)
 	local awaiting = self.internal_awaiting
 	for index = #awaiting, 1, -1 do
@@ -373,9 +393,11 @@ local function is_same_record(self: SessionInternal, old: StoredRecord): boolean
 	if not values.adopted then
 		return false
 	end
+
 	if old.written ~= nil or values.written ~= nil then
 		return old.written == values.written
 	end
+
 	return old.version == values.version
 end
 
@@ -383,9 +405,11 @@ local function base_state(self: SessionInternal, old: StoredRecord?): State
 	if old == nil then
 		return if self.internal_values.adopted then empty_state() else self.internal_base
 	end
+
 	if is_same_record(self, old) then
 		return self.internal_base
 	end
+
 	return state_of(old)
 end
 
@@ -393,6 +417,7 @@ local function applied_migrations(self: SessionInternal, old: StoredRecord?, see
 	if old then
 		return number_or(old.migrations, 0)
 	end
+
 	return if seeded then 0 else #self.internal_collection.config.migrations
 end
 
@@ -402,12 +427,14 @@ local function migrate_state(self: SessionInternal, old: StoredRecord?, state: S
 	if applied > declared then
 		return { kind = "newer", message = messages.errors.newer_record(self.internal_values.key, applied, declared) }
 	end
+
 	if applied < declared then
 		return {
 			kind = "migrated",
 			state = { truth = self.internal_migrate(state.truth, applied), stamps = state.stamps },
 		}
 	end
+
 	return { kind = "unchanged", state = state }
 end
 
@@ -427,6 +454,7 @@ local function land_groups(state: State, pending: Pending, landed: Landed, group
 			state = ops.replay(state, group.ops)
 		end
 	end
+
 	return { state = state, pending = next_pending, landed = next_landed }
 end
 
@@ -438,6 +466,7 @@ local function prune_landed(landed: Landed, now: number, ttl: number): Landed
 			next_landed[id] = nil
 		end
 	end
+
 	return next_landed
 end
 
@@ -449,12 +478,14 @@ local function prune_stamps(state: State, now: number, ttl: number): Stamps
 		if slash == nil or now - at <= ttl then
 			continue
 		end
+
 		local path = string.split(string.sub(stamp_key, slash + 1), "/")
 		if ops.resolve(state.truth, string.sub(stamp_key, 1, slash - 1), path, #path) == nil then
 			next_stamps = util.own(stamps, next_stamps)
 			next_stamps[stamp_key] = nil
 		end
 	end
+
 	return next_stamps
 end
 
@@ -478,6 +509,7 @@ local function claim_of(self: SessionInternal): Claim?
 	if values.status.kind ~= "open" then
 		return nil
 	end
+
 	local collection = self.internal_collection
 	return { id = collection.holder, timeout = collection.config.commit_timeout, receiving = self.internal_receiving() }
 end
@@ -487,12 +519,14 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 	for _, group in groups do
 		group.coalesce = nil
 	end
+
 	local record: StoredRecord = table_or_empty(old)
 	local resolution: Resolution = { truth = {}, stamps = {}, pending = {}, unknown = {}, decided = {} }
 	if number_or(record.format, record_format) > record_format then
 		local message = messages.errors.newer_format(self.internal_values.key, record.format :: number, record_format)
 		return { kind = "newer", message = message, groups = groups, resolution = resolution }
 	end
+
 	local state = base_state(self, old)
 
 	local seeded = old == nil and self.internal_seed ~= nil
@@ -524,6 +558,7 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 	if unchanged then
 		return { kind = "unchanged", groups = groups, resolution = resolution }
 	end
+
 	return {
 		kind = "merged",
 		record = build_record(self, record, landing, now),
@@ -539,6 +574,7 @@ local function user_ids_of(collection: CollectionState, key: string): { number }
 	if user_ids == nil then
 		return nil
 	end
+
 	return user_ids(key)
 end
 
@@ -558,6 +594,7 @@ local function run_update(self: SessionInternal, retry: RetryConfig): Pull
 			end
 			return next_merge.record
 		end
+
 		return nil
 	end, retry, user_ids_of(collection, self.internal_values.key))
 	return {
@@ -579,14 +616,17 @@ local function run_read(self: SessionInternal, retry: RetryConfig): Pull?
 	if record ~= nil and (type(record.version) ~= "number" or number_or(record.migrations, 0) < declared) then
 		return nil
 	end
+
 	local read_state = if record then state_of(record) else empty_state()
 	if #rankings.roll(read_state, collection.ordered, os.time(), claim_of(self)).ops > 0 then
 		return nil
 	end
+
 	local merged = merge(self, record)
 	if merged.kind == "merged" then
 		return nil
 	end
+
 	return { merge = merged, record = record, wrote = false, pushes = {} }
 end
 
@@ -606,6 +646,7 @@ local function adopt(self: SessionInternal, pull: Pull): boolean
 		if not values.adopted then
 			return false
 		end
+
 		self.internal_base = empty_state()
 		table.clear(self.internal_awaiting)
 		values.adopted = false
@@ -624,16 +665,17 @@ local function adopt(self: SessionInternal, pull: Pull): boolean
 	return adopted
 end
 
-local function fetch_unknown(self: SessionInternal, pull: Pull): boolean
+local function fetch_unknown(self: SessionInternal, pull: Pull, retry: RetryConfig): boolean
 	local resolution = pull.merge.resolution
 	local pending = resolution.pending
 	local any_decided = false
 	for _, id in resolution.unknown do
 		local entry = pending[id]
-		if commit.fetch(self.internal_collection.config, id, entry.created) ~= "undecided" then
+		if commit.fetch(self.internal_collection.config, retry, id, entry.created) ~= "undecided" then
 			any_decided = true
 		end
 	end
+
 	return any_decided
 end
 
@@ -643,6 +685,7 @@ local function accept(self: SessionInternal, pull: Pull): Pull
 		close(self, { kind = "refused", message = merge.message })
 		error(merge.message, 0)
 	end
+
 	return pull
 end
 
@@ -667,13 +710,16 @@ local function push_scores(self: SessionInternal, retry: RetryConfig)
 			failure = err
 		end
 	end
+
 	if failed_name ~= nil then
 		if not values.push_failing then
 			values.push_failing = true
 			logging.warn(messages.warnings.push_failed(key, failed_name, failure))
 		end
+
 		return
 	end
+
 	if values.push_failing then
 		values.push_failing = false
 		logging.warn(messages.warnings.push_recovered(key))
@@ -697,7 +743,9 @@ local function resolve_owed(self: SessionInternal, retry: RetryConfig)
 	if values.status.kind ~= "open" then
 		return
 	end
+
 	local claim = claim_of(self)
+
 	for _, store in collection.ordered do
 		local name = store.name
 		local owed = rankings.owed_of(truth, name)
@@ -705,24 +753,29 @@ local function resolve_owed(self: SessionInternal, retry: RetryConfig)
 			self.internal_placings[name] = nil
 			continue
 		end
+
 		if claim == nil or not rankings.is_held(owed, claim, now) then
 			self.internal_placings[name] = nil
 			continue
 		end
+
 		local held = owed
 		local current = rankings.current_period(store, now)
 		if current.kind ~= "period" then
 			continue
 		end
+
 		local covered = rankings.covered_last(store, held, current.period, now)
 		local failed = self.internal_failed_changes[name]
 		if failed ~= nil and failed.from == held.from and failed.last == covered then
 			continue
 		end
+
 		local cached = self.internal_placings[name]
 		if cached and cached.from == held.from and cached.last == covered then
 			continue
 		end
+
 		local ok, placing =
 			pcall(rankings.resolve, collection.config, retry, store, values.key, held, current.period, now)
 		if not ok then
@@ -737,6 +790,7 @@ local function resolve_owed(self: SessionInternal, retry: RetryConfig)
 			settle_owed(self, name, held, placing)
 			continue
 		end
+
 		self.internal_placings[name] = placing
 	end
 end
@@ -747,7 +801,7 @@ local function pull_now(self: SessionInternal, retry: RetryConfig): boolean
 	local adopted = adopt(self, pull)
 	queue_pushes(self, pull)
 
-	if fetch_unknown(self, pull) then
+	if fetch_unknown(self, pull, retry) then
 		pull = accept(self, run_update(self, retry))
 		adopted = adopt(self, pull) or adopted
 		queue_pushes(self, pull)
@@ -760,6 +814,7 @@ local function pull_now(self: SessionInternal, retry: RetryConfig): boolean
 	if self.internal_values.status.kind == "closing" and #self.internal_unwritten == 0 then
 		close(self, { kind = "clean" })
 	end
+
 	return adopted
 end
 
@@ -778,6 +833,7 @@ local function pull_with(self: SessionInternal, retry: RetryConfig): boolean
 		end
 		callbacks.fire(self.internal_hooks, hooks.writing, self)
 	end
+
 	local adopted = false
 	local entered = false
 	local ok, err = pcall(self.internal_mutex.with, self.internal_mutex, function()
@@ -788,12 +844,15 @@ local function pull_with(self: SessionInternal, retry: RetryConfig): boolean
 	if entered then
 		settle_watched(self)
 	end
+
 	if not ok then
 		error(err, 0)
 	end
+
 	if adopted and values.status.kind ~= "closed" then
 		callbacks.fire(self.internal_hooks, hooks.pulled, self, get_truth(self))
 	end
+
 	return adopted
 end
 
@@ -814,11 +873,13 @@ local function unload(self: SessionInternal, retry: RetryConfig?)
 				push_scores(self, retry or self.internal_collection.config)
 			end)
 		end
+
 		if is_idle(self) then
 			close(self, { kind = "clean" })
 			return
 		end
 	end
+
 	self.internal_values.status = table.freeze({ kind = "closing" })
 	local ok, err = pcall(pull_with, self, retry or self.internal_collection.config)
 	if ok or is_closed_clean(self) or self.internal_values.status.kind == "open" then
@@ -845,11 +906,13 @@ local function wiped_record(old: StoredRecord?, declared: number): StoredRecord
 		for key in data do
 			stamps[key] = now
 		end
+
 		for stamp_key, at in previous do
 			local key = string.match(stamp_key, "^[^/]*")
 			stamps[key] = math.max(stamps[key] or now, at + 1)
 		end
 	end
+
 	local wiped: StoredRecord = table.clone(table_or_empty(old))
 	wiped.data = {}
 	wiped.stamps = stamps
@@ -912,6 +975,7 @@ local function hook(self: SessionInternal, hook_symbol: Symbol, callback: Callba
 	then
 		error(messages.errors.hook_unknown(tostring(hook_symbol), "hooks.pulled, hooks.closed or hooks.writing"), 0)
 	end
+
 	return callbacks.connect(self.internal_hooks, hook_symbol, callback)
 end
 

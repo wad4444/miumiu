@@ -9,19 +9,23 @@ local function deep_equal(a: any, b: any): boolean
 	if a == b then
 		return true
 	end
+
 	if type(a) ~= "table" or type(b) ~= "table" then
 		return false
 	end
+
 	for key, value in a do
 		if not deep_equal(value, b[key]) then
 			return false
 		end
 	end
+
 	for key in b do
 		if a[key] == nil then
 			return false
 		end
 	end
+
 	return true
 end
 
@@ -30,8 +34,10 @@ local function deep_freeze(value: any): any
 		for _, nested in value do
 			deep_freeze(nested)
 		end
+
 		table.freeze(value)
 	end
+
 	return value
 end
 
@@ -39,10 +45,12 @@ local function deep_copy(value: any): any
 	if type(value) ~= "table" then
 		return value
 	end
+
 	local copy = {}
 	for key, entry in value do
 		copy[key] = deep_copy(entry)
 	end
+
 	return copy
 end
 
@@ -52,6 +60,7 @@ local function find(list: { any }, value: any): number?
 			return index
 		end
 	end
+
 	return nil
 end
 
@@ -63,6 +72,7 @@ local function resolve(truth: Data, key: string, path: { string }, depth: number
 		end
 		current = current[path[index]]
 	end
+
 	return current
 end
 
@@ -77,6 +87,7 @@ local function path_floor(stamps: Stamps, key: string, path: { string }): number
 		prefix = `{prefix}/{segment}`
 		floor = math.max(floor, stamps[prefix] or 0)
 	end
+
 	return floor
 end
 
@@ -90,6 +101,7 @@ local function replay(state: State, ops: { Op }): State
 		if next_truth == truth then
 			next_truth = table.clone(truth)
 		end
+
 		return next_truth
 	end
 
@@ -97,6 +109,7 @@ local function replay(state: State, ops: { Op }): State
 		if next_stamps == stamps then
 			next_stamps = table.clone(stamps)
 		end
+
 		return next_stamps
 	end
 
@@ -111,6 +124,7 @@ local function replay(state: State, ops: { Op }): State
 			parent[field] = nested
 			owned[nested] = true
 		end
+
 		return nested
 	end
 
@@ -123,6 +137,7 @@ local function replay(state: State, ops: { Op }): State
 		for index = 1, depth do
 			current = own_child(current, path[index])
 		end
+
 		return current
 	end
 
@@ -184,6 +199,7 @@ local function replay(state: State, ops: { Op }): State
 	if next_truth == truth and next_stamps == stamps then
 		return state
 	end
+
 	return { truth = next_truth, stamps = next_stamps }
 end
 

@@ -50,7 +50,6 @@ tests/coverage.luau   block instrumenter used by the runner
 tests/coverage_check.luau  self-check: instruments fixtures and asserts the marker counts
 tests/run.luau        Lune runner
 tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
-.claude/skills/sweep/ the review-sweep skill: reviewer briefs, the apply pass, the ledger of known-opens and probed paths, patch helpers
 ```
 
 ## Style

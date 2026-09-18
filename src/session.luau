@@ -27,6 +27,7 @@ type Migrated = types.Migrated
 type Mutex = types.Mutex
 type Op = types.Op
 type Pending = types.Pending
+type Owed = types.Owed
 type Periods = types.Periods
 type Placing = types.Placing
 type Pull = types.Pull
@@ -199,12 +200,13 @@ local function touch(self: SessionInternal)
 	self.internal_values.touched = true
 end
 
-local function floor_of(state: State, op: Op): number
+local function floor_of(state: State, op: Op, resets: { [string]: number }): number
+	local reset = resets[op.key] or 0
 	if op.kind == "set" or op.kind == "remove" then
-		return state.stamps[op.key] or 0
+		return math.max(state.stamps[op.key] or 0, reset)
 	end
 	if op.kind == "put" or op.kind == "drop" then
-		return ops.path_floor(state.stamps, op.key, op.path)
+		return math.max(ops.path_floor(state.stamps, op.key, op.path), reset)
 	end
 	return 0
 end
@@ -218,10 +220,10 @@ local function bump(op: Op, floor: number): Op
 	return op
 end
 
-local function stamp_after(state: State, group_ops: { Op }): { Op }
+local function stamp_after(state: State, group_ops: { Op }, resets: { [string]: number }): { Op }
 	local adjusted: { Op } = {}
 	for _, op in group_ops do
-		local stamped = bump(op, floor_of(state, op))
+		local stamped = bump(op, floor_of(state, op, resets))
 		table.insert(adjusted, stamped)
 		state = ops.replay(state, { stamped })
 	end
@@ -261,7 +263,7 @@ local function journal(self: SessionInternal, group: Group)
 	else
 		base = get_state(self)
 	end
-	local adjusted = stamp_after(base, group.ops)
+	local adjusted = stamp_after(base, group.ops, self.internal_resets)
 	table.insert(self.internal_unwritten, {
 		id = group.id,
 		ops = adjusted,
@@ -447,10 +449,12 @@ local function build_record(self: SessionInternal, record: StoredRecord, landing
 end
 
 local function claim_of(self: SessionInternal): Claim?
-	if self.internal_values.status.kind ~= "open" then
+	local values = self.internal_values
+	if values.status.kind ~= "open" then
 		return nil
 	end
-	return { id = self.internal_collection.holder, timeout = self.internal_collection.config.commit_timeout }
+	local collection = self.internal_collection
+	return { id = collection.holder, timeout = collection.config.commit_timeout, receiving = self.internal_receiving() }
 end
 
 local function merge(self: SessionInternal, old: StoredRecord?): Merge
@@ -517,7 +521,6 @@ local function run_update(self: SessionInternal, retry: RetryConfig): Pull
 	local collection = self.internal_collection
 	local merged: Merge? = nil
 	local pushes: { [string]: Push } = {}
-	local resets: { [string]: number } = {}
 	local result = datastore.update_async(collection.store, self.internal_values.key, function(old: StoredRecord?)
 		local next_merge = merge(self, old)
 		merged = next_merge
@@ -526,7 +529,7 @@ local function run_update(self: SessionInternal, retry: RetryConfig): Pull
 				pushes[push.name] = push
 			end
 			for key, at in next_merge.resets do
-				resets[key] = math.max(resets[key] or 0, at)
+				self.internal_resets[key] = math.max(self.internal_resets[key] or 0, at)
 			end
 			return next_merge.record
 		end
@@ -537,7 +540,6 @@ local function run_update(self: SessionInternal, retry: RetryConfig): Pull
 		record = result.value,
 		wrote = result.kind == "written",
 		pushes = pushes,
-		resets = resets,
 	}
 end
 
@@ -560,7 +562,7 @@ local function run_read(self: SessionInternal, retry: RetryConfig): Pull?
 	if merged.kind == "merged" then
 		return nil
 	end
-	return { merge = merged, record = record, wrote = false, pushes = {}, resets = {} }
+	return { merge = merged, record = record, wrote = false, pushes = {} }
 end
 
 local function adopt_record(self: SessionInternal, record: StoredRecord)
@@ -623,21 +625,6 @@ local function queue_pushes(self: SessionInternal, pull: Pull)
 	end
 end
 
-local function restamp(self: SessionInternal, pull: Pull)
-	if not pull.wrote or next(pull.resets) == nil then
-		return
-	end
-	for _, group in self.internal_unwritten do
-		for index, op in group.ops do
-			local at = pull.resets[op.key]
-			if at ~= nil then
-				group.ops[index] = bump(op, at)
-			end
-		end
-	end
-	forget_state(self)
-end
-
 local function push_scores(self: SessionInternal, retry: RetryConfig)
 	local values = self.internal_values
 	local config = self.internal_collection.config
@@ -666,10 +653,11 @@ local function push_scores(self: SessionInternal, retry: RetryConfig)
 	end
 end
 
-local function drop_owed(self: SessionInternal, name: string)
+local function settle_owed(self: SessionInternal, name: string, owed: Owed, placing: Placing)
+	self.internal_placings[name] = nil
 	journal(self, {
 		id = util.create_guid(),
-		ops = { { kind = "drop", key = rankings.record_key, path = { name, "owed" }, at = os.time() } },
+		ops = { rankings.field_op(get_state(self), name, "owed", rankings.remaining(owed, placing.last), os.time()) },
 		kind = "single",
 	})
 end
@@ -682,23 +670,36 @@ local function resolve_owed(self: SessionInternal, retry: RetryConfig)
 	if values.status.kind ~= "open" then
 		return
 	end
+	local claim = claim_of(self)
 	for _, store in collection.ordered do
 		local name = store.name
 		local owed = rankings.owed_of(truth, name)
-		if owed == nil or owed.taken ~= collection.holder then
+		local mine = owed ~= nil and claim ~= nil and rankings.is_held(owed, claim, now)
+		if not mine then
 			self.internal_placings[name] = nil
 			continue
 		end
-		if self.internal_placings[name] or self.internal_failed_changes[name] == owed.from then
+		local held = owed :: any
+		local current = rankings.current_period(store, now)
+		if current.kind ~= "period" or self.internal_failed_changes[name] == held.from then
 			continue
 		end
-		local ok, placing = pcall(rankings.resolve, collection.config, retry, store, values.key, owed, now)
+		local cached = self.internal_placings[name]
+		if
+			cached
+			and cached.from == held.from
+			and cached.last == rankings.covered_last(store, held, current.period, now)
+		then
+			continue
+		end
+		local ok, placing =
+			pcall(rankings.resolve, collection.config, retry, store, values.key, held, current.period, now)
 		if not ok then
 			logging.warn(messages.warnings.top_failed(values.key, name, placing))
 			continue
 		end
 		if #placing.periods == 0 then
-			drop_owed(self, name)
+			settle_owed(self, name, held, placing)
 			continue
 		end
 		self.internal_placings[name] = placing
@@ -710,15 +711,14 @@ local function pull_now(self: SessionInternal, retry: RetryConfig): boolean
 	local pull = accept(self, first or run_update(self, retry))
 	local adopted = adopt(self, pull)
 	queue_pushes(self, pull)
-	restamp(self, pull)
 
 	if fetch_unknown(self, pull) then
 		pull = accept(self, run_update(self, retry))
 		adopted = adopt(self, pull) or adopted
 		queue_pushes(self, pull)
-		restamp(self, pull)
 	end
 	forget_state(self)
+	table.clear(self.internal_resets)
 	push_scores(self, retry)
 	resolve_owed(self, retry)
 
@@ -779,8 +779,10 @@ local function unload(self: SessionInternal, retry: RetryConfig?)
 				push_scores(self, retry or self.internal_collection.config)
 			end)
 		end
-		close(self, { kind = "clean" })
-		return
+		if is_idle(self) then
+			close(self, { kind = "clean" })
+			return
+		end
 	end
 	self.internal_values.status = table.freeze({ kind = "closing" })
 	local ok, err = pcall(pull_with, self, retry or self.internal_collection.config)
@@ -844,6 +846,7 @@ local function wipe(self: SessionInternal)
 		table.clear(self.internal_unwritten)
 		table.clear(self.internal_awaiting)
 		table.clear(self.internal_pushes)
+		table.clear(self.internal_resets)
 		table.clear(self.internal_placings)
 		table.clear(self.internal_failed_changes)
 		self.internal_seed = nil
@@ -895,7 +898,11 @@ local template = {
 		push_failing = false,
 	},
 	internal_collection = (nil :: any) :: CollectionState,
+	internal_receiving = function()
+		return true
+	end,
 	internal_pushes = {},
+	internal_resets = {},
 	internal_placings = {},
 	internal_failed_changes = {},
 	internal_base = empty_state(),
@@ -941,11 +948,17 @@ local meta = {
 	end,
 }
 
-local function create_session(collection: CollectionState, key: string, migrate: Migrate): SessionInternal
+local function create_session(
+	collection: CollectionState,
+	key: string,
+	migrate: Migrate,
+	receiving: (() -> boolean)?
+): SessionInternal
 	local session = table.clone(template)
 	session.internal_values = table.clone(template.internal_values)
 	session.internal_values.key = key
 	session.internal_collection = collection
+	session.internal_receiving = receiving or session.internal_receiving
 	session.internal_base = empty_state()
 	session.internal_migrate = migrate
 	session.internal_hooks = {}
@@ -955,14 +968,20 @@ local function create_session(collection: CollectionState, key: string, migrate:
 	session.internal_watchers = {}
 	session.internal_landed = {}
 	session.internal_pushes = {}
+	session.internal_resets = {}
 	session.internal_placings = {}
 	session.internal_failed_changes = {}
 	setmetatable(session, meta)
 	return session :: SessionInternal
 end
 
-local function load_session(collection: CollectionState, key: string, migrate: Migrate): SessionInternal
-	local session = create_session(collection, key, migrate)
+local function load_session(
+	collection: CollectionState,
+	key: string,
+	migrate: Migrate,
+	receiving: (() -> boolean)?
+): SessionInternal
+	local session = create_session(collection, key, migrate, receiving)
 	local config = collection.config
 	pull_now(session, config)
 	if config.foreign and session.internal_values.version == 0 then

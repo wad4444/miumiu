@@ -225,9 +225,15 @@ export type OrderedStore = {
 
 export type Push = { name: string, score: number? }
 
-export type Owed = { from: number, last: number, value: any, taken: string?, taken_at: number? }
+export type Owed = {
+	from: number,
+	last: number,
+	values: { [string]: any },
+	taken: string?,
+	taken_at: number?,
+}
 
-export type Claim = { id: string, timeout: number }
+export type Claim = { id: string, timeout: number, receiving: boolean }
 
 export type OrderedRecord = { period: number?, pushed: number?, owed: Owed? }
 
@@ -237,7 +243,7 @@ export type Periods = { [string]: number }
 
 export type PeriodPlace = { period: number, value: any, place: number }
 
-export type Placing = { store: OrderedStore, from: number, periods: { PeriodPlace } }
+export type Placing = { store: OrderedStore, from: number, last: number, periods: { PeriodPlace } }
 
 export type OrderedEntry = { key: string, score: number }
 
@@ -490,6 +496,7 @@ export type Batch = {
 	is_settled: (Batch) -> boolean,
 	hook: BatchHook,
 	await: (Batch) -> SettledOutcome,
+	silence: (Batch) -> (),
 }
 
 export type BatchPhase = { kind: "running" } | { kind: "held", result: any }
@@ -500,6 +507,7 @@ export type BatchInternal = Batch & {
 		outcome: Outcome,
 		phase: BatchPhase,
 		awaited: boolean,
+		silenced: boolean,
 		flush: (() -> ())?,
 	},
 	internal_hooks: CallbackRegistry,
@@ -554,14 +562,12 @@ export type Pull = {
 	record: StoredRecord?,
 	wrote: boolean,
 	pushes: { [string]: Push },
-	resets: { [string]: number },
 }
 
 export type SessionInternal = Session & {
 	symbol: Symbol,
 	internal_values: {
 		key: string,
-		id: string,
 		status: SessionStatus,
 		version: number,
 		written: string?,
@@ -571,7 +577,9 @@ export type SessionInternal = Session & {
 		push_failing: boolean,
 	},
 	internal_collection: CollectionState,
+	internal_receiving: () -> boolean,
 	internal_pushes: { [string]: Push },
+	internal_resets: { [string]: number },
 	internal_placings: { [string]: Placing },
 	internal_failed_changes: { [string]: number },
 	internal_base: State,

@@ -265,7 +265,9 @@ jecs.meta(weekly_coins, miumiu.ordered, {
 | `poll_interval` | seconds after a period's end before its ranking is read for `on_period_change`; default 60. A change whose holder never delivered it is taken over after `commit_timeout` |
 
 Its entity's `jecs.Name`, required, is the `OrderedDataStore` name: unique among the
-world's ordered stores, different from every collection's store, and at most 40
+world's ordered stores, different from every collection's store, and not another store's
+name followed by a period index (a store named `weekly_3` would share a DataStore with
+period 3 of a store named `weekly`), and at most 40
 characters so that a period suffix fits the 50 a DataStore name allows. The score must be an
 integer; Roblox documents ordered values as positive integers, so a negative score
 counts as nil with one warning per store. A lower-is-better metric reads with
@@ -310,8 +312,12 @@ without an initial is unranked.
 The record keeps its ranking bookkeeping in `data["miumiu.ordered"]`, one entry per
 ordered store name: `{ period, pushed, owed }`. `period` is the index the field's value
 belongs to, `pushed` the last score pushed to the store, `owed` the finished periods no
-holder has delivered yet, with the value they carry and the lease naming the holder that
-took them, until `on_period_change` has run. An entry whose shape is
+holder has delivered yet: `{ from, last, values }`, the first and last of them and the
+field's value at each crossing that produced one, plus the lease naming the holder that
+took them. Each of the three is written as its own path, never as one put of the whole
+entry, so an ordinary push cannot outrank a pending delivery. An entry whose `from` or
+`last` is missing, fractional or out of order is read as absent, and so is a lease whose
+holder is not a string or whose stamp is not a number. An entry whose shape is
 wrong (a hand-written record, a newer build's field the reader does not know) is read as
 if the bad fields were absent, never as a reason to fail the key, and the fields the
 reader does not know survive its writes. It is data like any other key
@@ -354,25 +360,35 @@ a write rather than a read. A transform that finds an owed entry that is due, an
 `taken` is either absent or older than `commit_timeout`, stamps it with the holder's id
 and the time in the same `UpdateAsync` that writes the record; a second server's
 transform then sees a fresh lease and leaves it alone. Only the holder named by the
-record resolves and runs the change, and if that holder dies before running it the lease
-goes stale and the next one takes it over. A session already closing takes no lease: it
-could not run the change anyway, and the next load will. Two entities of one world linked
-to the same key share one session, so they were never at risk of running it twice.
+record, and only while its lease is still fresh, resolves and runs the change; a holder
+that dies before running it loses the lease and the next one takes it over. Three kinds
+of holder take no lease at all, because none of them could deliver: a session already
+closing, a session whose every entity on that key is `data_shallow` (a gift link), and a
+build whose store declares no `on_period_change`. Two entities of one world linked to the
+same key share one session, so they were never at risk of running it twice.
 
-Due means the ending period has been over for `poll_interval` seconds, long enough for
-the final pushes of sessions that were dirty at the rollover. The holder then reads the
-top `period_threshold` entries of each owed period's ranking, once per server, store and
-period (cached; `get_top` of a finished period reads the same cache), and keeps the
-periods the key placed in. `on_period_change` is for the keys that placed: a period the
+A period is deliverable once it has been over for `poll_interval` seconds, long enough
+for the final pushes of sessions that were dirty at the rollover; a period older than
+that waits for nothing. A holder therefore delivers `from` up to the newest deliverable
+period, which is never past the last period this server itself considers finished, and
+never more than sixteen periods in one pull: what is left keeps its place in the record
+with `from` advanced, and the next pull continues. That bound is what keeps a record
+absent for a year, or one written before the period's length changed, from spending a
+ranking read per period inside the session's lock. The holder reads the top
+`period_threshold` entries of each period it delivers, once per server, store and period
+(cached; `get_top` of a finished period reads the same cache), and keeps the periods the
+key placed in. `on_period_change` is for the keys that placed: a period the
 key is not in the top of does not call it, and a key that placed in none settles the
 change with a `drop` and no call at all.
 
 The next `step` then runs `on_period_change(world, entity, value, place, period)` on the
 first loaded, non-shallow entity of the key, once per placed period in order, `place`
 always being a rank within `period_threshold`; the value is the field as that period held
-it, which for the first is the value the crossing found and for the rest is the initial,
-or that same value for a store that does not reset. Every call of one change runs inside
-one `batch` whose group also carries the `drop` of `owed`: the callback's writes (a
+it, since every crossing records what it found under its own period, a period nobody
+played gets the initial, and a store that does not reset carries the last recorded value
+forward instead. Every call of one change runs inside
+one `batch` whose group also carries the settlement of `owed`, which narrows it to the
+periods still undelivered or drops it when none are left: the callback's writes (a
 reward) and the claim land together or not at all, so a refused batch, a crash before the
 write or a throwing `on_period_change` (warned) leave it owed and a later load runs it
 again. It runs on the stepping thread and must not yield. A callback that threw blocks
@@ -590,7 +606,8 @@ end)
   the batch still holds) and a warning when nothing hooked or awaited the handle in the
   same frame. The handle: `get_outcome` (`pending`, `landed`, `refused` with the
   message), `get_result` (what the function returned), `get_keys` (the stored keys it
-  touched), `is_settled`, `hook(landed | refused)` (fires at once when
+  touched), `is_settled`, `silence` (accept a refusal without the unhooked warning),
+  `hook(landed | refused)` (fires at once when
   already settled, pcalled and warned like session hooks), `await` (yields until settled
   and returns the outcome, never throws: the durability point). A nested `batch` or `delta`
   returns the outer handle. Every key in a multi-key batch must share one
@@ -809,7 +826,7 @@ once); a game's `BindToClose` has 30, and the budget is per world. A
 final write the record refuses (newer server) is warned about as lost.
 
 `Batch` is the public surface of one `batch`/`delta` call: `get_outcome`, `get_result`,
-`get_keys`, `is_settled`, `hook(landed | refused)`, `await`; one key settles through the session's
+`get_keys`, `is_settled`, `hook(landed | refused)`, `await`, `silence`; one key settles through the session's
 watch on whichever write carries it, several keys through the commit sequence above in a
 thread of their own. `miumiu.hook(world, refused, fn)` is
 the world-level listener: every refusal on the world reaches it after the batch's own

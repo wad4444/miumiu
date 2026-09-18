@@ -212,6 +212,8 @@ declare namespace miumiu {
 		is_settled(): boolean;
 		/** Connect to `landed` or `refused`; fires at once if already settled. Returns a disconnect. Callbacks are pcalled and a throw is warned, never raised. */
 		hook<H extends LandedHook | RefusedHook>(hook: H, callback: (...args: H["__hook"]) => void): () => void;
+		/** Accept a refusal silently: the library warns when a batch is refused with nothing hooked and nothing awaiting it, and this says that was expected. It does not stop a world-level `refused` listener from firing. */
+		silence(): void;
 		/** Writes a single-key batch now, then yields until settled and returns the outcome (`landed`, or `refused` with the message); never throws, except when called inside the batch's own function. The result is the decision: branch on it, never discard it. The durability point for receipts. A refusal warns when nothing hooked `refused` or awaited the batch in the same frame. */
 		await(): SettledOutcome;
 	}

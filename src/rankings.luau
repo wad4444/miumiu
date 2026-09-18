@@ -39,6 +39,7 @@ local reserved_prefix = "miumiu."
 local name_limit = 40
 local store_limit = 50
 local page_limit = 100
+local resolve_limit = 16
 local defaults = { period_threshold = 10, poll_interval = 60 }
 
 local stores = setmetatable({} :: { [DataStoreService]: { [string]: OrderedDataStore } }, { __mode = "k" })
@@ -139,6 +140,14 @@ local function store_name(store: OrderedStore, index: number?): string
 	return if index == nil then store.name else `{store.name}_{index}`
 end
 
+local function suffixed(periodic: OrderedStore, other: OrderedStore): boolean
+	return periodic.period ~= nil and string.match(other.name, `^{periodic.name}_%d+$`) ~= nil
+end
+
+local function shares_store(store: OrderedStore, other: OrderedStore): boolean
+	return suffixed(store, other) or suffixed(other, store)
+end
+
 local function create_store(
 	world: World,
 	entity: Entity,
@@ -231,6 +240,28 @@ local function records_of(truth: Data): { [string]: OrderedRecord }
 	return if type(records) == "table" then records else {}
 end
 
+local function stored_owed(stored: any): Owed?
+	if type(stored) ~= "table" then
+		return nil
+	end
+	local from, last = stored.from, stored.last
+	local ordered = type(from) == "number" and type(last) == "number" and from % 1 == 0 and last % 1 == 0
+	if not ordered or from > last then
+		return nil
+	end
+	local owed: Owed = table.clone(stored)
+	if type(owed.values) ~= "table" then
+		owed.values = {}
+	end
+	if type(owed.taken) ~= "string" then
+		owed.taken = nil
+	end
+	if type(owed.taken_at) ~= "number" then
+		owed.taken_at = nil
+	end
+	return owed
+end
+
 local function stored_record(truth: Data, name: string): OrderedRecord
 	local stored: any = records_of(truth)[name]
 	if type(stored) ~= "table" then
@@ -243,10 +274,7 @@ local function stored_record(truth: Data, name: string): OrderedRecord
 	if type(record.pushed) ~= "number" then
 		record.pushed = nil
 	end
-	local owed: any = record.owed
-	if type(owed) ~= "table" or type(owed.from) ~= "number" or type(owed.last) ~= "number" then
-		record.owed = nil
-	end
+	record.owed = stored_owed(record.owed)
 	return record
 end
 
@@ -276,21 +304,35 @@ local function reset_op(key: string, value: any, at: number): Op
 	return { kind = "set", key = key, value = value, at = at }
 end
 
-local function stamped_put(state: State, path: { string }, value: any, now: number): Op
+local function field_op(state: State, name: string, field: string, value: any, now: number): Op
+	local path = { name, field }
 	local at = math.max(now, ops.path_floor(state.stamps, record_key, path) + 1)
+	if value == nil then
+		return { kind = "drop", key = record_key, path = path, at = at }
+	end
 	return { kind = "put", key = record_key, path = path, value = value, at = at }
 end
 
-local function is_due(store: OrderedStore, owed: Owed, period: Period, now: number): boolean
-	return period.index > owed.from + 1 or now >= period.start + store.poll_interval
+local function delivery_limit(store: OrderedStore, period: Period, now: number): number
+	if now >= period.start + store.poll_interval then
+		return period.index - 1
+	end
+	return period.index - 2
+end
+
+local function is_fresh(owed: Owed, timeout: number, now: number): boolean
+	return owed.taken ~= nil and now - (owed.taken_at or 0) <= timeout
+end
+
+local function is_held(owed: Owed, claim: Claim, now: number): boolean
+	return is_fresh(owed, claim.timeout, now) and owed.taken == claim.id
 end
 
 local function claim_owed(store: OrderedStore, owed: Owed, period: Period, now: number, claim: Claim?): Owed?
-	if claim == nil then
+	if claim == nil or not claim.receiving or store.on_period_change == nil then
 		return nil
 	end
-	local held = owed.taken ~= nil and (owed.taken == claim.id or now - (owed.taken_at or 0) <= claim.timeout)
-	if held or not is_due(store, owed, period, now) then
+	if delivery_limit(store, period, now) < owed.from or is_fresh(owed, claim.timeout, now) then
 		return nil
 	end
 	local taken = table.clone(owed)
@@ -319,15 +361,15 @@ local function roll_store(store: OrderedStore, now: number, rolled: Rolled, clai
 		end
 		if store.on_period_change then
 			local owed = record.owed
-			next_record.owed = if owed
-				then {
-					from = owed.from,
-					last = index - 1,
-					value = owed.value,
-					taken = owed.taken,
-					taken_at = owed.taken_at,
-				}
-				else { from = record.period, last = index - 1, value = ops.deep_copy(value) }
+			local values = if owed then table.clone(owed.values) else {}
+			values[tostring(record.period)] = ops.deep_copy(value)
+			next_record.owed = {
+				from = if owed then owed.from else record.period,
+				last = index - 1,
+				values = values,
+				taken = if owed then owed.taken else nil,
+				taken_at = if owed then owed.taken_at else nil,
+			}
 		end
 		next_record.period = index
 		next_record.pushed = nil
@@ -339,6 +381,9 @@ local function roll_store(store: OrderedStore, now: number, rolled: Rolled, clai
 			state = ops.replay(state, { reset })
 			score = store.initial_score
 		end
+	end
+	if index == nil then
+		next_record.period = nil
 	end
 	local pushed = next_record.pushed
 	local unranked = pushed == nil and (score == nil or score == store.initial_score)
@@ -353,17 +398,21 @@ local function roll_store(store: OrderedStore, now: number, rolled: Rolled, clai
 	if owed and current.kind == "period" then
 		next_record.owed = claim_owed(store, owed, current.period, now, claim) or owed
 	end
-	if
-		next_record.period == record.period
-		and next_record.pushed == record.pushed
-		and next_record.owed == record.owed
-	then
-		rolled.state = state
-		return
+	local changed: { Op } = {}
+	if next_record.period ~= record.period then
+		table.insert(changed, field_op(state, store.name, "period", next_record.period, now))
 	end
-	local put = stamped_put(state, { store.name }, next_record, now)
-	table.insert(rolled.ops, put)
-	rolled.state = ops.replay(state, { put })
+	if next_record.pushed ~= record.pushed then
+		table.insert(changed, field_op(state, store.name, "pushed", next_record.pushed, now))
+	end
+	if next_record.owed ~= record.owed then
+		table.insert(changed, field_op(state, store.name, "owed", next_record.owed, now))
+	end
+	for _, op in changed do
+		table.insert(rolled.ops, op)
+		state = ops.replay(state, { op })
+	end
+	rolled.state = state
 end
 
 local function roll(state: State, ordered: { OrderedStore }, now: number, claim: Claim?): Rolled
@@ -512,24 +561,49 @@ local function place_of(entries: { OrderedEntry }, key: string): number?
 	return nil
 end
 
+local function covered_last(store: OrderedStore, owed: Owed, period: Period, now: number): number
+	return math.min(owed.last, delivery_limit(store, period, now), owed.from + resolve_limit - 1)
+end
+
 local function resolve(
 	config: ResolvedCollectionConfig,
 	retry: RetryConfig,
 	store: OrderedStore,
 	key: string,
 	owed: Owed,
+	period: Period,
 	now: number
 ): Placing
+	local last = covered_last(store, owed, period, now)
 	local periods: { PeriodPlace } = {}
-	for period = owed.from, owed.last do
-		local entries = top(config, retry, store, period, store.period_threshold, false, now)
+	local carried = nil
+	for index = owed.from, last do
+		local recorded = owed.values[tostring(index)]
+		if recorded ~= nil then
+			carried = recorded
+		end
+		local entries = top(config, retry, store, index, store.period_threshold, false, now)
 		local place = place_of(entries, key)
 		if place ~= nil then
-			local value = if period == owed.from or not store.reset then owed.value else store.initial
-			table.insert(periods, { period = period, value = ops.deep_copy(value), place = place })
+			local value = if recorded ~= nil then recorded elseif store.reset then store.initial else carried
+			table.insert(periods, { period = index, value = ops.deep_copy(value), place = place })
 		end
 	end
-	return { store = store, from = owed.from, periods = periods }
+	return { store = store, from = owed.from, last = last, periods = periods }
+end
+
+local function remaining(owed: Owed, last: number): Owed?
+	if last >= owed.last then
+		return nil
+	end
+	local values: { [string]: any } = {}
+	for index = last + 1, owed.last do
+		local recorded = owed.values[tostring(index)]
+		if recorded ~= nil then
+			values[tostring(index)] = recorded
+		end
+	end
+	return { from = last + 1, last = owed.last, values = values, taken = owed.taken, taken_at = owed.taken_at }
 end
 
 return table.freeze({
@@ -540,6 +614,12 @@ return table.freeze({
 	store_name = store_name,
 	owed_of = owed_of,
 	periods_of = periods_of,
+	current_period = current_period,
+	shares_store = shares_store,
+	is_held = is_held,
+	covered_last = covered_last,
+	remaining = remaining,
+	field_op = field_op,
 	roll = roll,
 	push_one = push_one,
 	score_at = score_at,

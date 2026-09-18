@@ -388,6 +388,11 @@ local function create_schema(world: World): Schema
 		local store = rankings.create_store(world, entity, entries, known)
 		local described = util.describe(world, entity)
 		local clash = by_name[store.name]
+		for _, other in by_name do
+			if rankings.shares_store(store, other) then
+				clash = other
+			end
+		end
 		if clash then
 			error(messages.errors.ordered_name_clash(described, store.name, util.describe(world, clash.entity)), 0)
 		end

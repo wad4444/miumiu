@@ -13,8 +13,11 @@ the crossing leaves alone, which may share its field with other stores), and
 within `period_threshold` of a finished period's ranking, exactly once per key and period
 however many servers hold the key, inside a batch that claims the change. The claim is a
 lease taken by a write, so one holder delivers it and a holder that dies without doing so
-is taken over after `commit_timeout`; a record that skipped periods gets one call per
-period it placed in, in order. `miumiu.get_ordered(world, entity)` returns the `Ordered`
+is taken over after `commit_timeout`; a session that is closing, one whose links on that
+key are all shallow, and a build whose store declares no callback take no lease at all. A
+record that skipped periods gets one call per period it placed in, in order, with the
+value that period held, bounded to sixteen periods per pull. `Batch:silence()` accepts a
+refusal without the unhooked-refusal warning. `miumiu.get_ordered(world, entity)` returns the `Ordered`
 handle (`get_top`, `get_score`, `get_period`, `get_name`), `miumiu.is_ordered` tells it
 apart. The record keeps its bookkeeping under `data["miumiu.ordered"]`; keys starting
 with `miumiu.` are reserved, for saveables, child kinds and `context.legacy`. `wipe`

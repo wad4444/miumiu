@@ -62,6 +62,10 @@ local function await(self: BatchInternal): SettledOutcome
 	return self.internal_values.outcome :: SettledOutcome
 end
 
+local function silence(self: BatchInternal)
+	self.internal_values.silenced = true
+end
+
 local function flush_with(self: BatchInternal, flush: () -> ())
 	self.internal_values.flush = flush
 end
@@ -105,6 +109,7 @@ local function refuse(self: BatchInternal, id: string, message: string, heard: b
 		if
 			not heard
 			and not self.internal_values.awaited
+			and not self.internal_values.silenced
 			and not callbacks.is_connected(self.internal_hooks, hooks.refused)
 		then
 			logging.warn(messages.warnings.batch_refused(id, self.internal_keys, message))
@@ -122,6 +127,7 @@ local template = {
 		outcome = table.freeze({ kind = "pending" }) :: Outcome,
 		phase = table.freeze({ kind = "held", result = nil }) :: BatchPhase,
 		awaited = false,
+		silenced = false,
 		flush = nil :: (() -> ())?,
 	},
 	internal_hooks = {},
@@ -133,6 +139,7 @@ local template = {
 	is_settled = is_settled,
 	hook = hook,
 	await = await,
+	silence = silence,
 	enter = enter,
 	hold = hold,
 	land = land,

@@ -82,6 +82,16 @@ local function convert_pending_puts(context: Context, root: Entity)
 	end
 end
 
+local function is_receiving(context: Context, link_state: LinkState): boolean
+	local receiving = false
+	for entity in link_state.entities do
+		if not is_shallow(context, entity, link_state.collection) then
+			receiving = true
+		end
+	end
+	return receiving
+end
+
 local function supply_all(context: Context, link_state: LinkState, loaded: SessionInternal)
 	local known = loaded:get_state()
 	util.run_all(entities_of(link_state), function(entity)
@@ -155,7 +165,9 @@ local function load(
 		context.world_state.warned
 	)
 	return task.defer(function()
-		local ok, result = pcall(session.load_session, collection_state, key, migrate)
+		local ok, result = pcall(session.load_session, collection_state, key, migrate, function()
+			return is_receiving(context, link())
+		end)
 		if ok then
 			table.insert(context.world_state.events, { kind = "loaded", link = link(), session = result })
 		else

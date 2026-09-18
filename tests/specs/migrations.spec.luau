@@ -1,6 +1,7 @@
 return function()
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+	local jecs = require(ReplicatedStorage.Packages.jecs)
 	local miumiu = require(ReplicatedStorage.Packages.miumiu)
 	local utils = require(ReplicatedStorage.Tests.utils)
 
@@ -361,6 +362,61 @@ return function()
 			settle(t, player)
 			local err = t.world:get(player, t.data_error)
 			expect((string.find(err, "holds children keyed by id", 1, true))).to.be.ok()
+		end)
+
+		it("carries a migration's write forty levels deep back into the record", function()
+			local t = setup({ pull_interval = never })
+			local world = t.world
+			local under = world:entity()
+			world:add(under, jecs.Exclusive)
+			local node = world:entity()
+			world:set(node, jecs.Name, "node")
+			world:set(node, miumiu.child, { via = under, key = "nodes", mode = "owned" })
+			utils.scope(world, { node }, { t.player_data, node })
+			utils.scope(world, { t.money }, { node })
+			local nested: any = { money = 1 }
+			for _ = 1, 40 do
+				nested = { nodes = { ["1"] = nested } }
+			end
+			t.backend:seed("p1", { data = nested, migrations = 0 })
+			world:set(t.player_data, miumiu.migrations, {
+				function(scratch, entity)
+					local cursor = entity
+					for _ = 1, 40 do
+						for child in scratch:each(jecs.pair(under, cursor)) do
+							cursor = child
+							break
+						end
+					end
+					scratch:set(cursor, t.money, 99)
+				end,
+			})
+			local player = utils.link_entity(t, "p1")
+			expect(world:has(player, t.data_error)).to.equal(false)
+			local found = t.backend:dump("p1").data
+			for _ = 1, 40 do
+				local _, only = next(found.nodes)
+				found = only
+			end
+			expect(found.money).to.equal(99)
+		end)
+
+		it("fails a migration that links an attached kind without its id", function()
+			local t = setup({ pull_interval = never })
+			local world = t.world
+			local k = utils.declare_kinds(world, t.player_data)
+			utils.scope(world, { t.money }, { k.container })
+			t.backend:seed("p1", { data = { money = 1 }, migrations = 0 })
+			world:set(t.player_data, miumiu.migrations, {
+				function(scratch, entity)
+					local child = scratch:entity()
+					scratch:add(child, k.container)
+					scratch:add(child, jecs.pair(k.holds, entity))
+				end,
+			})
+			local player = utils.link_entity(t, "p1")
+			expect(world:has(player, t.data_error)).to.equal(true)
+			expect(string.find(world:get(player, t.data_error), "has no id", 1, true) ~= nil).to.equal(true)
 		end)
 	end)
 end

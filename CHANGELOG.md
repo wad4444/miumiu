@@ -24,6 +24,19 @@ with `miumiu.` are reserved, for saveables, child kinds and `context.legacy`. `w
 removes the key from the collection's ordered stores. A collection with an ordered
 store needs a `data_store_service` with `GetOrderedDataStore`.
 
+Two collections of one world can no longer name the same store, an ordered config
+field the library does not know fails the schema build, and a collection config that is
+not a table fails the link. `idle_interval` is unconstrained when `pull_interval` is
+`math.huge`. `wipe` of a key whose load is still in flight cancels that load and starts
+it again instead of letting the stale record land. A record whose stored `data`,
+`stamps`, `version`, `migrations` or `format` is not the type the library writes is read
+as an empty record rather than failing the key, and a record stored with `version = 0`
+is forgotten when the store no longer holds it. `Batch:get_result()` of a batch that
+spanned several keys hands back the function's value, not the collection's config. A
+delta that changes nothing on a key leaves that key out of the batch. A delta keeps an
+untouched dictionary key containing `/` and rejects one it would drop. Owned trees and
+migrations are no longer capped at 32 levels of nesting.
+
 `Batch:await()` returns the `SettledOutcome` instead of throwing on a refusal, so a
 caller written for the throwing form must branch on the result. `Batch:get_result()`
 hands back what the function returned. `miumiu.hook(world, hooks.refused, fn)` hears

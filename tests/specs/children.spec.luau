@@ -3238,6 +3238,7 @@ return function()
 			local t, k = setup()
 			local other = utils.create_collection(t.world, t.backend)
 			t.world:set(other, jecs.Name, "other")
+			t.world:set(other, miumiu.collection, "other_store")
 			utils.scope(t.world, { t.money, k.item }, { other })
 			local player = utils.link_entity(t, "p1")
 			t.world:set(player, jecs.pair(miumiu.data_link, other), "o1")
@@ -3340,6 +3341,35 @@ return function()
 			t.world:remove(mirror, jecs.pair(k.owns, b))
 			session:sync()
 			expect(t.backend:dump("p1").data.inventory[id]).to.equal(nil)
+		end)
+
+		it("reaches a value forty levels deep in one owned tree", function()
+			local t = utils.create_fixture({ pull_interval = never })
+			local world = t.world
+			local under = world:entity()
+			world:add(under, jecs.Exclusive)
+			local node = world:entity()
+			world:set(node, jecs.Name, "node")
+			world:set(node, miumiu.child, { via = under, key = "nodes", mode = "owned" })
+			utils.scope(world, { node }, { t.player_data, node })
+			utils.scope(world, { t.money }, { node })
+			local player = utils.link_entity(t, "p1")
+			local cursor = player
+			for _ = 1, 40 do
+				local child = world:entity()
+				world:add(child, node)
+				world:add(child, jecs.pair(under, cursor))
+				cursor = child
+			end
+			world:set(cursor, t.money, 7)
+			miumiu.step(world)
+			utils.session_of(t, "p1"):sync()
+			local found = t.backend:dump("p1").data
+			for _ = 1, 40 do
+				local _, only = next(found.nodes)
+				found = only
+			end
+			expect(found.money).to.equal(7)
 		end)
 	end)
 end

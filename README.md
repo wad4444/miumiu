@@ -436,9 +436,7 @@ jecs.meta(weekly_coins, miumiu.ordered, {
 	period = { length = 7 * 86400, epoch = 345600 },
 	period_threshold = 10,
 	on_period_change = function(world, entity, value, place, period)
-		if place then
-			world:set(entity, money, world:get(entity, money) + 1000 * (11 - place))
-		end
+		world:set(entity, money, world:get(entity, money) + 1000 * (11 - place))
 	end,
 })
 ```
@@ -447,7 +445,7 @@ Every write of `coins_this_week` that changes its score pushes it with the recor
 next write (`map` turns a non-number field into the integer to rank by; the default
 floors a number). With `period` the store is per period, `weekly_coins_2831`: a new
 period starts on an empty store, the previous one stays readable, and the field resets
-to its initial when a record first pulls in the new period. `on_period_change` runs once
+to its initial when a record first pulls in the new period. `on_period_change` runs
 once per key and finished period, for the players who placed within `period_threshold`,
 with the field's value for that period and their rank, inside a batch that claims the
 change, so the reward it writes lands with the claim or not at all. The claim is taken by

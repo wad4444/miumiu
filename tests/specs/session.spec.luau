@@ -964,5 +964,46 @@ return function()
 			x:unload()
 			y:unload()
 		end)
+
+		it("forgets a record stored with version 0 once the store no longer holds it", function()
+			local backend = utils.create_backend()
+			backend:seed_raw("k", { data = { money = 5 }, stamps = { money = 1 }, version = 0, migrations = 0 })
+			local loaded = utils.open_session(backend, "k")
+			expect(loaded:get_truth().money).to.equal(5)
+			backend.store:RemoveAsync("k")
+			loaded:sync()
+			expect(loaded:get_truth().money).to.equal(nil)
+			expect(backend:dump("k")).to.equal(nil)
+			loaded:unload()
+		end)
+
+		it("reads a record whose stored fields are not the types it writes as an empty one", function()
+			local backend = utils.create_backend()
+			backend:seed_raw("k", { data = 5, stamps = 7, version = "one", migrations = "none", format = "old" })
+			local loaded = utils.open_session(backend, "k")
+			expect((next(loaded:get_truth()))).to.equal(nil)
+			utils.journal(loaded, { set("money", 3, os.time()) })
+			loaded:sync()
+			expect(backend:dump("k").data.money).to.equal(3)
+			loaded:unload()
+		end)
+
+		it("keeps only the stamps stored as a string key and a number", function()
+			local backend = utils.create_backend()
+			backend:seed_raw("k", {
+				data = { money = 5 },
+				stamps = { money = 2, items = "soon" },
+				version = 1,
+				migrations = 0,
+			})
+			local loaded = utils.open_session(backend, "k")
+			utils.journal(loaded, { set("items", { "a" }, os.time()) })
+			loaded:sync()
+			local record = backend:dump("k")
+			expect(record.data.money).to.equal(5)
+			expect(record.data.items[1]).to.equal("a")
+			expect(record.stamps.items > 0).to.equal(true)
+			loaded:unload()
+		end)
 	end)
 end

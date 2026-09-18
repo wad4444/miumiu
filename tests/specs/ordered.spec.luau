@@ -1072,25 +1072,22 @@ return function()
 					end
 				end,
 			})
-			local player = utils.link_entity(t, "p1", { money = 5 })
+			utils.link_entity(t, "p1", { money = 5 })
 			local session = utils.session_of(t, "p1")
 			clock.index = 2
 			session:sync()
 			miumiu.step(t.world)
 			expect(runs).to.equal(1)
-			utils.journal(
-				session,
-				{ { kind = "drop", key = bookkeeping, path = { "weekly", "owed" }, at = os.time() } }
-			)
-			session:sync()
-			expect(record_of(t, "p1", "weekly").owed).to.equal(nil)
-			t.world:set(player, t.money, 9)
-			session:sync()
+			expect(record_of(t, "p1", "weekly").owed.from).to.equal(1)
 			clock.index = 3
 			session:sync()
-			expect(record_of(t, "p1", "weekly").owed.from).to.equal(2)
 			miumiu.step(t.world)
 			expect(runs).to.equal(2)
+			for _ = 1, 4 do
+				session:sync()
+				miumiu.step(t.world)
+			end
+			expect(record_of(t, "p1", "weekly").owed).to.equal(nil)
 		end)
 
 		it("skips a change the record no longer owes", function()
@@ -1789,6 +1786,85 @@ return function()
 			miumiu.step(t.world)
 			expect(runs).to.equal(0)
 			expect(session:is_open()).to.equal(true)
+		end)
+
+		it("lets a periodic store live beside a name that only looks like its suffix", function()
+			local world, collection, money = declare_world()
+			local gold = utils.declare_saveable(world, "component", "gold", { collection })
+			utils.declare_ordered(world, collection, "a.b", { component = money, period = 100 })
+			utils.declare_ordered(world, collection, "axb_1", { component = gold })
+			local ordered = schema.create_schema(world).roots[collection].ordered
+			expect(#ordered).to.equal(2)
+		end)
+
+		it("rejects an ordered config field it does not know", function()
+			local world, collection, money = declare_world()
+			utils.declare_ordered(world, collection, "coins", { component = money, top = 3 } :: any)
+			expect(function()
+				schema.create_schema(world)
+			end).to.throw("has no field")
+		end)
+
+		it("names the period's own store when the ranking cannot be removed on wipe", function()
+			local t = setup({ pull_interval = never, retry_attempts = 1 })
+			local clock = create_clock(3)
+			utils.declare_ordered(t.world, t.player_data, "weekly", { component = t.money, period = clock.period })
+			utils.link_entity(t, "p1", { money = 5 })
+			t.backend:fail_next("OrderedRemoveAsync", "before")
+			miumiu.wipe(t.world, t.player_data, "p1")
+			expect(utils.warned(t.backend, "weekly_3")).to.equal(true)
+		end)
+
+		it("warns once while the finished ranking keeps failing to read", function()
+			local t = setup({ pull_interval = never, retry_attempts = 1 })
+			local clock = create_clock(1)
+			local runs = 0
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.money,
+				period = clock.period,
+				poll_interval = 0,
+				on_period_change = function()
+					runs += 1
+				end,
+			})
+			utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			clock.index = 2
+			t.backend:fail_next("GetSortedAsync", "before")
+			session:sync()
+			t.backend:fail_next("GetSortedAsync", "before")
+			session:sync()
+			expect(utils.warning_count(t.backend, "could not be read")).to.equal(1)
+			session:sync()
+			miumiu.step(t.world)
+			expect(runs).to.equal(1)
+		end)
+
+		it("leaves an owed change it already holds alone once the period starts failing", function()
+			local t = setup({ pull_interval = never })
+			local clock = create_clock(1)
+			local failing = false
+			utils.declare_ordered(t.world, t.player_data, "weekly", {
+				component = t.money,
+				period = function(now: number)
+					if failing then
+						error("boom")
+					end
+					return clock.period(now)
+				end,
+				poll_interval = 0,
+				on_period_change = function() end,
+			})
+			utils.link_entity(t, "p1", { money = 5 })
+			local session = utils.session_of(t, "p1")
+			clock.index = 2
+			session:sync()
+			expect(record_of(t, "p1", "weekly").owed.taken ~= nil).to.equal(true)
+			local reads = t.backend.calls.GetSortedAsync
+			failing = true
+			session:sync()
+			expect(t.backend.calls.GetSortedAsync).to.equal(reads)
+			expect(record_of(t, "p1", "weekly").owed.from).to.equal(1)
 		end)
 	end)
 end

@@ -240,6 +240,9 @@ local errors = table.freeze({
 	pairs_targets_invalid = function(id: unknown)
 		return prefixed(`saveable {id}: meta(id, miumiu.pairs, \{ targets = list }) takes a list of entities`)
 	end,
+	config_not_table = function(collection: unknown)
+		return prefixed(`collection {collection}: meta(entity, miumiu.config, config) takes a table`)
+	end,
 	bad_config_field = function(collection: unknown, field: string)
 		return prefixed(`collection {collection}: config has no field "{field}"`)
 	end,
@@ -264,8 +267,11 @@ local errors = table.freeze({
 	end,
 	ordered_config_invalid = function(entity: unknown, why: string)
 		return prefixed(
-			`ordered store {entity} is misconfigured: {why}; meta(entity, miumiu.ordered, config) takes component, period, map, period_threshold, poll_interval and on_period_change`
+			`ordered store {entity} is misconfigured: {why}; meta(entity, miumiu.ordered, config) takes component, period, reset, map, period_threshold, poll_interval and on_period_change`
 		)
+	end,
+	ordered_config_field = function(entity: unknown, field: string)
+		return prefixed(`ordered store {entity}: config has no field "{field}"`)
 	end,
 	ordered_unnamed = function(entity: unknown, limit: number)
 		return prefixed(
@@ -275,6 +281,11 @@ local errors = table.freeze({
 	ordered_name_long = function(entity: unknown, name: string, limit: number)
 		return prefixed(
 			`ordered store {entity} would use the store name "{name}", which is over the {limit}-character DataStore limit: shorten its jecs.Name or lengthen its period`
+		)
+	end,
+	store_name_clash = function(collection: unknown, name: string, other: unknown)
+		return prefixed(
+			`collections {collection} and {other} both store under "{name}": one DataStore holds one collection`
 		)
 	end,
 	ordered_name_clash = function(entity: unknown, name: string, other: unknown)

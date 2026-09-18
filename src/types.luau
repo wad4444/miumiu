@@ -245,6 +245,8 @@ export type PeriodPlace = { period: number, value: any, place: number }
 
 export type Placing = { store: OrderedStore, from: number, last: number, periods: { PeriodPlace } }
 
+export type FailedChange = { from: number, last: number }
+
 export type OrderedEntry = { key: string, score: number }
 
 export type TopCache = { entries: { OrderedEntry }, complete: boolean }
@@ -569,19 +571,21 @@ export type SessionInternal = Session & {
 	internal_values: {
 		key: string,
 		status: SessionStatus,
+		adopted: boolean,
 		version: number,
 		written: string?,
 		pulls: number,
 		touched: boolean,
 		prepare: (() -> ())?,
 		push_failing: boolean,
+		top_failing: boolean,
 	},
 	internal_collection: CollectionState,
 	internal_receiving: () -> boolean,
 	internal_pushes: { [string]: Push },
 	internal_resets: { [string]: number },
 	internal_placings: { [string]: Placing },
-	internal_failed_changes: { [string]: number },
+	internal_failed_changes: { [string]: FailedChange },
 	internal_base: State,
 	internal_migrate: Migrate,
 	internal_seed: Data?,
@@ -607,7 +611,7 @@ export type SessionInternal = Session & {
 	unload: (SessionInternal, retry: RetryConfig?) -> (),
 	discard: (SessionInternal, message: string) -> (),
 	get_placings: (SessionInternal) -> { [string]: Placing },
-	forget_placing: (SessionInternal, name: string, period: number, failed: boolean) -> (),
+	forget_placing: (SessionInternal, name: string, placing: Placing, failed: boolean) -> (),
 }
 
 export type LinkPhase =

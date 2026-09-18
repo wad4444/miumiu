@@ -41,6 +41,15 @@ local store_limit = 50
 local page_limit = 100
 local resolve_limit = 16
 local defaults = { period_threshold = 10, poll_interval = 60 }
+local known_fields = {
+	component = true,
+	period = true,
+	map = true,
+	period_threshold = true,
+	poll_interval = true,
+	on_period_change = true,
+	reset = true,
+}
 
 local stores = setmetatable({} :: { [DataStoreService]: { [string]: OrderedDataStore } }, { __mode = "k" })
 local tops = setmetatable({} :: { [DataStoreService]: { [string]: TopCache } }, { __mode = "k" })
@@ -141,7 +150,14 @@ local function store_name(store: OrderedStore, index: number?): string
 end
 
 local function suffixed(periodic: OrderedStore, other: OrderedStore): boolean
-	return periodic.period ~= nil and string.match(other.name, `^{periodic.name}_%d+$`) ~= nil
+	if periodic.period == nil then
+		return false
+	end
+	local prefix = `{periodic.name}_`
+	if string.sub(other.name, 1, #prefix) ~= prefix then
+		return false
+	end
+	return string.match(string.sub(other.name, #prefix + 1), "^%d+$") ~= nil
 end
 
 local function shares_store(store: OrderedStore, other: OrderedStore): boolean
@@ -159,6 +175,11 @@ local function create_store(
 	local config: any = world:get(entity, ids.ordered)
 	if type(config) ~= "table" then
 		error(messages.errors.ordered_config_invalid(described, reasons.ordered_not_table), 0)
+	end
+	for field in config do
+		if not known_fields[field] then
+			error(messages.errors.ordered_config_field(described, tostring(field)), 0)
+		end
 	end
 	local name = world:get(entity, jecs.Name)
 	if type(name) ~= "string" or #name == 0 or #name > name_limit then
@@ -458,11 +479,12 @@ local function unrank(
 			index = current.period.index
 		end
 		if current.kind ~= "failed" then
+			local full = store_name(store, index)
 			local ok, err = pcall(function()
-				datastore.remove_ordered(get_store(config, store_name(store, index)), key, retry)
+				datastore.remove_ordered(get_store(config, full), key, retry)
 			end)
 			if not ok then
-				logging.warn(messages.warnings.unrank_failed(key, store.name, err))
+				logging.warn(messages.warnings.unrank_failed(key, full, err))
 			end
 		end
 	end
@@ -607,7 +629,6 @@ local function remaining(owed: Owed, last: number): Owed?
 end
 
 return table.freeze({
-	record_key = record_key,
 	is_reserved = is_reserved,
 	create_store = create_store,
 	period_of = period_of,

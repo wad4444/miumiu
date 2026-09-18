@@ -383,6 +383,9 @@ local function record_component(context: Context, capture: Capture, owner: Held,
 		local group_ops = if capture.delta
 			then delta_ops(session, entry, previous, write.value)
 			else { codec.op_for(entry, write.change, write.value) }
+		if #group_ops == 0 then
+			continue
+		end
 		capture_ops(capture, { session }, group_ops, nil)
 	end
 end

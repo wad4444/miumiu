@@ -122,7 +122,7 @@ local function ancestry(world_state: WorldState, entity: Entity): Ancestry?
 	local segments: { string } = {}
 	local current = entity
 	local top: ChildRecord? = nil
-	for _ = 1, 32 do
+	while true do
 		if world_state.links[current] and top then
 			local path = table.create(#segments)
 			for position = #segments, 1, -1 do
@@ -139,7 +139,6 @@ local function ancestry(world_state: WorldState, entity: Entity): Ancestry?
 		top = link
 		current = link.parent
 	end
-	return nil
 end
 
 local function lookup_entity(index: ChildIndex, root: Entity, path: { string }): Entity

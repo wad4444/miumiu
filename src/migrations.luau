@@ -70,7 +70,7 @@ local function touch(scratch: MigrationScratch, entity: Entity)
 	end
 	local index = scratch.children
 	local current = entity
-	for _ = 1, 32 do
+	while true do
 		local held = index.by_entity[current]
 		if not held then
 			return
@@ -93,7 +93,11 @@ local function index_relation(scratch: MigrationScratch, write: RelationWrite)
 		end
 		return
 	end
-	local id = children.resolve_id(world, write.entity, write.child) or children.mint_id(world, write.entity)
+	local id = children.resolve_id(world, write.entity, write.child)
+	if id == nil and write.child.mode == "attached" then
+		error(messages.errors.child_unnamed(tostring(write.entity), tostring(write.child.tag)), 0)
+	end
+	id = id or children.mint_id(world, write.entity)
 	children.record(index, write.entity, write.child, write.parent, id)
 	touch(scratch, write.entity)
 end

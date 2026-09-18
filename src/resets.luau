@@ -29,7 +29,7 @@ local function run_one(context: Context, loaded: SessionInternal, entity: Entity
 	local world = context.world
 	local owed = rankings.owed_of(loaded:get_truth(), name)
 	if owed == nil or owed.from ~= placing.from then
-		loaded:forget_placing(name, placing.from, false)
+		loaded:forget_placing(name, placing, false)
 		return
 	end
 	local on_period_change = placing.store.on_period_change :: OnPeriodChange
@@ -44,7 +44,7 @@ local function run_one(context: Context, loaded: SessionInternal, entity: Entity
 		end)
 		handle:silence()
 	end)
-	loaded:forget_placing(name, placing.from, not ok)
+	loaded:forget_placing(name, placing, not ok)
 	if not ok then
 		logging.warn(messages.warnings.period_change_failed(loaded:get_key(), name, err))
 	end

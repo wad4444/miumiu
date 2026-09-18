@@ -40,8 +40,8 @@ src/listeners.luau    data_link listeners → events; install/uninstall
 src/link.luau         link lifecycle: link/unlink/loaded/load_failed/closed/pulled handlers, cleanups, get_session, wipe_key, detach_all, resupply
 src/step.luau         the event loop, get_session, wipe, close, the world-level hook
 src/batch.luau        batch/delta: capture, single-key groups journaled and settled through the session's watch (await flushes them), shared commit in the background, rollback
-src/handle.luau       Batch: the handle batch/delta return (outcome, result and keys via hold/get_result/get_keys, landed/refused hooks, await, which runs the flush installed by flush_with; cake-style class)
-src/rankings.luau     ordered stores, storage side: declaration discovery and validation (create_store), period math, map to score, the transform-side roll (period reset, push bookkeeping under data["miumiu.ordered"], owed changes), push_one, unrank on wipe, top reads with the finished-period cache, owed resolution (is_due, resolve)
+src/handle.luau       Batch: the handle batch/delta return (outcome, result and keys via hold/get_result/get_keys, landed/refused hooks, silence, await, which runs the flush installed by flush_with; cake-style class)
+src/rankings.luau     ordered stores, storage side: declaration discovery and validation (create_store), period math, map to score, the transform-side roll (period reset, push bookkeeping under data["miumiu.ordered"], owed changes), push_one, unrank on wipe, top reads with the finished-period cache, owed resolution (claim_owed, resolve)
 src/ordered.luau      Ordered: the handle get_ordered returns (get_name, get_period, get_top, get_score; cake-style class), is_ordered
 src/resets.luau       runs on_period_change at step for each session's resolved placings, inside a batch that carries the drop of the claim (capture.record_ops)
 src/index.d.ts        the roblox-ts surface

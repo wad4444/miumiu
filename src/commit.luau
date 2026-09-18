@@ -81,6 +81,11 @@ local function resolve(state: State, pending: Pending): Resolution
 	local decided: { string } = {}
 
 	for id, entry in pending do
+		if type(entry) ~= "table" or type(entry.ops) ~= "table" then
+			next_pending = util.own(pending, next_pending)
+			next_pending[id] = nil
+			continue
+		end
 		local known = get_status(id)
 		if known == "unknown" then
 			table.insert(unknown, id)

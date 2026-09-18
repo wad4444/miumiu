@@ -350,8 +350,9 @@ per record write, on the `SetIncrementSortedAsync` budget, which nothing else in
 library uses.
 
 Changes. When a transform rolls a record over and the store declares `on_period_change`,
-it records `owed = { from, last, value }`: the first finished period nobody has delivered
-yet, the last one, and the field's stored value as the crossing found it. A record that
+it records `owed = { from, last, values }`: the first finished period nobody has delivered
+yet, the last one, and the field's stored value under each period the crossing found it
+in. The lease a holder takes adds `taken` and `taken_at` to the same entry. A record that
 crosses again before its change is delivered extends `last` and keeps `from`, so a key
 away for three periods owes all three, not the newest.
 
@@ -960,9 +961,12 @@ Rules:
 a function of the key, returns the user ids every `UpdateAsync` and wipe of that key
 carries (the DataStore GDPR association); it must be a function or absent.
 `pull_interval` and `commit_timeout` must be positive, `idle_interval` at least
-`pull_interval`, `retry_attempts` at least 1, `retry_base` at least 0, `commit_store` a
-non-empty string, `data_store_service` a table offering `GetDataStore`; a config field
-the library does not know fails the link, and so does anything above. `pull_interval =
+`pull_interval` unless `pull_interval` is `math.huge`, which leaves it unconstrained
+because no pull loop runs, `retry_attempts` at least 1, `retry_base` at least 0,
+`commit_store` a non-empty string, `data_store_service` a table offering `GetDataStore`;
+a config that is not a table, and a config field the library does not know, fail the
+link, and so does anything above. Two collections of one world cannot name the same
+store: one DataStore holds one collection, and the schema build says so. `pull_interval =
 math.huge` runs no pull loop at all, so idle reads are off whatever `idle_interval` says:
 only `sync`, `await`, an unlink and `close` write. On the real `DataStoreService` a
 `pull_interval` under Roblox's 6 s per-key write cooldown warns once per collection.

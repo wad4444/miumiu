@@ -63,7 +63,9 @@ end
 
 local function validate_config(described: string, config: ResolvedCollectionConfig, given: CollectionConfig)
 	validate_number(described, "pull_interval", config.pull_interval, 0, true)
-	validate_number(described, "idle_interval", config.idle_interval, config.pull_interval, false)
+	if config.pull_interval ~= math.huge then
+		validate_number(described, "idle_interval", config.idle_interval, config.pull_interval, false)
+	end
 	validate_number(described, "retry_attempts", config.retry_attempts, 1, false)
 	validate_number(described, "retry_base", config.retry_base, 0, false)
 	validate_number(described, "commit_timeout", config.commit_timeout, 0, true)
@@ -99,6 +101,9 @@ local function resolve_config(world: World, collection: Entity): ResolvedCollect
 		error(messages.errors.collection_unnamed(described), 0)
 	end
 	local given: CollectionConfig = world:get(collection, ids.config) or {}
+	if type(given) ~= "table" then
+		error(messages.errors.config_not_table(described), 0)
+	end
 
 	local source: ForeignSource? = world:get(collection, ids.from_foreign)
 	if source then

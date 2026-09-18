@@ -50,15 +50,18 @@ local function diff_dictionaries(key: string, previous: { [string]: any }, value
 		if type(field) ~= "string" then
 			reject(key, messages.reasons.string_keys)
 		end
-		if string.find(field, "/", 1, true) then
-			reject(key, messages.reasons.slash_keys)
-		end
 		if previous[field] ~= entry then
+			if string.find(field, "/", 1, true) then
+				reject(key, messages.reasons.slash_keys)
+			end
 			table.insert(result, { kind = "put", key = key, path = { field }, value = entry, at = at })
 		end
 	end
 	for field in previous do
 		if value[field] == nil then
+			if string.find(field, "/", 1, true) then
+				reject(key, messages.reasons.slash_keys)
+			end
 			table.insert(result, { kind = "drop", key = key, path = { field }, at = at })
 		end
 	end

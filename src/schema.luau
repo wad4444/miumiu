@@ -375,6 +375,17 @@ local function create_schema(world: World): Schema
 		known[collection] = true
 		local store_name = world:get(collection, ids.collection)
 		if type(store_name) == "string" then
+			local owner = store_names[store_name]
+			if owner then
+				error(
+					messages.errors.store_name_clash(
+						util.describe(world, collection),
+						store_name,
+						util.describe(world, owner)
+					),
+					0
+				)
+			end
 			store_names[store_name] = collection
 		end
 	end

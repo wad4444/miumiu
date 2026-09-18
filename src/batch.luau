@@ -372,10 +372,6 @@ local function flush_single(context: Context, captured: Capture, entry: CaptureE
 end
 
 local function commit_single(context: Context, captured: Capture, entry: CaptureEntry)
-	if #entry.ops == 0 then
-		land(context, captured)
-		return
-	end
 	local session = entry.session
 	local id = captured.id
 	local ok, err = pcall(session.journal, session, { id = id, ops = entry.ops, kind = "single" })
@@ -474,7 +470,10 @@ local function run(world: World, fn: () -> any, is_delta: boolean): Batch
 	local ok, result = pcall(util.sync, "batch" :: SyncKind, captured.id, fn)
 	world_state.capture = nil
 	if ok and #captured.entries > 1 then
-		ok, result = pcall(shared_config, captured.entries, captured.id)
+		local shared, err = pcall(shared_config, captured.entries, captured.id)
+		if not shared then
+			ok, result = false, err
+		end
 	end
 	if not ok then
 		try_rollback(context, captured, captured.id)

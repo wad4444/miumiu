@@ -230,29 +230,6 @@ local function snapshot_all(context: Context, link_state: LinkState)
 	guard.rethrow()
 end
 
-local function wipe_key(context: Context, collection_entity: Entity, key: string)
-	local link_state = state.link_states_of(context.world_state, collection_entity)[key]
-	if link_state and link_state.phase.kind == "unloading" then
-		local leaving = link_state.phase.session
-		local ok, err = pcall(leaving.wipe, leaving)
-		if ok then
-			return
-		end
-		if leaving:is_open() then
-			error(err, 0)
-		end
-	end
-	local loaded = state.open_session(link_state)
-	if link_state == nil or loaded == nil then
-		session.wipe_key(collection.get(context.world, collection_entity), key)
-		return
-	end
-	loaded:wipe()
-	util.run_all(entities_of(link_state), function(entity)
-		reconcile.wipe_entity(context, entity, collection_entity)
-	end)
-end
-
 local function loaded_phase(context: Context, link_state: LinkState, loaded: SessionInternal): LinkPhase
 	local events = context.world_state.events
 	local disconnect_pulled = loaded:hook(hooks.pulled, function()
@@ -393,6 +370,39 @@ local function detach(context: Context, link_state: LinkState): SessionInternal?
 	end
 	phase.disconnect()
 	return phase.session
+end
+
+local function wipe_key(context: Context, collection_entity: Entity, key: string)
+	local link_state = state.link_states_of(context.world_state, collection_entity)[key]
+	if link_state and link_state.phase.kind == "unloading" then
+		local leaving = link_state.phase.session
+		local ok, err = pcall(leaving.wipe, leaving)
+		if ok then
+			return
+		end
+		if leaving:is_open() then
+			error(err, 0)
+		end
+	end
+	if link_state ~= nil and link_state.phase.kind == "loading" then
+		local waiting = entities_of(link_state)
+		detach(context, link_state)
+		state.link_states_of(context.world_state, collection_entity)[key] = nil
+		session.wipe_key(collection.get(context.world, collection_entity), key)
+		util.run_all(waiting, function(entity)
+			on_link(context, entity, collection_entity, key)
+		end)
+		return
+	end
+	local loaded = state.open_session(link_state)
+	if link_state == nil or loaded == nil then
+		session.wipe_key(collection.get(context.world, collection_entity), key)
+		return
+	end
+	loaded:wipe()
+	util.run_all(entities_of(link_state), function(entity)
+		reconcile.wipe_entity(context, entity, collection_entity)
+	end)
 end
 
 local function resolve_drops(context: Context, root: Entity)

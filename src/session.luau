@@ -51,8 +51,26 @@ local function empty_state(): State
 	return { truth = {}, stamps = {} }
 end
 
+local function number_or(value: any, fallback: number): number
+	return if type(value) == "number" then value else fallback
+end
+
+local function stamps_of(record: StoredRecord): Stamps
+	local stored = record.stamps
+	if type(stored) ~= "table" then
+		return {}
+	end
+	local stamps: Stamps = {}
+	for key, at in stored do
+		if type(key) == "string" and type(at) == "number" then
+			stamps[key] = at
+		end
+	end
+	return stamps
+end
+
 local function state_of(record: StoredRecord): State
-	return { truth = record.data or {}, stamps = record.stamps or {} }
+	return { truth = if type(record.data) == "table" then record.data else {}, stamps = stamps_of(record) }
 end
 
 local function validate_open(self: SessionInternal)
@@ -348,6 +366,9 @@ end
 
 local function is_same_record(self: SessionInternal, old: StoredRecord): boolean
 	local values = self.internal_values
+	if not values.adopted then
+		return false
+	end
 	if old.written ~= nil or values.written ~= nil then
 		return old.written == values.written
 	end
@@ -356,7 +377,7 @@ end
 
 local function base_state(self: SessionInternal, old: StoredRecord?): State
 	if old == nil then
-		return if self.internal_values.version == 0 then self.internal_base else empty_state()
+		return if self.internal_values.adopted then empty_state() else self.internal_base
 	end
 	if is_same_record(self, old) then
 		return self.internal_base
@@ -366,7 +387,7 @@ end
 
 local function applied_migrations(self: SessionInternal, old: StoredRecord?, seeded: boolean): number
 	if old then
-		return old.migrations or 0
+		return number_or(old.migrations, 0)
 	end
 	return if seeded then 0 else #self.internal_collection.config.migrations
 end
@@ -441,7 +462,7 @@ local function build_record(self: SessionInternal, record: StoredRecord, landing
 	next_record.stamps = prune_stamps(landing.state, now, config.commit_timeout)
 	next_record.pending = if next(landing.pending) ~= nil then landing.pending else nil
 	next_record.landed = if next(next_landed) ~= nil then next_landed else nil
-	next_record.version = (record.version or 0) + 1
+	next_record.version = number_or(record.version, 0) + 1
 	next_record.written = util.create_guid()
 	next_record.migrations = #config.migrations
 	next_record.format = record_format
@@ -464,7 +485,7 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 	end
 	local record: StoredRecord = old or {}
 	local resolution: Resolution = { truth = {}, stamps = {}, pending = {}, unknown = {}, decided = {} }
-	if (record.format or record_format) > record_format then
+	if number_or(record.format, record_format) > record_format then
 		local message = messages.errors.newer_format(self.internal_values.key, record.format :: number, record_format)
 		return { kind = "newer", message = message, groups = groups, resolution = resolution }
 	end
@@ -494,7 +515,7 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 		and landing.pending == original
 		and migrated.kind == "unchanged"
 		and not seeded
-		and not (old ~= nil and record.version == nil)
+		and not (old ~= nil and type(record.version) ~= "number")
 		and #rolled.ops == 0
 	if unchanged then
 		return { kind = "unchanged", groups = groups, resolution = resolution }
@@ -551,7 +572,7 @@ local function run_read(self: SessionInternal, retry: RetryConfig): Pull?
 	local collection = self.internal_collection
 	local record: StoredRecord? = datastore.get_async(collection.store, self.internal_values.key, retry)
 	local declared = #collection.config.migrations
-	if record ~= nil and (record.version == nil or (record.migrations or 0) < declared) then
+	if record ~= nil and (type(record.version) ~= "number" or number_or(record.migrations, 0) < declared) then
 		return nil
 	end
 	local read_state = if record then state_of(record) else empty_state()
@@ -568,7 +589,8 @@ end
 local function adopt_record(self: SessionInternal, record: StoredRecord)
 	local values = self.internal_values
 	self.internal_base = state_of(record)
-	values.version = record.version or 0
+	values.adopted = true
+	values.version = if type(record.version) == "number" then record.version else 0
 	values.written = record.written
 end
 
@@ -577,11 +599,12 @@ local function adopt(self: SessionInternal, pull: Pull): boolean
 	local record = pull.record
 	forget_state(self)
 	if record == nil then
-		if values.version == 0 then
+		if not values.adopted then
 			return false
 		end
 		self.internal_base = empty_state()
 		table.clear(self.internal_awaiting)
+		values.adopted = false
 		values.version = 0
 		values.written = nil
 		return true
@@ -681,23 +704,28 @@ local function resolve_owed(self: SessionInternal, retry: RetryConfig)
 		end
 		local held = owed :: any
 		local current = rankings.current_period(store, now)
-		if current.kind ~= "period" or self.internal_failed_changes[name] == held.from then
+		if current.kind ~= "period" then
+			continue
+		end
+		local covered = rankings.covered_last(store, held, current.period, now)
+		local failed = self.internal_failed_changes[name]
+		if failed ~= nil and failed.from == held.from and failed.last == covered then
 			continue
 		end
 		local cached = self.internal_placings[name]
-		if
-			cached
-			and cached.from == held.from
-			and cached.last == rankings.covered_last(store, held, current.period, now)
-		then
+		if cached and cached.from == held.from and cached.last == covered then
 			continue
 		end
 		local ok, placing =
 			pcall(rankings.resolve, collection.config, retry, store, values.key, held, current.period, now)
 		if not ok then
-			logging.warn(messages.warnings.top_failed(values.key, name, placing))
+			if not values.top_failing then
+				values.top_failing = true
+				logging.warn(messages.warnings.top_failed(values.key, name, placing))
+			end
 			continue
 		end
+		values.top_failing = false
 		if #placing.periods == 0 then
 			settle_owed(self, name, held, placing)
 			continue
@@ -806,7 +834,7 @@ local function wiped_record(old: StoredRecord?, declared: number): StoredRecord
 	local stamps: Stamps = {}
 	if old then
 		local data: Data = old.data or {}
-		local previous: Stamps = old.stamps or {}
+		local previous: Stamps = stamps_of(old)
 		for key in data do
 			stamps[key] = now
 		end
@@ -820,7 +848,7 @@ local function wiped_record(old: StoredRecord?, declared: number): StoredRecord
 	wiped.stamps = stamps
 	wiped.pending = nil
 	wiped.landed = nil
-	wiped.version = ((old and old.version) or 0) + 1
+	wiped.version = number_or(old and old.version, 0) + 1
 	wiped.written = util.create_guid()
 	wiped.migrations = declared
 	wiped.format = record_format
@@ -862,10 +890,10 @@ local function get_placings(self: SessionInternal): { [string]: Placing }
 	return self.internal_placings
 end
 
-local function forget_placing(self: SessionInternal, name: string, period: number, failed: boolean)
+local function forget_placing(self: SessionInternal, name: string, placing: Placing, failed: boolean)
 	self.internal_placings[name] = nil
 	if failed then
-		self.internal_failed_changes[name] = period
+		self.internal_failed_changes[name] = { from = placing.from, last = placing.last }
 	end
 end
 
@@ -888,7 +916,7 @@ local template = {
 	symbol = session_symbol,
 	internal_values = {
 		key = "",
-
+		adopted = false,
 		status = table.freeze({ kind = "open" }) :: SessionStatus,
 		version = 0,
 		written = nil :: string?,
@@ -896,6 +924,7 @@ local template = {
 		touched = false,
 		prepare = nil :: (() -> ())?,
 		push_failing = false,
+		top_failing = false,
 	},
 	internal_collection = (nil :: any) :: CollectionState,
 	internal_receiving = function()

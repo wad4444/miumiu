@@ -311,43 +311,49 @@ local function supply_children(context: Context, entity: Entity, kinds: { ChildK
 			)
 		end
 		local present = table.clone(children.children_of(index, entity, kind.key))
+		local guard = util.create_guard()
 		for id, child_data in stored.named do
-			if type(child_data) ~= "table" then
-				logging.warn_once(
-					context.world_state.warned,
-					`child_invalid:{kind.key}/{id}`,
-					messages.warnings.child_invalid(kind.key, id, util.describe(context.world, entity))
-				)
-				continue
-			end
-			local child = present[id]
-			present[id] = nil
-			if child == nil and kind.mode == "attached" then
-				continue
-			end
-			if child == nil then
-				child = spawn_child(context, entity, kind, id)
-			end
-			if context.world_state.links[child] then
-				continue
-			end
-			if state.entity_state(context.world_state, child).tree == child_data then
-				continue
-			end
-			apply_child(context, child, kind, child_data)
-			supply_children(context, child, kind.kinds, child_data, false)
+			guard.run(function()
+				if type(child_data) ~= "table" then
+					logging.warn_once(
+						context.world_state.warned,
+						`child_invalid:{kind.key}/{id}`,
+						messages.warnings.child_invalid(kind.key, id, util.describe(context.world, entity))
+					)
+					return
+				end
+				local child = present[id]
+				present[id] = nil
+				if child == nil and kind.mode == "attached" then
+					return
+				end
+				if child == nil then
+					child = spawn_child(context, entity, kind, id)
+				end
+				if context.world_state.links[child] then
+					return
+				end
+				if state.entity_state(context.world_state, child).tree == child_data then
+					return
+				end
+				apply_child(context, child, kind, child_data)
+				supply_children(context, child, kind.kinds, child_data, false)
+			end)
 		end
 		for _, child in present do
-			if kind.mode == "owned" then
-				if not context.world_state.pending_puts[child] then
-					remove_child(context, child)
+			guard.run(function()
+				if kind.mode == "owned" then
+					if not context.world_state.pending_puts[child] then
+						remove_child(context, child)
+					end
+				elseif resetting or state.entity_state(context.world_state, child).tree ~= nil then
+					table.clear(state.entity_state(context.world_state, child).lazy)
+					apply_child(context, child, kind, nil)
+					supply_children(context, child, kind.kinds, {}, true)
 				end
-			elseif resetting or state.entity_state(context.world_state, child).tree ~= nil then
-				table.clear(state.entity_state(context.world_state, child).lazy)
-				apply_child(context, child, kind, nil)
-				supply_children(context, child, kind.kinds, {}, true)
-			end
+			end)
 		end
+		guard.rethrow()
 	end)
 end
 
@@ -380,15 +386,17 @@ local function reconcile(context: Context, entity: Entity, known: State, collect
 	end
 	local entity_state = state.entity_state(context.world_state, entity)
 	local root = context.schema.roots[collection]
-	local ok, err = pcall(apply, context, entity, root.entries, entity_state, known, false)
+	local guard = util.create_guard()
+	guard.run(function()
+		apply(context, entity, root.entries, entity_state, known, false)
+	end)
 	entity_state.shadow = state.read_values(context, entity, context.schema.entries)
-	if not ok then
-		error(err, 0)
+	if not shallow then
+		guard.run(function()
+			supply_children(context, entity, root.kinds, known.truth, false)
+		end)
 	end
-	if shallow then
-		return
-	end
-	supply_children(context, entity, root.kinds, known.truth, false)
+	guard.rethrow()
 end
 
 local function wipe_entity(context: Context, entity: Entity, collection: Entity)

@@ -75,13 +75,25 @@ local function mark(config: ResolvedCollectionConfig, id: string)
 	remember(id, true)
 end
 
+local function is_op_list(ops: any): boolean
+	if type(ops) ~= "table" then
+		return false
+	end
+	for _, op in ops do
+		if type(op) ~= "table" or type(op.kind) ~= "string" then
+			return false
+		end
+	end
+	return true
+end
+
 local function resolve(state: State, pending: Pending): Resolution
 	local next_pending = pending
 	local unknown: { string } = {}
 	local decided: { string } = {}
 
 	for id, entry in pending do
-		if type(entry) ~= "table" or type(entry.ops) ~= "table" then
+		if type(entry) ~= "table" or not is_op_list(entry.ops) then
 			next_pending = util.own(pending, next_pending)
 			next_pending[id] = nil
 			continue

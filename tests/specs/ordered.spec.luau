@@ -1866,5 +1866,13 @@ return function()
 			expect(t.backend.calls.GetSortedAsync).to.equal(reads)
 			expect(record_of(t, "p1", "weekly").owed.from).to.equal(1)
 		end)
+
+		it("rejects an ordered store whose name holds a slash", function()
+			local world, collection, money = declare_world()
+			utils.declare_ordered(world, collection, "weekly/coins", { component = money })
+			expect(function()
+				schema.create_schema(world)
+			end).to.throw("without /")
+		end)
 	end)
 end

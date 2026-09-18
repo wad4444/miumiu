@@ -95,7 +95,10 @@ local function index_relation(scratch: MigrationScratch, write: RelationWrite)
 	end
 	local id = children.resolve_id(world, write.entity, write.child)
 	if id == nil and write.child.mode == "attached" then
-		error(messages.errors.child_unnamed(tostring(write.entity), tostring(write.child.tag)), 0)
+		error(
+			messages.errors.child_unnamed(util.describe(world, write.entity), util.describe(world, write.child.tag)),
+			0
+		)
 	end
 	id = id or children.mint_id(world, write.entity)
 	children.record(index, write.entity, write.child, write.parent, id)

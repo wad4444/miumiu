@@ -213,7 +213,10 @@ export function transfer(world: World, sender: Entity, receiver: Entity, amount:
 		print(refused.get_outcome().kind, message),
 	);
 	unhook();
-	if (!paid.get_result()) return false;
+	if (!paid.get_result()) {
+		paid.silence();
+		return false;
+	}
 	group.hook(miumiu.hooks.landed, () => print("transferred", group.get_keys().size()));
 	group.hook(miumiu.hooks.refused, (message: string) => print("refused", message));
 	// @ts-expect-error a batch never fires session hooks
@@ -312,7 +315,8 @@ export function read_leaderboard(world: World): OrderedEntry[] {
 	const period = weekly.get_period();
 	const last_week = period !== undefined ? weekly.get_top(10, { period: period.index - 1 }) : [];
 	const fastest = weekly.get_top(3, { ascending: true });
-	print(weekly.get_name(), last_week.size(), fastest.size(), weekly.get_score("1"), miumiu.is_ordered(weekly));
+	const previous = period !== undefined ? weekly.get_score("1", period.index - 1) : undefined;
+	print(weekly.get_name(), last_week.size(), fastest.size(), weekly.get_score("1"), previous, miumiu.is_ordered(weekly));
 	return weekly.get_top(100);
 }
 

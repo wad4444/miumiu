@@ -1005,5 +1005,33 @@ return function()
 			expect(record.stamps.items > 0).to.equal(true)
 			loaded:unload()
 		end)
+
+		it("reads a record whose pending and landed are not tables as an empty one", function()
+			local backend = utils.create_backend()
+			backend:seed_raw("k", {
+				data = { money = 5 },
+				stamps = { money = 1 },
+				version = 1,
+				migrations = 0,
+				pending = 5,
+				landed = "gone",
+			})
+			local loaded = utils.open_session(backend, "k")
+			expect(loaded:get_truth().money).to.equal(5)
+			utils.journal(loaded, { set("money", 9, os.time()) })
+			loaded:sync()
+			expect(backend:dump("k").data.money).to.equal(9)
+			loaded:unload()
+		end)
+
+		it("writes over a key whose stored value is not a record at all", function()
+			local backend = utils.create_backend()
+			backend:seed_raw("k", "just a string")
+			local loaded = utils.open_session(backend, "k")
+			utils.journal(loaded, { set("money", 9, os.time()) })
+			loaded:sync()
+			expect(backend:dump("k").data.money).to.equal(9)
+			loaded:unload()
+		end)
 	end)
 end

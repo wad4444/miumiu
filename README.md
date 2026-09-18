@@ -69,7 +69,7 @@ schema freezes there.
 | field | default | meaning |
 |---|---|---|
 | `pull_interval` | 15 | seconds between writes while something is unwritten, so also how long an unawaited single-key batch stays pending; under 6 (the DataStore write cooldown) warns |
-| `idle_interval` | 60, never under `pull_interval` | seconds between reads while clean; `math.huge` turns them off |
+| `idle_interval` | 60, never under `pull_interval` unless that is `math.huge` | seconds between reads while clean; `math.huge` turns them off |
 | `retry_attempts`, `retry_base` | 5, 1 | storage retries and their base delay, doubling |
 | `commit_store`, `commit_timeout` | `"miumiu_commits"`, 300 | the store and window multi-key batches commit through |
 | `data_store_service` | `DataStoreService` | swap in a mock for tests |
@@ -218,9 +218,9 @@ values the batch still holds, fires `refused`, and warns when nothing hooked or 
 it in the same frame. `batch:await()` yields until the group is in every record and
 returns the outcome, `{ kind = "landed" }` or `{ kind = "refused", message = ... }`,
 never throwing. The handle also has `get_outcome()` (the same record, `pending` until
-then), `is_settled()`, `get_keys()` (the stored keys it touched) and `get_result()`,
+then), `is_settled()`, `get_keys()` (the stored keys it touched), `get_result()`,
 what the function returned, there as soon as
-`batch` returns. Hooks and the rollback run on the thread that wrote or refused the
+`batch` returns, and `silence()`, which accepts a refusal without the warning. Hooks and the rollback run on the thread that wrote or refused the
 batch: an `await`, a `sync`, `wipe`, `close`, the pull loop, the unlink's final write, or
 a multi-key batch's commit thread between frames; a `sync` or `wipe` called from a system
 sees them mid-system. After
@@ -761,10 +761,13 @@ the repository is a complete fixture built that way.
 
 ## Warnings
 
-`miumiu.set_warn(fn)` routes every warning the library emits (guard rejections on stored
-values, failed writes that are being retried, a final write refused by a newer server or
-given up by `close` and the changes it lost, a write on an entity that does not hold the
-saveable, a pair on an unnamed or ambiguously named target, two entities sharing a
-`jecs.Name`, a stored name nobody carries). A warning about a shape the game keeps
+`miumiu.set_warn(fn)` routes every warning the library emits, for example guard
+rejections on stored values, failed writes that are being retried, a final write refused
+by a newer server or given up by `close` and the changes it lost, a write on an entity
+that does not hold the saveable, a pair on an unnamed or ambiguously named target, two
+entities sharing a `jecs.Name`, a stored name nobody carries, a child group the record
+holds as an array, a snapshot that threw, and, for ordered stores, a `map` or `period`
+function that failed, a push or a ranking read being retried, an `on_period_change` that
+threw and a key that could not be unranked. A warning about a shape the game keeps
 producing fires once per world and subject, so a per-frame loop cannot flood the log.
 The default is `warn`.

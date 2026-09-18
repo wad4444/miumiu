@@ -61,7 +61,7 @@ declare namespace miumiu {
 	/** Every foreign source the import understands; lapis is the only one. */
 	export type ForeignSource = LapisSource<any>;
 
-	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes and how long an unawaited single-key batch stays pending, warned under 6 s (the DataStore write cooldown); `idle_interval` (default 60, never under `pull_interval`) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off; `pull_interval = math.huge` runs no loop at all (only `sync`, `await`, unlink and `close` write). `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). Config is validated at link time: a bad value does not throw at `meta`, it lands as `pair(data_error, collection)` on every entity that links. */
+	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes and how long an unawaited single-key batch stays pending, warned under 6 s (the DataStore write cooldown); `idle_interval` (default 60, never under `pull_interval` unless that is `math.huge`, which constrains it not at all since no loop runs) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off; `pull_interval = math.huge` runs no loop at all (only `sync`, `await`, unlink and `close` write). `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). Config is validated at link time: a bad value does not throw at `meta`, it lands as `pair(data_error, collection)` on every entity that links. */
 	export interface CollectionConfig {
 		data_store_service?: Pick<DataStoreService, "GetDataStore"> & Partial<Pick<DataStoreService, "GetOrderedDataStore">>;
 		pull_interval?: number;
@@ -119,7 +119,7 @@ declare namespace miumiu {
 		| { via: Entity; key: string; mode: "owned" }
 		| { via: Entity; key: string; mode: "attached"; id: Entity<string | number> };
 
-	/** `meta(component, miumiu.serdes, { serialize, deserialize })` for values a DataStore cannot hold: `Set<number>`, `Map<number, T>`, userdata. String-keyed `Set<string>` and `Map<string, T>` are plain tables already and need none. Must not yield. */
+	/** `meta(component, miumiu.serdes, { serialize, deserialize })` for values a DataStore cannot hold: `Set<number>`, `Map<number, T>`, userdata. String-keyed `Set<string>` and `Map<string, T>` are plain tables already and need none. Must not yield, and must return an acyclic value: the library compares runtime values by a deep walk with no visited set. */
 	export interface Serdes<T = unknown, S = unknown> {
 		serialize: (value: T) => S;
 		deserialize: (stored: S) => T;
@@ -141,11 +141,10 @@ declare namespace miumiu {
 	/** `on_period_change` of an ordered store: runs for the keys that placed within `period_threshold` of a finished period's ranking, exactly once per key and period across every server, on the loaded entity of whichever holder took the change. A record that skipped periods gets one call per period, in order, and `value` is the field as that period held it. Every call of one change runs inside one batch that also carries the library's claim, so the writes it makes (a reward) land with the claim or not at all; a throw is warned and a later load runs it again. Must not yield. The library knows entities, not players: map the entity back to its `Player` yourself. */
 	export type OnPeriodChange<S = unknown> = (world: World, entity: Entity, value: S, place: number, period: number) => void;
 
-	/** `meta(entity, miumiu.ordered, config)` plus `meta(entity, pair(miumiu.field_of, collection))`: the entity's `Name` (at most 40 characters, and its period suffix must fit the 50-character DataStore limit) names the OrderedDataStore that ranks `component`, a root field of that collection, by `map` of its stored form. With `period` the store is per period (`name_index`) and the field resets to its initial when a record crosses into a new one, unless `reset` is `false`; `period_threshold` (default 10) is how many ranks `on_period_change` resolves and `poll_interval` (default 60) how many seconds after a period's end its final ranking is read. `S` is the field's stored form. A field this config does not know fails the schema build. */
+	/** `meta(entity, miumiu.ordered, config)` plus `meta(entity, pair(miumiu.field_of, collection))`: the entity's `Name` (at most 40 characters, and its period suffix must fit the 50-character DataStore limit) names the OrderedDataStore that ranks `component`, a root field of that collection, by `map` of its stored form. With `period` the store is per period (`name_index`) and the field resets to its initial when a record crosses into a new one, unless `reset` is `false`, which keeps the field across the crossing so each period's ranking holds the value as it stands (a monthly board of a lifetime total) and lets the store share its field with others, since it resets nothing; `period_threshold` (default 10) is how many ranks `on_period_change` resolves and `poll_interval` (default 60) how many seconds after a period's end its final ranking is read. `S` is the field's stored form. A field this config does not know fails the schema build. */
 	export interface OrderedConfig<S = unknown> {
 		component: Entity<any>;
 		period?: PeriodConfig;
-		/** Needs `period`; defaults to `true`. `false` keeps the field across a crossing, so each period's ranking holds the value as it stands (a monthly board of a lifetime total) instead of what was earned inside that period; such a store may share its field with other ordered stores, since it resets nothing. */
 		reset?: boolean;
 		map?: Map<S>;
 		period_threshold?: number;
@@ -171,7 +170,7 @@ declare namespace miumiu {
 		get_name(): string;
 		/** The current period, without a request, or `undefined` for an all-time store. */
 		get_period(): Period | undefined;
-		/** The top `count` entries in rank order. Yields: one `GetSortedAsync` per hundred entries; a finished period's ranking is served from the cache once read. */
+		/** The top `count` entries in rank order. Yields: one `GetSortedAsync` per hundred entries; a finished period's ranking is served from the cache once read, but only for a descending read, so an ascending read of a past period costs its requests every call. */
 		get_top(count: number, options?: TopOptions): OrderedEntry[];
 		/** The score stored for `key`, or `undefined` when it is not ranked. Yields, one `GetAsync`. */
 		get_score(key: string, period?: number): number | undefined;

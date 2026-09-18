@@ -468,7 +468,6 @@ export type Mutex = {
 export type MutexPhase = { kind: "free" } | { kind: "locked" } | { kind: "closed", reason: string }
 
 export type MutexInternal = Mutex & {
-	symbol: Symbol,
 	internal_values: {
 		phase: MutexPhase,
 	},

@@ -14,7 +14,7 @@ any time; everything converges.
 | saveable | `jecs.meta(id, miumiu.saveable, "key")` | a component or tag stored under `key`; the key is the stored identity and never follows a rename |
 | field | `jecs.meta(id, pair(miumiu.field_of, c or kind))` | where a saveable lives; every saveable and kind needs at least one |
 | linked entity | `world:set(e, pair(miumiu.data_link, c), key)` | one stored key; pulls while linked, whether it is "your" player, another server's, or nobody's |
-| ordered store | `jecs.meta(o, miumiu.ordered, { component = field, ... })` plus `pair(field_of, c)`, named by `jecs.Name` | an `OrderedDataStore` ranking one root field of `c`, one store per period with a reset callback, or all-time (Ordered) |
+| ordered store | `jecs.meta(o, miumiu.ordered, { component = field, ... })` plus `pair(field_of, c)`, named by `jecs.Name` | an `OrderedDataStore` ranking one root field of `c`, one store per period, optionally resetting the field, with `on_period_change` for the keys that placed; or all-time (Ordered) |
 
 There is one kind of link, plus `pair(miumiu.data_shallow, c)` on the entity to load
 only the root's own fields. Gifting to an offline player is: link (shallow), write,
@@ -346,7 +346,7 @@ between the write and the push leaves the ranking behind until the next score ch
 one is harmless. It goes out on the retry budget of the pull that produced it, so the
 final write of a `close` does not spend the whole budget on ordered retries. Pushes ride
 the record's writes, so they cost at most one ordered write
-per record write, on the `SetIncrementSortedAsync` budget, which nothing else in the
+per record write and two on the write that crosses a period, on the `SetIncrementSortedAsync` budget, which nothing else in the
 library uses.
 
 Changes. When a transform rolls a record over and the store declares `on_period_change`,
@@ -380,7 +380,8 @@ ranking read per period inside the session's lock. The holder reads the top
 (cached; `get_top` of a finished period reads the same cache), and keeps the periods the
 key placed in. `on_period_change` is for the keys that placed: a period the
 key is not in the top of does not call it, and a key that placed in none settles the
-change with a `drop` and no call at all.
+change with no call at all, narrowing `owed` to the periods still undelivered and
+dropping it when none are left.
 
 The next `step` then runs `on_period_change(world, entity, value, place, period)` on the
 first loaded, non-shallow entity of the key, once per placed period in order, `place`
@@ -647,7 +648,12 @@ record already holds instead of applying `add` twice. `version` bumps on every w
 record-format version this library writes; a read of a record in a higher `format`
 closes the session like a newer migration count, so an old server cannot mangle a record
 a new one owns. Top-level fields a build does not know are carried through its writes
-untouched, so a new field costs nothing to add.
+untouched, so a new field costs nothing to add. The reader is defensive about the fields
+it does know: a `data`, `stamps`, `pending`, `landed`, `version`, `migrations` or
+`format` that is not the type this build writes reads as absent rather than failing the
+key, and a stamp, pending entry or landed id of the wrong shape is dropped, so a
+hand-written or half-migrated record loses what it cannot express instead of becoming
+unreadable.
 
 ## Pull
 
@@ -660,8 +666,9 @@ idle clock). A clean session reads (`GetAsync`, past the read cache) and adopts 
 record when its `written` id differs from the last one adopted. The read hands over to the
 `UpdateAsync` below when the session has groups to write, holds a foreign seed, or the read shows
 something only a write can settle: pending entries that are decided, a version-less
-record, a migration count under what this server declares, or an ordered store whose field
-belongs to a past period or whose pushed score is behind (Ordered).
+record, a migration count under what this server declares, an ordered store whose field
+belongs to a past period or whose pushed score is behind, or an owed period change this
+server can take the lease on (Ordered).
 
 ```
 transform(old):
@@ -721,7 +728,9 @@ with the same version count is still adopted rather than overwritten from a stal
 
 After the write: merged truth → reconcile onto every entity linked to that key: for each
 schema entry, if the entity's value differs (same reference, else deep-equal after
-deserializing), set it. Each such set runs under an `applying` mark naming that entity
+deserializing), set it. A runtime value must be acyclic: the deep comparison walks it
+without a visited set, so a table that reaches itself overflows the stack, which the
+supply catches and warns rather than applying. Each such set runs under an `applying` mark naming that entity
 and id, so the listener for that exact write is skipped while a write a listener makes
 to another key (or another entity) is journaled as usual. A listener that throws
 propagates out of `step`; the entity's shadow is refreshed first so the value it did

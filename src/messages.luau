@@ -275,7 +275,7 @@ local errors = table.freeze({
 	end,
 	ordered_unnamed = function(entity: unknown, limit: number)
 		return prefixed(
-			`ordered store {entity} needs a jecs.Name of at most {limit} characters: the name is the OrderedDataStore's`
+			`ordered store {entity} needs a jecs.Name of at most {limit} characters and without /: the name is the OrderedDataStore's, and a path segment of the record's bookkeeping`
 		)
 	end,
 	ordered_name_long = function(entity: unknown, name: string, limit: number)
@@ -326,7 +326,7 @@ local errors = table.freeze({
 		)
 	end,
 	bad_count = function(name: string, count: unknown)
-		return prefixed(`get_top on ordered store "{name}" takes a count of at least 1, got {tostring(count)}`)
+		return prefixed(`get_top on ordered store "{name}" takes an integer count of at least 1, got {tostring(count)}`)
 	end,
 	no_periods = function(name: string)
 		return prefixed(`ordered store "{name}" has no periods: get_top and get_score take no period for it`)

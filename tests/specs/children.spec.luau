@@ -3371,5 +3371,49 @@ return function()
 			end
 			expect(found.money).to.equal(7)
 		end)
+
+		it("spawns the stored children when a listener throws on a root field", function()
+			local t = utils.create_fixture({ pull_interval = never })
+			local k = utils.declare_kinds(t.world, t.player_data)
+			utils.scope(t.world, { t.items }, { k.item })
+			t.backend:seed("p1", {
+				data = { money = 3, inventory = { aaa = { items = { "x" } } } },
+				stamps = { money = 1 },
+			})
+			t.world:added(t.money, function()
+				error("spec: boom")
+			end)
+			local player = t.world:entity()
+			t.world:set(player, t.link, "p1")
+			pcall(settle, t, player)
+			pcall(miumiu.step, t.world)
+			expect(t.world:has(player, t.loaded)).to.equal(true)
+			expect(utils.count(utils.items_of(t, k, player))).to.equal(1)
+		end)
+
+		it("supplies the other children of a kind when one child's listener throws", function()
+			local t = utils.create_fixture({ pull_interval = never })
+			local k = utils.declare_kinds(t.world, t.player_data)
+			utils.scope(t.world, { t.money }, { k.item })
+			t.backend:seed("p1", {
+				data = { inventory = { aaa = { money = 1 }, bbb = { money = 2 }, ccc = { money = 3 } } },
+				stamps = {},
+			})
+			t.world:added(t.money, function()
+				error("spec: boom")
+			end)
+			local player = t.world:entity()
+			t.world:set(player, t.link, "p1")
+			pcall(settle, t, player)
+			pcall(miumiu.step, t.world)
+			expect(utils.count(utils.items_of(t, k, player))).to.equal(3)
+		end)
+
+		it("wipes a record whose data is not a table", function()
+			local t = utils.create_fixture({ pull_interval = never })
+			t.backend:seed_raw("k", { data = "nonsense", stamps = {}, version = 3 })
+			miumiu.wipe(t.world, t.player_data, "k")
+			expect((next(t.backend:dump("k").data))).to.equal(nil)
+		end)
 	end)
 end

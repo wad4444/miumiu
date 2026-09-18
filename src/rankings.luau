@@ -182,7 +182,7 @@ local function create_store(
 		end
 	end
 	local name = world:get(entity, jecs.Name)
-	if type(name) ~= "string" or #name == 0 or #name > name_limit then
+	if type(name) ~= "string" or #name == 0 or #name > name_limit or string.find(name, "/", 1, true) then
 		error(messages.errors.ordered_unnamed(described, name_limit), 0)
 	end
 	local targets = util.targets_of(world, entity, ids.field_of)
@@ -598,7 +598,7 @@ local function resolve(
 ): Placing
 	local last = covered_last(store, owed, period, now)
 	local periods: { PeriodPlace } = {}
-	local carried = nil
+	local carried: any = nil
 	for index = owed.from, last do
 		local recorded = owed.values[tostring(index)]
 		if recorded ~= nil then

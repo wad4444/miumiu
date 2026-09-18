@@ -1,10 +1,6 @@
 local types = require("./types")
-local symbol = require("./symbol")
-
 type MutexInternal = types.MutexInternal
 type MutexPhase = types.MutexPhase
-
-local mutex_symbol = symbol.create_symbol("Mutex")
 
 local function lock(self: MutexInternal)
 	local values = self.internal_values
@@ -69,7 +65,6 @@ local function is_locked(self: MutexInternal): boolean
 end
 
 local template = {
-	symbol = mutex_symbol,
 	internal_values = {
 		phase = { kind = "free" } :: MutexPhase,
 	},

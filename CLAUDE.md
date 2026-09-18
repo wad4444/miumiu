@@ -25,7 +25,7 @@ src/codec.luau        stored_form / runtime_form (serdes), check_guard and op_fo
 src/ops.luau          op replay (pure), deep_equal/deep_copy, path stamps
 src/delta.luau        diff of two values into delta ops
 src/commit.luau       commit-store cache, fetch, mark, resolve
-src/datastore.luau    the only calls into DataStoreService (GetDataStore/GetAsync/SetAsync/UpdateAsync)
+src/datastore.luau    the only calls into DataStoreService (GetDataStore/GetAsync/SetAsync/UpdateAsync, GetOrderedDataStore and its GetAsync/SetAsync/RemoveAsync/GetSortedAsync/AdvanceToNextPageAsync)
 src/session.luau      one key: journal, watch (a group's landing or loss), merge, pull (read or update), adopt, unload, touch, wipe / wipe_key (cake-style class)
 src/pull_loop.luau    the per-session loop (pull_interval when dirty, idle_interval when clean)
 src/recorder.luau     jecs added/changed/removed listeners feeding a sink (pairs packed per write, jecs.Name index); used by capture and migrations
@@ -58,6 +58,8 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 - Module-level `local function name(...)`, not methods on a table literal.
 - Modules return `table.freeze({ ... })`; `init.luau` also sets `.default = self`.
 - Factories are `create_x` / `load_x`, predicates `is_x`, accessors `get_x` / `is_x`.
+  The three per-world caches (`collection.get`, `schema.get`, `state.get`) are the one
+  exception: they are bare `get`, read as `collection.get(world, c)` at every call site.
 - Every user-facing string lives in `src/messages.luau` (`errors`, `warnings`, `closures`,
   `reasons`).
   `src/index.d.ts` is the one file that carries doc comments: it is the typed surface
@@ -71,7 +73,8 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 - A `template` table at the bottom holds default values plus the method references;
   `create_x` does `table.clone(template)`, re-creates every mutable sub-table, sets
   `setmetatable(instance, meta)` and returns `instance :: types.X`.
-- `meta` carries only `__tostring` (`Session(key)`, `Mutex(free)`, `Batch(pending)`); no
+- `meta` carries only `__tostring` (`Session(key)`, `Mutex(free)`, `Batch(pending)`,
+  `Ordered(name)`); no
   `__index`.
 - Immutable by-value state (scalars, functions, frozen variant records such as `status`
   and `outcome`) lives in `internal_values`, mutable collections in their own
@@ -98,7 +101,7 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
   uses at the top (`type Session = types.Session`). String requires: `require("./sibling")`;
   `@self/x` from an `init.luau` for its own children, `./x` from an `init.luau` for the
   folder's siblings.
-- Functions that return several values return one record type (`PullResult`,
+- Functions that return several values return one record type (`Pull`,
   `Resolution`), not a tuple. State with phases is a union on `kind`, never optional
   fields (`LinkPhase`, `Event`, `Undo`).
 - `--!` pragmas are allowed. Nothing else is.
@@ -188,7 +191,10 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
   runner instrument `src/` (`tests/coverage.luau` marks every function body and branch
   arm) and fail on any block no spec reaches. A guard that no spec can reach is a guard
   for an invariant that cannot break: delete it, don't exclude it. `src/dependencies/`
-  is the only exclusion. The instrumenter is line-based: it masks strings and comments,
+  is the only exclusion. The gate has a known cost: a guard for an invariant that
+  cannot break becomes a `:: T` cast (`children.child_of(index, entity) :: ChildRecord`,
+  `world_state.capture :: Capture`), so a broken invariant surfaces as an index of nil
+  with no message. That trade is deliberate. The instrumenter is line-based: it masks strings and comments,
   skips single-line functions, one-line `if … then … end` counts as one block after its
   `then`, and the statement after an early-exit guard (`return`/`continue`/`break`/
   `error(` then `end`) is its own block. Expression-level branches (`if … then … else`

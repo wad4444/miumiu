@@ -210,12 +210,12 @@ local function stash_put(context: Context, ancestry: Ancestry, op: Op)
 				by_key = {}
 				world_state.pending_root_puts[collection] = by_key
 			end
-			local ops = by_key[key]
-			if ops == nil then
-				ops = {}
-				by_key[key] = ops
+			local stashed = by_key[key]
+			if stashed == nil then
+				stashed = {}
+				by_key[key] = stashed
 			end
-			table.insert(ops, op)
+			table.insert(stashed, op)
 		end
 	end
 end

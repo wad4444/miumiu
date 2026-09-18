@@ -135,5 +135,12 @@ return function()
 			expect(#resolved.unknown).to.equal(0)
 			expect(#resolved.decided).to.equal(0)
 		end)
+
+		it("drops a pending entry whose ops are not ops", function()
+			local state = { truth = {}, stamps = {} }
+			local resolved = commit.resolve(state, { broken = { ops = { 5 } } :: any })
+			expect((next(resolved.pending))).to.equal(nil)
+			expect(#resolved.unknown).to.equal(0)
+		end)
 	end)
 end

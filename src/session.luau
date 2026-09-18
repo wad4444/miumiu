@@ -69,6 +69,10 @@ local function stamps_of(record: StoredRecord): Stamps
 	return stamps
 end
 
+local function table_or_empty(value: any): any
+	return if type(value) == "table" then value else {}
+end
+
 local function state_of(record: StoredRecord): State
 	return { truth = if type(record.data) == "table" then record.data else {}, stamps = stamps_of(record) }
 end
@@ -355,7 +359,7 @@ local function forget_settled(self: SessionInternal, record: StoredRecord, decid
 	for _, id in decided do
 		remove_group(self.internal_awaiting, id)
 	end
-	local pending = record.pending or {}
+	local pending = table_or_empty(record.pending)
 	local awaiting = self.internal_awaiting
 	for index = #awaiting, 1, -1 do
 		if pending[awaiting[index].id] == nil then
@@ -483,7 +487,7 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 	for _, group in groups do
 		group.coalesce = nil
 	end
-	local record: StoredRecord = old or {}
+	local record: StoredRecord = table_or_empty(old)
 	local resolution: Resolution = { truth = {}, stamps = {}, pending = {}, unknown = {}, decided = {} }
 	if number_or(record.format, record_format) > record_format then
 		local message = messages.errors.newer_format(self.internal_values.key, record.format :: number, record_format)
@@ -501,11 +505,11 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 		return { kind = "newer", message = migrated.message, groups = groups, resolution = resolution }
 	end
 
-	local original: Pending = record.pending or {}
+	local original: Pending = table_or_empty(record.pending)
 	resolution = commit.resolve(migrated.state, original)
 
 	local now = os.time()
-	local landed = record.landed or {}
+	local landed: Landed = table_or_empty(record.landed)
 	local landing =
 		land_groups({ truth = resolution.truth, stamps = resolution.stamps }, resolution.pending, landed, groups, now)
 	local rolled = rankings.roll(landing.state, self.internal_collection.ordered, now, claim_of(self))
@@ -697,12 +701,15 @@ local function resolve_owed(self: SessionInternal, retry: RetryConfig)
 	for _, store in collection.ordered do
 		local name = store.name
 		local owed = rankings.owed_of(truth, name)
-		local mine = owed ~= nil and claim ~= nil and rankings.is_held(owed, claim, now)
-		if not mine then
+		if owed == nil then
 			self.internal_placings[name] = nil
 			continue
 		end
-		local held = owed :: any
+		if claim == nil or not rankings.is_held(owed, claim, now) then
+			self.internal_placings[name] = nil
+			continue
+		end
+		local held = owed
 		local current = rankings.current_period(store, now)
 		if current.kind ~= "period" then
 			continue
@@ -833,7 +840,7 @@ local function wiped_record(old: StoredRecord?, declared: number): StoredRecord
 	local now = os.time()
 	local stamps: Stamps = {}
 	if old then
-		local data: Data = old.data or {}
+		local data: Data = table_or_empty(old.data)
 		local previous: Stamps = stamps_of(old)
 		for key in data do
 			stamps[key] = now
@@ -843,7 +850,7 @@ local function wiped_record(old: StoredRecord?, declared: number): StoredRecord
 			stamps[key] = math.max(stamps[key] or now, at + 1)
 		end
 	end
-	local wiped: StoredRecord = if old then table.clone(old) else {}
+	local wiped: StoredRecord = table.clone(table_or_empty(old))
 	wiped.data = {}
 	wiped.stamps = stamps
 	wiped.pending = nil
@@ -1013,7 +1020,7 @@ local function load_session(
 	local session = create_session(collection, key, migrate, receiving)
 	local config = collection.config
 	pull_now(session, config)
-	if config.foreign and session.internal_values.version == 0 then
+	if config.foreign and not session.internal_values.adopted then
 		session.internal_seed = foreign.read(config.foreign, key)
 		if session.internal_seed ~= nil then
 			pull_now(session, config)

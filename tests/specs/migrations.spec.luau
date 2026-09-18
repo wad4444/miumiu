@@ -418,5 +418,36 @@ return function()
 			expect(world:has(player, t.data_error)).to.equal(true)
 			expect(string.find(world:get(player, t.data_error), "has no id", 1, true) ~= nil).to.equal(true)
 		end)
+
+		it("never reads the foreign store for a key that already has a record", function()
+			local docs = { p2 = { coins = 5 } }
+			local lapis = { created = {} }
+			function lapis.createCollection(name, options)
+				local created = { name = name, options = options, reads = 0 }
+				lapis.created[name] = created
+				function created:read(key)
+					self.reads += 1
+					return {
+						expect = function()
+							return docs[key]
+						end,
+					}
+				end
+				return created
+			end
+			local t = setup({ pull_interval = never })
+			t.world:set(t.player_data, miumiu.from_foreign, {
+				type = "lapis",
+				name = "LapisPlayers",
+				source = lapis,
+				options = { defaultData = {} },
+			})
+			t.backend:seed_raw("p2", { data = { money = 9 }, stamps = {}, version = 0 })
+			local existing = t.world:entity()
+			t.world:set(existing, t.link, "p2")
+			settle(t, existing)
+			expect(t.world:get(existing, t.money)).to.equal(9)
+			expect((next(lapis.created))).to.equal(nil)
+		end)
 	end)
 end

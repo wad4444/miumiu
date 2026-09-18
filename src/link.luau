@@ -286,7 +286,7 @@ local function overlapping_link(context: Context, entity: Entity, collection_ent
 	end
 	local kinds = root.kinds
 	for other in links do
-		if not context.world:has(entity, jecs.pair(ids.data_link, other)) then
+		if other == collection_entity or not context.world:has(entity, jecs.pair(ids.data_link, other)) then
 			continue
 		end
 		for _, kind in context.schema.roots[other].kinds do

@@ -375,6 +375,7 @@ export type PendingDrop = {
 	entity: Entity,
 	ancestry: Ancestry,
 	kept: boolean,
+	stored: boolean,
 }
 
 export type TouchedChild = {
@@ -426,6 +427,8 @@ export type LapisSource = {
 }
 
 export type ForeignSource = LapisSource
+
+export type ForeignImport = { collection: Entity, options: any }
 
 export type CollectionConfig = {
 	data_store_service: DataStoreService?,

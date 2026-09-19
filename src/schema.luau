@@ -12,6 +12,7 @@ type Entity<T = nil> = types.Entity<T>
 type ChildKind = types.ChildKind
 type ComponentEntry = types.ComponentEntry
 type Fields = types.Fields
+type ForeignImport = types.ForeignImport
 type Holders = types.Holders
 type Initial = types.Initial
 type Named = types.Named
@@ -414,6 +415,7 @@ local function create_schema(world: World): Schema
 	local roots: { [Entity]: Fields } = {}
 	local known: { [Entity]: boolean } = {}
 	local store_names: { [string]: Entity } = {}
+	local imports: { [any]: { [string]: ForeignImport } } = {}
 	for _, collection in collections do
 		roots[collection] = fields_of(entries, kinds, collection)
 		known[collection] = true
@@ -431,6 +433,23 @@ local function create_schema(world: World): Schema
 				)
 			end
 			store_names[store_name] = collection
+		end
+
+		local source: any = world:get(collection, ids.from_foreign)
+		if type(source) == "table" and type(source.source) == "table" and type(source.name) == "string" then
+			local first = util.cached(imports, source.source, source.name, function()
+				return { collection = collection, options = source.options }
+			end)
+			if first.options ~= source.options then
+				error(
+					messages.errors.foreign_options_clash(
+						util.describe(world, collection),
+						source.name,
+						util.describe(world, first.collection)
+					),
+					0
+				)
+			end
 		end
 	end
 	validate_targets(world, entries, kinds, collections)

@@ -1048,5 +1048,62 @@ return function()
 			expect(backend:dump("k").data.money).to.equal(7)
 			loaded:unload()
 		end)
+
+		it("does not double-apply a group still unwritten commit_timeout after it landed", function()
+			local backend = utils.create_backend()
+			local loaded = utils.open_session(backend, "k", {
+				pull_interval = never,
+				retry_attempts = 1,
+				commit_timeout = utils.timings.commit_timeout,
+			})
+			local first = fresh_id("landed")
+			utils.journal(loaded, { add("money", 100) }, first)
+			backend:fail_next("UpdateAsync", "after", "response lost")
+			expect(pcall(loaded.sync, loaded)).to.equal(false)
+			expect(backend:dump("k").data.money).to.equal(100)
+			local landed_at = backend:dump("k").landed[first]
+			expect(landed_at).to.be.ok()
+			expect(loaded:is_dirty()).to.equal(true)
+			expect(utils.wait_until(function()
+				return os.time() - landed_at > utils.timings.commit_timeout
+			end, utils.timings.long)).to.equal(true)
+			utils.journal(loaded, { add("gems", 5) })
+			backend:fail_next("UpdateAsync", "after", "response lost")
+			expect(pcall(loaded.sync, loaded)).to.equal(false)
+			expect(backend:dump("k").landed[first]).to.be.ok()
+			expect(backend:dump("k").data.money).to.equal(100)
+			loaded:sync()
+			expect(backend:dump("k").data.gems).to.equal(5)
+			expect(backend:dump("k").data.money).to.equal(100)
+			loaded:unload()
+		end)
+
+		it("rejects a stale set with the root stamp of a key that is gone from the record", function()
+			local backend = utils.create_backend()
+			local now = os.time()
+			backend:seed("kept", { data = { money = 5 }, stamps = { money = now - 100 } })
+			backend:seed("pruned", { data = { money = 5 }, stamps = { money = now - 100 } })
+			local stale_kept = utils.open_session(backend, "kept", { pull_interval = never })
+			local stale_pruned = utils.open_session(backend, "pruned", { pull_interval = never })
+			utils.journal(stale_kept, { set("money", 99, now - 50) })
+			utils.journal(stale_pruned, { set("money", 99, now - 50) })
+			for _, key in { "kept", "pruned" } do
+				local remover = utils.open_session(backend, key, { pull_interval = never })
+				utils.journal(remover, { utils.remove("money", now - 10) })
+				remover:sync()
+				expect(backend:dump(key).data.money).to.equal(nil)
+				expect(backend:dump(key).stamps.money).to.equal(now - 10)
+				remover:unload()
+			end
+			local stripped = backend:dump("pruned")
+			stripped.stamps.money = nil
+			backend:seed_raw("pruned", stripped)
+			stale_kept:sync()
+			stale_pruned:sync()
+			expect(backend:dump("kept").data.money).to.equal(nil)
+			expect(backend:dump("pruned").data.money).to.equal(99)
+			stale_kept:unload()
+			stale_pruned:unload()
+		end)
 	end)
 end

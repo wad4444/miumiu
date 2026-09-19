@@ -498,13 +498,19 @@ local function resolve_drops(context: Context, root: Entity)
 	end
 	world_state.pending_drops[root] = nil
 	local alive = context.world:contains(root)
+	local linked = alive and world_state.links[root] ~= nil
 	for _, drop in drops do
-		if alive then
+		if linked and #capture.ancestry_sessions(context, drop.ancestry) > 0 then
 			capture.emit_child(context, drop.ancestry, capture.child_drop, function() end)
-		elseif drop.kept then
+		elseif drop.kept and (drop.stored or not alive) then
 			table.insert(world_state.cleanups, { kind = "delete", entity = drop.entity })
 		end
 	end
+end
+
+local function is_relinking(context: Context, entity: Entity, collection_entity: Entity, key: string): boolean
+	local world = context.world
+	return world:contains(entity) and world:get(entity, jecs.pair(ids.data_link, collection_entity)) == key
 end
 
 local function on_unlink(context: Context, entity: Entity, collection_entity: Entity)
@@ -536,7 +542,7 @@ local function on_unlink(context: Context, entity: Entity, collection_entity: En
 			children.forget_parent(context.world_state.children, entity)
 		end
 		link_state.entities[entity] = nil
-		if link_state.phase.kind == "loaded" then
+		if link_state.phase.kind == "loaded" and not is_relinking(context, entity, collection_entity, key) then
 			guard.run(function()
 				reconcile.release_children(context, entity, context.schema.roots[collection_entity].kinds)
 			end)

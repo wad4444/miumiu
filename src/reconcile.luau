@@ -311,6 +311,21 @@ local function remove_child(context: Context, child: Entity)
 	world_state.entities[child] = nil
 end
 
+local function refuse_child(context: Context, parent: Entity, child: Entity, kind: ChildKind)
+	logging.warn_once(
+		context.world_state.warned,
+		`child_group_refused:{kind.key}/{child}`,
+		messages.warnings.child_group_refused(
+			util.describe(context.world, child),
+			children.describe_kind(context.world, kind),
+			kind.key
+		)
+	)
+	state.with_applying(context.world_state, child, nil, function()
+		context.world:remove(child, jecs.pair(kind.via, parent))
+	end)
+end
+
 local function supply_children(context: Context, entity: Entity, kinds: { ChildKind }, data: Data, resetting: boolean)
 	local index = context.world_state.children
 	util.run_all(kinds, function(kind)
@@ -356,7 +371,9 @@ local function supply_children(context: Context, entity: Entity, kinds: { ChildK
 
 		for _, child in present do
 			guard.run(function()
-				if kind.mode == "owned" then
+				if stored.skipped then
+					refuse_child(context, entity, child, kind)
+				elseif kind.mode == "owned" then
 					if not context.world_state.pending_puts[child] then
 						remove_child(context, child)
 					end

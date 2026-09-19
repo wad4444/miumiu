@@ -463,10 +463,10 @@ local function land_groups(state: State, pending: Pending, landed: Landed, group
 	return { state = state, pending = next_pending, landed = next_landed }
 end
 
-local function prune_landed(landed: Landed, now: number, ttl: number): Landed
+local function prune_landed(landed: Landed, now: number, ttl: number, held: { [string]: boolean }): Landed
 	local next_landed = landed
 	for id, at in landed do
-		if type(at) ~= "number" or now - at > ttl then
+		if not held[id] and (type(at) ~= "number" or now - at > ttl) then
 			next_landed = util.own(landed, next_landed)
 			next_landed[id] = nil
 		end
@@ -494,9 +494,20 @@ local function prune_stamps(state: State, now: number, ttl: number): Stamps
 	return next_stamps
 end
 
-local function build_record(self: SessionInternal, record: StoredRecord, landing: Landing, now: number): StoredRecord
+local function build_record(
+	self: SessionInternal,
+	record: StoredRecord,
+	landing: Landing,
+	groups: { Group },
+	now: number
+): StoredRecord
 	local config = self.internal_collection.config
-	local next_landed = prune_landed(landing.landed, now, config.commit_timeout)
+	local held: { [string]: boolean } = {}
+	for _, group in groups do
+		held[group.id] = true
+	end
+
+	local next_landed = prune_landed(landing.landed, now, config.commit_timeout, held)
 	local next_record = table.clone(record)
 	next_record.data = landing.state.truth
 	next_record.stamps = prune_stamps(landing.state, now, config.commit_timeout)
@@ -566,7 +577,7 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 
 	return {
 		kind = "merged",
-		record = build_record(self, record, landing, now),
+		record = build_record(self, record, landing, groups, now),
 		groups = groups,
 		resolution = resolution,
 		pushes = rolled.pushes,

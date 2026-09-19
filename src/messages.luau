@@ -96,6 +96,11 @@ local errors = table.freeze({
 			`collection {collection} imports from {kind} but from_foreign.options (the {kind} collection options) is missing`
 		)
 	end,
+	foreign_options_clash = function(collection: unknown, name: string, other: unknown)
+		return prefixed(
+			`collections {collection} and {other} both import "{name}" with different options: the foreign collection is created once, so they must share one options table`
+		)
+	end,
 	foreign_name_clash = function(collection: unknown, name: string)
 		return prefixed(
 			`collection {collection} imports from "{name}", which is its own store; the foreign store must be a different DataStore`
@@ -442,6 +447,11 @@ local warnings = table.freeze({
 	pair_target_unknown = function(key: string, name: string, entity: unknown)
 		return prefixed(
 			`stored pair under "{key}" names "{name}", which no entity in the world carries as its jecs.Name; {entity} did not get it`
+		)
+	end,
+	child_group_refused = function(entity: unknown, tag: unknown, key: string)
+		return prefixed(
+			`child {entity} of kind {tag} cannot be stored: the record holds an array under "{key}" that no migration turned into children; its pair was removed, rebuild the array through context.legacy("{key}")`
 		)
 	end,
 	child_group_array = function(key: string)

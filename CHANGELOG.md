@@ -24,6 +24,18 @@ with `miumiu.` are reserved, for saveables, child kinds and `context.legacy`. `w
 removes the key from the collection's ordered stores. A collection with an ordered
 store needs a `data_store_service` with `GetOrderedDataStore`.
 
+A group still unwritten when its landed id ages past `commit_timeout` is no longer
+applied a second time, which used to credit a delta's `add` twice. A child claimed
+under a root whose record holds an array under that kind's key is refused at landing
+instead of writing a string id into the array, which used to produce a table the
+DataStore refuses and leave the key unwritable for good. A deferred child drop whose
+root was refused before the step deletes its entity with the rest of the owned tree
+instead of leaving it alive and still listed in the record, and that step no longer
+throws when the refusal is stepped before the unlink. An unlink and a relink to the same
+key in one frame keep the owned child entities, since that link never lapsed. Two
+collections importing one foreign collection with different options are rejected at the
+schema build rather than silently sharing the first one's.
+
 A lazy value that cannot be read at write time no longer takes the entity's other lazy
 values, its children's, or the whole final write with it: each key is flushed on its own
 and a failure warns by name. A snapshot whose value a guard rejects no longer stops the

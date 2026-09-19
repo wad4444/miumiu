@@ -171,12 +171,12 @@ local function is_unlinking_root(context: Context, root: Entity): boolean
 	return unlinking
 end
 
-local function is_loading_holder(context: Context, ancestry: Ancestry): boolean
+local function is_holder_phase(context: Context, ancestry: Ancestry, phase: string): boolean
 	local world_state = context.world_state
 	local links: { [Entity]: string } = world_state.links[ancestry.root] or {}
 	for collection, key in links do
 		local link_state = state.link_states_of(world_state, collection)[key]
-		if ancestry.kind.holders[collection] and link_state and link_state.phase.kind == "loading" then
+		if ancestry.kind.holders[collection] and link_state and link_state.phase.kind == phase then
 			return true
 		end
 	end
@@ -305,6 +305,7 @@ local function on_detached(context: Context, write: RelationWrite)
 			entity = write.entity,
 			ancestry = ancestry,
 			kept = previous ~= nil and not write.deleted,
+			stored = is_holder_phase(context, ancestry, "loaded"),
 		})
 		return
 	end
@@ -421,7 +422,7 @@ local function on_attached(context: Context, write: RelationWrite)
 	end
 
 	reconcile.refresh_shadows(context, write.entity, write.child)
-	if ancestry and is_loading_holder(context, ancestry) then
+	if ancestry and is_holder_phase(context, ancestry, "loading") then
 		world_state.pending_puts[write.entity] = true
 	end
 

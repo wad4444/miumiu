@@ -100,7 +100,12 @@ Two modes, decided by who owns the entity:
   collection the kind is a field of, an unlinked one through its own kind tag or, with
   no kind tag, always; a parent's own pair may come later). A linked parent is a root
   for its children even when it carries a kind tag itself, matching where a write on it
-  goes. Two children of one kind under one parent cannot share an id: the second claim
+  goes: to nest under an owned child that carries its own link, the nested kind must name
+  that COLLECTION in a field_of pair, since naming only the parent kind stops holding once
+  the parent becomes a root. A child already indexed when its parent gains a link keeps
+  its pair and its place in the parent's stored subtree, but its own writes stop
+  journaling, with the unsaved warning, until the parent unlinks and the leave re-puts the
+  subtree; the same exposure a kind-only field on that entity already has. Two children of one kind under one parent cannot share an id: the second claim
   throws and takes the pair back, a second existing one is skipped with a warning.
   Removing the pair or deleting the
   entity drops it from the record; loading spawns it; a remote drop deletes it, and its
@@ -108,7 +113,9 @@ Two modes, decided by who owns the entity:
   record and a put on the other (the Exclusive
   relation fires the removal itself; inside `batch` both land as one group or neither).
   The entities the library spawned are its own: when the root unlinks, or its session
-  is refused, the owned tree under it is deleted after the final write, so a gift link
+  is refused, the owned tree under it is deleted once the leave has journalled what it
+  owes (before the write goes out, not after it lands), and not at all when the game set
+  the link back to the same key in the same frame, since that link never lapsed; so a gift link
   to an offline player does not leave that player's inventory alive in the world.
   Deleting a linked root is not a save: the record keeps its children, and the owned
   tree under the root is deleted on the next `step`. An owned child's pair removed
@@ -116,7 +123,10 @@ Two modes, decided by who owns the entity:
   back: at that `step` it is journaled as a drop if the root still exists (the game
   dropped it), and otherwise treated like the root's deletion (record kept, entity
   deleted). An owned child claimed under a root whose load is in flight is put into the
-  record once the load finishes instead of being removed as absent. Deleting an owned child deletes its
+  record once the load finishes instead of being removed as absent, unless the record
+  holds an array under that kind's key, in which case the claim is refused at landing the
+  way a claim made after the load is: the pair comes off, the entity and its id survive,
+  and a warning names the migration that would rebuild the array. Deleting an owned child deletes its
   own owned tree the same way, and every entity the library deletes is marked as
   deleting for that step so an attached child hanging off it is reset rather than left
   with supplied values; queued cleanups run until none are left, so the reset lands in
@@ -644,7 +654,10 @@ end)
 `pending` holds the entries of multi-key groups that are not decided yet. `landed` holds
 the ids of groups this record has taken, with the time, for `commit_timeout` seconds: a
 write that fails after reaching storage is retried, and the retry skips groups the
-record already holds instead of applying `add` twice. `version` bumps on every write.
+record already holds instead of applying `add` twice. An id whose writer still holds that
+group unwritten outlives the timeout, because the timeout garbage-collects ids nobody
+holds any more and a group still in flight is still in play; pruning it would let the
+next write apply the group a second time. `version` bumps on every write.
 `migrations` is how many declared migrations have been applied. `format` is the
 record-format version this library writes; a read of a record in a higher `format`
 closes the session like a newer migration count, so an old server cannot mangle a record
@@ -688,7 +701,7 @@ transform(old):
     single-key group     -> replay its ops
     multi-key group      -> pending[group.id] = { created, ops = its entry for this key }
   format > known           -> fail: a newer server owns the key
-  drop landed ids older than commit_timeout
+  drop landed ids older than commit_timeout that no unwritten group still claims
   return { data = truth, stamps, pending, landed, version + 1, written = new id, migrations = declared, format = 1 }
                                            (nil when nothing changed)
 ```

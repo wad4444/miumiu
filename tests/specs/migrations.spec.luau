@@ -3,6 +3,7 @@ return function()
 
 	local jecs = require(ReplicatedStorage.Packages.jecs)
 	local miumiu = require(ReplicatedStorage.Packages.miumiu)
+	local schema = require(ReplicatedStorage.Packages.miumiu.schema)
 	local utils = require(ReplicatedStorage.Tests.utils)
 
 	afterEach(utils.cleanup)
@@ -477,6 +478,105 @@ return function()
 			expect(t.world:has(player, t.loaded)).to.equal(true)
 			expect(t.backend:dump("p1").data.parts).to.equal(nil)
 			expect(t.backend:dump("p1").data.money).to.equal(5)
+		end)
+
+		local function create_lapis(docs: { [string]: any })
+			local lapis = { created = {} }
+			function lapis.createCollection(name, options)
+				local created = { name = name, options = options, reads = 0 }
+				table.insert(lapis.created, created)
+				function created:read(key)
+					self.reads += 1
+					return {
+						expect = function()
+							local doc = docs[key]
+							return if doc then options.transform(doc) else nil
+						end,
+					}
+				end
+				return created
+			end
+			return lapis
+		end
+
+		local function import(world, collection, lapis, options)
+			world:set(collection, miumiu.from_foreign, {
+				type = "lapis",
+				name = "Shared",
+				source = lapis,
+				options = options,
+			})
+		end
+
+		local function transform(factor: number)
+			return {
+				transform = function(doc)
+					return { money = doc.coins * factor }
+				end,
+			}
+		end
+
+		it("rejects two collections importing one foreign collection with different options", function()
+			local lapis = create_lapis({})
+			local t = setup({ pull_interval = never })
+			local other = utils.create_collection(t.world, utils.create_backend(), { pull_interval = never })
+			utils.scope(t.world, { t.money }, { other })
+			import(t.world, t.player_data, lapis, transform(1))
+			import(t.world, other, lapis, transform(100))
+			expect(function()
+				schema.create_schema(t.world)
+			end).to.throw("different options")
+		end)
+
+		it("lets two collections import one foreign collection with one options table", function()
+			local lapis = create_lapis({ p1 = { coins = 5 } })
+			local t = setup({ pull_interval = never })
+			local other_backend = utils.create_backend()
+			local other = utils.create_collection(t.world, other_backend, { pull_interval = never })
+			utils.scope(t.world, { t.money }, { other })
+			local options = transform(2)
+			import(t.world, t.player_data, lapis, options)
+			import(t.world, other, lapis, options)
+			local mine = t.world:entity()
+			t.world:set(mine, t.link, "p1")
+			settle(t, mine)
+			local theirs = t.world:entity()
+			t.world:set(theirs, jecs.pair(miumiu.data_link, other), "p1")
+			expect(utils.wait_until(function()
+				miumiu.step(t.world)
+				return t.world:has(theirs, jecs.pair(miumiu.data_loaded, other))
+					or t.world:has(theirs, jecs.pair(miumiu.data_error, other))
+			end)).to.equal(true)
+			expect(t.world:get(mine, t.money)).to.equal(10)
+			expect(t.world:get(theirs, t.money)).to.equal(10)
+			expect(#lapis.created).to.equal(1)
+			expect(other_backend:dump("p1").data.money).to.equal(10)
+		end)
+
+		it("keeps the root stamp of a key a migration removed through every later write", function()
+			local t = setup({ pull_interval = never })
+			local long_ago = os.time() - 100000
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(world, entity, context)
+					world:remove(entity, context.legacy("luck_boosts"))
+				end,
+			})
+			t.backend:seed("p1", {
+				data = { luck_boosts = { 1, 2, 3 }, money = 1 },
+				stamps = { luck_boosts = long_ago, money = long_ago },
+			})
+			local player = utils.link_entity(t, "p1")
+			local migrated = t.backend:dump("p1")
+			expect(migrated.data.luck_boosts).to.equal(nil)
+			expect(migrated.stamps.luck_boosts).to.equal(long_ago)
+			t.world:set(player, t.money, 2)
+			utils.session_of(t, "p1"):sync()
+			t.world:set(player, t.money, 3)
+			utils.session_of(t, "p1"):sync()
+			local written = t.backend:dump("p1")
+			expect(written.data.money).to.equal(3)
+			expect(written.data.luck_boosts).to.equal(nil)
+			expect(written.stamps.luck_boosts).to.equal(long_ago)
 		end)
 	end)
 end

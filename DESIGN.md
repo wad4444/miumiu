@@ -729,7 +729,10 @@ with the same version count is still adopted rather than overwritten from a stal
 
 After the write: merged truth → reconcile onto every entity linked to that key: for each
 schema entry, if the entity's value differs (same reference, else deep-equal after
-deserializing), set it. A runtime value must be acyclic: the deep comparison walks it
+deserializing), set it. A lazy key is flushed on its own: one whose value the guard
+rejects at write time, or whose serialize throws, is warned about by name and the rest of
+the entity and its children still reach the write. The rejected flush writes nothing back
+to the entity, because a child's flush runs inside a `removed` hook. A runtime value must be acyclic: the deep comparison walks it
 without a visited set, so a table that reaches itself overflows the stack, which the
 supply catches and warns rather than applying. Each such set runs under an `applying` mark naming that entity
 and id, so the listener for that exact write is skipped while a write a listener makes

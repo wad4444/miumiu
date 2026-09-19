@@ -24,6 +24,15 @@ with `miumiu.` are reserved, for saveables, child kinds and `context.legacy`. `w
 removes the key from the collection's ordered stores. A collection with an ordered
 store needs a `data_store_service` with `GetOrderedDataStore`.
 
+A lazy value that cannot be read at write time no longer takes the entity's other lazy
+values, its children's, or the whole final write with it: each key is flushed on its own
+and a failure warns by name. A snapshot whose value a guard rejects no longer stops the
+snapshots after it, and a listener that throws on a snapshot's write still reaches every
+other entry before the error leaves `step`. Wiping one collection keeps a lazy value a
+second collection still owes. A migration can no longer nest a child under a parent that
+does not hold the kind, which used to write a group into the record that nothing
+reconciles.
+
 `Batch:get_keys()` returns `{ collection, key }` records instead of bare key strings,
 since a batch may span collections and two collections may use one key string. The
 exported type `Map` (an ordered store's score function) is now `ScoreMap`, in both the

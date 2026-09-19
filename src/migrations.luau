@@ -91,6 +91,15 @@ local function touch(scratch: MigrationScratch, entity: Entity)
 	end
 end
 
+local function holds_kind(scratch: MigrationScratch, kind: ChildKind, parent: Entity): boolean
+	if parent == scratch.entity then
+		return table.find(scratch.kinds, kind) ~= nil
+	end
+
+	local held = children.child_of(scratch.children, parent)
+	return held ~= nil and kind.holders[held.kind.tag] == true
+end
+
 local function index_relation(scratch: MigrationScratch, write: RelationWrite)
 	local world, index = scratch.world, scratch.children
 	if write.change == "removed" then
@@ -100,6 +109,19 @@ local function index_relation(scratch: MigrationScratch, write: RelationWrite)
 			children.forget_parent(index, write.entity)
 		end
 
+		return
+	end
+
+	if not holds_kind(scratch, write.child, write.parent) then
+		logging.warn_once(
+			scratch.warned,
+			`child_unheld:{write.child.tag}/{write.parent}`,
+			messages.warnings.child_unheld(
+				util.describe(world, write.entity),
+				util.describe(world, write.child.tag),
+				util.describe(world, write.parent)
+			)
+		)
 		return
 	end
 
@@ -127,6 +149,7 @@ local function create_scratch(schema: Schema, root: Fields, warned: Warned): Mig
 	scratch = {
 		world = world,
 		entity = world:entity(),
+		kinds = root.kinds,
 		children = { by_entity = {}, by_parent = {} },
 		named = table.clone(schema.named),
 		warned = warned,

@@ -127,7 +127,7 @@ local function restore(context: Context, write: ComponentWrite, previous: any)
 	end)
 end
 
-local function validate_write(context: Context, write: ComponentWrite)
+local function validate_write(context: Context, write: ComponentWrite, flushing: boolean)
 	local entry = write.entry
 	if entry.kind ~= "component" or write.change == "removed" then
 		return
@@ -137,7 +137,11 @@ local function validate_write(context: Context, write: ComponentWrite)
 	if checked.kind == "ok" then
 		return
 	end
-	restore(context, write, state.entity_state(context.world_state, write.entity).shadow[entry.key])
+
+	if not flushing then
+		restore(context, write, state.entity_state(context.world_state, write.entity).shadow[entry.key])
+	end
+
 	error(
 		messages.errors.guard_rejected(
 			entry.key,
@@ -452,7 +456,7 @@ local function journal_component(context: Context, write: ComponentWrite, flushi
 		return
 	end
 
-	validate_write(context, write)
+	validate_write(context, write, flushing)
 	local entity_state = state.entity_state(world_state, write.entity)
 	if capture and not flushing then
 		if capture.delta and is_lazy(write.entry) then
@@ -512,7 +516,7 @@ local function flush_lazy(context: Context, entity: Entity, entries: { SchemaEnt
 		end
 		entity_state.lazy[entry.key] = nil
 		local value = world:get(entity, entry.id)
-		journal_component(context, {
+		local ok, err = pcall(journal_component, context, {
 			kind = "component",
 			entity = entity,
 			entry = entry,
@@ -520,6 +524,9 @@ local function flush_lazy(context: Context, entity: Entity, entries: { SchemaEnt
 			value = value,
 			deleted = false,
 		}, true)
+		if not ok then
+			logging.warn(messages.warnings.lazy_flush_failed(entry.key, util.describe(world, entity), err))
+		end
 	end
 
 	children.each_child(context.world_state.children, entity, function(child, held)

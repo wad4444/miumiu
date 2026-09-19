@@ -742,6 +742,7 @@ export type Context = {
 export type MigrationScratch = {
 	world: World,
 	entity: Entity,
+	kinds: { ChildKind },
 	sink: RecorderSink,
 	children: ChildIndex,
 	named: Named,

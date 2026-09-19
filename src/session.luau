@@ -829,7 +829,10 @@ local function pull_with(self: SessionInternal, retry: RetryConfig): boolean
 	if not is_idle(self) or values.status.kind == "closing" then
 		local prepare = values.prepare
 		if prepare then
-			callbacks.invoke(hooks.writing, self, prepare)
+			local ready, err = pcall(prepare)
+			if not ready then
+				logging.warn(messages.warnings.prepare_failed(values.key, err))
+			end
 		end
 		values.touched = false
 		if values.status.kind == "closing" and is_idle(self) then

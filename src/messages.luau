@@ -391,6 +391,12 @@ local warnings = table.freeze({
 			`collection {collection} pulls every {interval}s, under the {cooldown}s DataStore write cooldown per key: back-to-back writes wait for the cooldown`
 		)
 	end,
+	lazy_flush_failed = function(key: string, entity: unknown, err: unknown)
+		return prefixed(`lazy "{key}" of {entity} could not be read at write time and was not written: {err}`)
+	end,
+	prepare_failed = function(key: string, err: unknown)
+		return prefixed(`preparing the write of "{key}" failed; some values may not have reached it: {err}`)
+	end,
 	snapshot_failed = function(key: string, entity: unknown, err: unknown)
 		return prefixed(`snapshot of "{key}" for {entity} failed and was not written: {err}`)
 	end,

@@ -415,17 +415,53 @@ local function reconcile(context: Context, entity: Entity, known: State, collect
 	guard.rethrow()
 end
 
+local function owed_elsewhere(context: Context, entity: Entity, entry: SchemaEntry, collection: Entity): boolean
+	local links: { [Entity]: string } = context.world_state.links[entity] or {}
+	local owed = false
+	for other in links do
+		if other ~= collection and entry.holders[other] then
+			owed = true
+		end
+	end
+
+	return owed
+end
+
 local function wipe_entity(context: Context, entity: Entity, collection: Entity)
 	local root = context.schema.roots[collection]
 	local entity_state = state.entity_state(context.world_state, entity)
+	local wiped: { SchemaEntry } = {}
 	for _, entry in root.entries do
+		if entity_state.lazy[entry.key] and owed_elsewhere(context, entity, entry, collection) then
+			continue
+		end
+
 		entity_state.lazy[entry.key] = nil
+		table.insert(wiped, entry)
 	end
+
 	release_children(context, entity, root.kinds)
-	apply(context, entity, root.entries, entity_state, { truth = {}, stamps = {} }, true)
+	apply(context, entity, wiped, entity_state, { truth = {}, stamps = {} }, true)
 	apply_initials(context, entity, collection)
 	table.clear(entity_state.supplied)
 	entity_state.shadow = state.read_values(context, entity, context.schema.entries)
+end
+
+local function warn_snapshot(context: Context, entity: Entity, entry: ComponentEntry, why: unknown)
+	logging.warn_once(
+		context.world_state.warned,
+		`snapshot_failed:{entry.key}/{entity}`,
+		messages.warnings.snapshot_failed(entry.key, util.describe(context.world, entity), why)
+	)
+end
+
+local function store_snapshot(context: Context, entity: Entity, entry: ComponentEntry, value: any)
+	local world = context.world
+	if value == nil or ops.deep_equal(world:get(entity, entry.id), value) then
+		return
+	end
+
+	world:set(entity, entry.id, value)
 end
 
 local function snapshot_fields(context: Context, entity: Entity, snapshots: { ComponentEntry })
@@ -434,26 +470,32 @@ local function snapshot_fields(context: Context, entity: Entity, snapshots: { Co
 		return
 	end
 
+	local guard = util.create_guard()
 	for _, entry in snapshots do
 		local snapshot = entry.snapshot :: Snapshot
-		local ok, value = pcall(util.sync, "snapshot" :: SyncKind, entry.key, snapshot, world, entity)
+		local ok, result = pcall(util.sync, "snapshot" :: SyncKind, entry.key, snapshot, world, entity)
 		if not ok then
-			logging.warn_once(
-				context.world_state.warned,
-				`snapshot_failed:{entry.key}`,
-				messages.warnings.snapshot_failed(entry.key, util.describe(world, entity), value)
-			)
+			warn_snapshot(context, entity, entry, result)
 			continue
 		end
 
-		if value ~= nil and not ops.deep_equal(world:get(entity, entry.id), value) then
-			world:set(entity, entry.id, value)
+		local checked = codec.check_guard(entry, result)
+		if checked.kind ~= "ok" then
+			warn_snapshot(context, entity, entry, checked.reason)
+			continue
 		end
+
+		guard.run(function()
+			store_snapshot(context, entity, entry, result)
+		end)
 	end
 
 	children.each_child(context.world_state.children, entity, function(child, held)
-		snapshot_fields(context, child, held.kind.snapshots)
+		guard.run(function()
+			snapshot_fields(context, child, held.kind.snapshots)
+		end)
 	end)
+	guard.rethrow()
 end
 
 return table.freeze({

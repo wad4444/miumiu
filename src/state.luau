@@ -41,7 +41,7 @@ local function get(world: World): WorldState
 		links = {},
 		link_states = {},
 		orphans = {},
-		pending_loads = 0,
+		pending_loads = {},
 		load_waiters = {},
 		events = {},
 		ordered = {},

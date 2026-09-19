@@ -34,6 +34,7 @@ export type Session = types.Session
 export type Closure = types.Closure
 export type SessionStatus = types.SessionStatus
 export type Batch = types.Batch
+export type BatchKey = types.BatchKey
 export type Outcome = types.Outcome
 export type SettledOutcome = types.SettledOutcome
 export type LandedHook = types.LandedHook

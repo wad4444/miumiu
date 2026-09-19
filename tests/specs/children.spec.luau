@@ -3483,5 +3483,82 @@ return function()
 			miumiu.step(t.world)
 			expect(utils.count(state.get(t.world).children.by_parent)).to.equal(0)
 		end)
+
+		local function stashed_count(t): number
+			local total = 0
+			for _, by_key in state.get(t.world).pending_root_puts do
+				for _ in by_key do
+					total += 1
+				end
+			end
+
+			return total
+		end
+
+		local function sibling_collection(t, suffix: string): Entity
+			local other = utils.create_collection(t.world, t.backend, { pull_interval = never })
+			t.world:set(other, jecs.Name, `other{suffix}`)
+			t.world:set(other, miumiu.collection, `{t.backend.name}_{suffix}`)
+			return other
+		end
+
+		local function stale_stash(t, kinds, other: Entity, key: string)
+			local player = utils.link_entity(t, key)
+			t.backend:delay_next("GetAsync", utils.timings.window, "before")
+			t.world:set(player, jecs.pair(miumiu.data_link, other), key)
+			miumiu.step(t.world)
+			utils.give(t, kinds, player, 5)
+			t.world:delete(player)
+			miumiu.step(t.world)
+		end
+
+		it("does not stash a claim under a loaded holder while another link loads", function()
+			local t = utils.create_fixture({ pull_interval = never })
+			local k = utils.declare_kinds(t.world, t.player_data)
+			utils.scope(t.world, { t.money }, { k.item })
+			local other = sibling_collection(t, "b")
+			utils.declare_saveable(t.world, "component", "gems", { other })
+			stale_stash(t, k, other, "p1")
+			expect(utils.wait_until(function()
+				miumiu.step(t.world)
+				return stashed_count(t) == 0
+			end)).to.equal(true)
+		end)
+
+		it("never puts a dead child back into a wiped record", function()
+			local t = utils.create_fixture({ pull_interval = never })
+			local k = utils.declare_kinds(t.world, t.player_data)
+			utils.scope(t.world, { t.money }, { k.item })
+			local other = sibling_collection(t, "c")
+			utils.declare_saveable(t.world, "component", "gems", { other })
+			stale_stash(t, k, other, "p1")
+			task.wait(utils.timings.grace)
+			miumiu.step(t.world)
+			miumiu.wipe(t.world, t.player_data, "p1")
+			local again = utils.link_entity(t, "p1")
+			utils.session_of(t, "p1"):sync()
+			expect(t.backend:dump("p1").data.inventory).to.equal(nil)
+			expect(utils.count(utils.items_of(t, k, again))).to.equal(0)
+		end)
+
+		it("keeps a key that owed a stashed put wiped", function()
+			local t = utils.create_fixture({ pull_interval = never })
+			local k = utils.declare_kinds(t.world, t.player_data)
+			utils.scope(t.world, { t.money }, { k.item })
+			local player = t.world:entity()
+			t.world:set(player, t.link, "p1")
+			t.backend:delay_next("GetAsync", utils.timings.window, "before")
+			miumiu.step(t.world)
+			utils.give(t, k, player, 5)
+			t.world:delete(player)
+			miumiu.step(t.world)
+			miumiu.wipe(t.world, t.player_data, "p1")
+			utils.wait_until(function()
+				miumiu.step(t.world)
+				local record = t.backend:dump("p1")
+				return record ~= nil and record.data.inventory ~= nil
+			end)
+			expect(t.backend:dump("p1").data.inventory).to.equal(nil)
+		end)
 	end)
 end

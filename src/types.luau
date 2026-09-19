@@ -538,7 +538,6 @@ export type SessionHook =
 	& ((Session, WritingHook, callback: () -> ()) -> () -> ())
 
 export type Session = {
-	get_collection: (Session) -> Entity,
 	get_key: (Session) -> string,
 	get_truth: (Session) -> Data,
 	get_stamps: (Session) -> Stamps,
@@ -570,6 +569,7 @@ export type Pull = {
 }
 
 export type SessionInternal = Session & {
+	get_collection: (SessionInternal) -> Entity,
 	symbol: Symbol,
 	internal_values: {
 		key: string,
@@ -727,7 +727,7 @@ export type WorldState = {
 	links: { [Entity]: { [Entity]: string } },
 	link_states: { [Entity]: { [string]: LinkState } },
 	orphans: { [SessionInternal]: () -> () },
-	pending_loads: number,
+	pending_loads: { [Entity]: { [string]: number } },
 	load_waiters: { [thread]: () -> () },
 	events: { Event },
 	ordered: { [Entity]: OrderedInternal },

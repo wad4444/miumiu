@@ -152,6 +152,44 @@ local function watch_closed(context: Context, link_state: LinkState, loaded: Ses
 	end)
 end
 
+local function loads_of(world_state: WorldState, collection_entity: Entity): { [string]: number }
+	local by_key = world_state.pending_loads[collection_entity]
+	if by_key == nil then
+		by_key = {}
+		world_state.pending_loads[collection_entity] = by_key
+	end
+
+	return by_key
+end
+
+local function owes_a_load(world_state: WorldState): boolean
+	for collection_entity, by_key in world_state.pending_root_puts do
+		local loads = world_state.pending_loads[collection_entity]
+		for key in by_key do
+			if loads ~= nil and (loads[key] or 0) > 0 then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
+local function forget_load(world_state: WorldState, collection_entity: Entity, key: string)
+	local loads = loads_of(world_state, collection_entity)
+	local left = (loads[key] or 0) - 1
+	loads[key] = if left > 0 then left else nil
+	if next(world_state.load_waiters) == nil or owes_a_load(world_state) then
+		return
+	end
+
+	local waiting = world_state.load_waiters
+	world_state.load_waiters = {}
+	for _, wake in waiting do
+		wake()
+	end
+end
+
 local function load(
 	context: Context,
 	collection_state: CollectionState,
@@ -168,7 +206,8 @@ local function load(
 		context.world_state.warned
 	)
 	local world_state = context.world_state
-	world_state.pending_loads += 1
+	local loads = loads_of(world_state, collection_entity)
+	loads[key] = (loads[key] or 0) + 1
 
 	return task.defer(function()
 		local ok, result = pcall(session.load_session, collection_state, key, migrate, function()
@@ -180,16 +219,7 @@ local function load(
 			table.insert(world_state.events, { kind = "load_failed", link = link(), err = tostring(result) })
 		end
 
-		world_state.pending_loads -= 1
-		if world_state.pending_loads > 0 then
-			return
-		end
-
-		local waiting = world_state.load_waiters
-		world_state.load_waiters = {}
-		for _, wake in waiting do
-			wake()
-		end
+		forget_load(world_state, collection_entity, key)
 	end)
 end
 
@@ -383,19 +413,9 @@ local function has_stashed_puts(context: Context, link_state: LinkState): boolea
 	return by_key ~= nil and by_key[link_state.key] ~= nil
 end
 
-local function owes_a_stashed_put(world_state: WorldState): boolean
-	for _, by_key in world_state.pending_root_puts do
-		if next(by_key) ~= nil then
-			return true
-		end
-	end
-
-	return false
-end
-
 local function settle_loads(context: Context, deadline: number)
 	local world_state = context.world_state
-	if world_state.pending_loads == 0 or not owes_a_stashed_put(world_state) then
+	if not owes_a_load(world_state) then
 		return
 	end
 
@@ -416,6 +436,7 @@ local function detach(context: Context, link_state: LinkState): SessionInternal?
 	if phase.kind == "loading" then
 		if coroutine.status(phase.thread) ~= "dead" and not has_stashed_puts(context, link_state) then
 			task.cancel(phase.thread)
+			forget_load(context.world_state, link_state.collection, link_state.key)
 		end
 
 		return nil
@@ -429,6 +450,11 @@ local function detach(context: Context, link_state: LinkState): SessionInternal?
 end
 
 local function wipe_key(context: Context, collection_entity: Entity, key: string)
+	local stashed = context.world_state.pending_root_puts[collection_entity]
+	if stashed then
+		stashed[key] = nil
+	end
+
 	local link_state = state.link_states_of(context.world_state, collection_entity)[key]
 	if link_state and link_state.phase.kind == "unloading" then
 		local leaving = link_state.phase.session

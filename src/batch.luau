@@ -357,7 +357,7 @@ end
 local function keys_of(entries: { CaptureEntry }): { BatchKey }
 	local keys: { BatchKey } = {}
 	for _, entry in entries do
-		table.insert(keys, { collection = entry.session:get_collection(), key = entry.session:get_key() })
+		table.insert(keys, table.freeze({ collection = entry.session:get_collection(), key = entry.session:get_key() }))
 	end
 
 	return keys

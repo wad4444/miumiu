@@ -6,6 +6,8 @@ import miumiu, {
 	type CollectionConfig,
 	type Guard,
 	type Migration,
+	type OrderedConfig,
+	type OrderedEntry,
 	type Session,
 	type Snapshot,
 } from "@rbxts/miumiu";
@@ -211,8 +213,14 @@ export function transfer(world: World, sender: Entity, receiver: Entity, amount:
 		print(refused.get_outcome().kind, message),
 	);
 	unhook();
-	if (!paid.get_result()) return false;
-	group.hook(miumiu.hooks.landed, () => print("transferred", group.get_keys().size()));
+	if (!paid.get_result()) {
+		paid.silence();
+		return false;
+	}
+	group.hook(miumiu.hooks.landed, () => {
+		const [first] = group.get_keys();
+		print("transferred", group.get_keys().size(), first?.key, first?.collection);
+	});
 	group.hook(miumiu.hooks.refused, (message: string) => print("refused", message));
 	// @ts-expect-error a batch never fires session hooks
 	group.hook(miumiu.hooks.pulled, () => {});
@@ -273,6 +281,48 @@ export function watch(value: unknown) {
 	return session.is_open() && session.is_dirty();
 }
 
+export const coins_this_week = component<number>();
+meta(coins_this_week, miumiu.saveable, "coins_this_week");
+meta(coins_this_week, pair(miumiu.field_of, player_data));
+meta(coins_this_week, coins_this_week, 0);
+meta(coins_this_week, miumiu.guard, is_number);
+
+export const weekly_coins = tag();
+meta(weekly_coins, Name, "weekly_coins");
+meta(weekly_coins, pair(miumiu.field_of, player_data));
+const weekly_config: OrderedConfig<number> = {
+	component: coins_this_week,
+	period: { length: 7 * 86400, epoch: 345600 },
+	map: (stored) => (stored > 0 ? math.floor(stored) : undefined),
+	period_threshold: 10,
+	poll_interval: 60,
+	on_period_change: (world, entity, value, place, period) => {
+		world.set(entity, money, (world.get(entity, money) ?? 0) + value * (11 - place));
+		print(period);
+	},
+};
+meta(weekly_coins, miumiu.ordered, weekly_config);
+
+export const all_time_coins = tag();
+meta(all_time_coins, Name, "all_time_coins");
+meta(all_time_coins, pair(miumiu.field_of, player_data));
+meta(all_time_coins, miumiu.ordered, { component: money });
+
+export const monthly_coins = tag();
+meta(monthly_coins, Name, "monthly_coins");
+meta(monthly_coins, pair(miumiu.field_of, player_data));
+meta(monthly_coins, miumiu.ordered, { component: money, period: 30 * 86400, reset: false });
+
+export function read_leaderboard(world: World): OrderedEntry[] {
+	const weekly = miumiu.get_ordered(world, weekly_coins);
+	const period = weekly.get_period();
+	const last_week = period !== undefined ? weekly.get_top(10, { period: period.index - 1 }) : [];
+	const fastest = weekly.get_top(3, { ascending: true });
+	const previous = period !== undefined ? weekly.get_score("1", period.index - 1) : undefined;
+	print(weekly.get_name(), last_week.size(), fastest.size(), weekly.get_score("1"), previous, miumiu.is_ordered(weekly));
+	return weekly.get_top(100);
+}
+
 miumiu.set_warn((message) => print(message));
 
 export const every_export = {
@@ -289,6 +339,9 @@ export const every_export = {
 	pairs: true,
 	child: true,
 	child_id: true,
+	ordered: true,
+	get_ordered: true,
+	is_ordered: true,
 	data_link: true,
 	data_shallow: true,
 	data_loading: true,

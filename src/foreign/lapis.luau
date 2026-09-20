@@ -20,6 +20,7 @@ local function read(foreign: LapisSource, key: string): Data?
 	if type(value) ~= "table" then
 		return nil
 	end
+
 	return ops.deep_copy(value)
 end
 

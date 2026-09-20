@@ -61,9 +61,9 @@ declare namespace miumiu {
 	/** Every foreign source the import understands; lapis is the only one. */
 	export type ForeignSource = LapisSource<any>;
 
-	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes and how long an unawaited single-key batch stays pending, warned under 6 s (the DataStore write cooldown); `idle_interval` (default 60, never under `pull_interval`) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off; `pull_interval = math.huge` runs no loop at all (only `sync`, `await`, unlink and `close` write). `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). Config is validated at link time: a bad value does not throw at `meta`, it lands as `pair(data_error, collection)` on every entity that links. */
+	/** `meta(collection, miumiu.config, { ... })`; every field optional. `pull_interval` (default 15) is how often a session with unwritten changes writes and how long an unawaited single-key batch stays pending, warned under 6 s (the DataStore write cooldown); `idle_interval` (default 60, never under `pull_interval` unless that is `math.huge`, which constrains it not at all since no loop runs) is how often a clean session reads for changes from elsewhere, `math.huge` turns idle reads off; `pull_interval = math.huge` runs no loop at all (only `sync`, `await`, unlink and `close` write). `retry_attempts` (5) and `retry_base` (1 s, doubling) shape storage retries; `commit_store` ("miumiu_commits") and `commit_timeout` (300 s) drive multi-key batches. `user_ids(key)` returns the user ids to attach to every write and wipe of that key (GDPR association). Config is validated at link time: a bad value does not throw at `meta`, it lands as `pair(data_error, collection)` on every entity that links. */
 	export interface CollectionConfig {
-		data_store_service?: Pick<DataStoreService, "GetDataStore">;
+		data_store_service?: Pick<DataStoreService, "GetDataStore"> & Partial<Pick<DataStoreService, "GetOrderedDataStore">>;
 		pull_interval?: number;
 		idle_interval?: number;
 		retry_attempts?: number;
@@ -76,7 +76,7 @@ declare namespace miumiu {
 	/** What `Session.get_config()` returns: the config with defaults filled in, plus the collection's name, migrations and foreign source. */
 	export interface ResolvedCollectionConfig {
 		name: string;
-		data_store_service: Pick<DataStoreService, "GetDataStore">;
+		data_store_service: Pick<DataStoreService, "GetDataStore"> & Partial<Pick<DataStoreService, "GetOrderedDataStore">>;
 		pull_interval: number;
 		idle_interval: number;
 		retry_attempts: number;
@@ -119,10 +119,67 @@ declare namespace miumiu {
 		| { via: Entity; key: string; mode: "owned" }
 		| { via: Entity; key: string; mode: "attached"; id: Entity<string | number> };
 
-	/** `meta(component, miumiu.serdes, { serialize, deserialize })` for values a DataStore cannot hold: `Set<number>`, `Map<number, T>`, userdata. String-keyed `Set<string>` and `Map<string, T>` are plain tables already and need none. Must not yield. */
+	/** `meta(component, miumiu.serdes, { serialize, deserialize })` for values a DataStore cannot hold: `Set<number>`, `Map<number, T>`, userdata. String-keyed `Set<string>` and `Map<string, T>` are plain tables already and need none. Must not yield, and must return an acyclic value: the library compares runtime values by a deep walk with no visited set. */
 	export interface Serdes<T = unknown, S = unknown> {
 		serialize: (value: T) => S;
 		deserialize: (stored: S) => T;
+	}
+
+	/** One period of a periodic ordered store: `index` names its store (`name_index`) and is what `get_top`, `get_score` and `on_period_change` take; `start` and `finish` bound it, and `finish` is the next reset. */
+	export interface Period {
+		index: number;
+		start: number;
+		finish: number;
+	}
+
+	/** `period` of an ordered store: a length in seconds (counted from the Unix epoch, so a week rolls over Thursday 00:00 UTC), `{ length, epoch }` to align it, or a function of now returning the `Period`; the index must never decrease as now grows. */
+	export type PeriodConfig = number | { length: number; epoch?: number } | ((now: number) => Period);
+
+	/** `map` of an ordered store: the integer the OrderedDataStore holds for the field's stored form, or `undefined` to leave the key unranked. The default floors a number and leaves anything else unranked. A negative or non-finite result is unranked with a warning. Must not yield. */
+	export type ScoreMap<S = unknown> = (stored: S) => number | undefined;
+
+	/** `on_period_change` of an ordered store: runs for the keys that placed within `period_threshold` of a finished period's ranking, exactly once per key and period across every server, on the loaded entity of whichever holder took the change. A record that skipped periods gets one call per period, in order, and `value` is the field as that period held it. Every call of one change runs inside one batch that also carries the library's claim, so the writes it makes (a reward) land with the claim or not at all; a throw is warned and a later load runs it again. Must not yield. The library knows entities, not players: map the entity back to its `Player` yourself. */
+	export type OnPeriodChange<S = unknown> = (world: World, entity: Entity, value: S, place: number, period: number) => void;
+
+	/** `meta(entity, miumiu.ordered, config)` plus `meta(entity, pair(miumiu.field_of, collection))`: the entity's `Name` (at most 40 characters, and its period suffix must fit the 50-character DataStore limit) names the OrderedDataStore that ranks `component`, a root field of that collection, by `map` of its stored form (see `ScoreMap`). With `period` the store is per period (`name_index`) and the field resets to its initial when a record crosses into a new one, unless `reset` is `false`, which keeps the field across the crossing so each period's ranking holds the value as it stands (a monthly board of a lifetime total) and lets the store share its field with others, since it resets nothing; `period_threshold` (default 10) is how many ranks `on_period_change` resolves and `poll_interval` (default 60) how many seconds after a period's end its final ranking is read. `S` is the field's stored form. A field this config does not know fails the schema build. */
+	export interface OrderedConfig<S = unknown> {
+		component: Entity<any>;
+		period?: PeriodConfig;
+		reset?: boolean;
+		map?: ScoreMap<S>;
+		period_threshold?: number;
+		poll_interval?: number;
+		on_period_change?: OnPeriodChange<S>;
+	}
+
+	/** One key a batch wrote, named by the collection it belongs to: two collections can use the same key string. */
+	export interface BatchKey {
+		collection: Entity;
+		key: string;
+	}
+
+	/** One ranked key. */
+	export interface OrderedEntry {
+		key: string;
+		score: number;
+	}
+
+	/** Options of `Ordered.get_top`: `period` picks a period's store by index (default the current one; not allowed on an all-time store), `ascending` reads lowest first. */
+	export interface TopOptions {
+		period?: number;
+		ascending?: boolean;
+	}
+
+	/** The handle `get_ordered` returns: reads only, the sessions push scores. */
+	export interface Ordered {
+		/** The store's name, its entity's `Name`. */
+		get_name(): string;
+		/** The current period, without a request, or `undefined` for an all-time store. */
+		get_period(): Period | undefined;
+		/** The top `count` entries in rank order. Yields: one `GetSortedAsync` per hundred entries; a finished period's ranking is served from the cache once read, but only for a descending read, so an ascending read of a past period costs its requests every call. */
+		get_top(count: number, options?: TopOptions): OrderedEntry[];
+		/** The score stored for `key`, or `undefined` when it is not ranked. Yields, one `GetAsync`. */
+		get_score(key: string, period?: number): number | undefined;
 	}
 
 	/** A typed hook symbol; `Args` is what the callback receives. */
@@ -155,11 +212,13 @@ declare namespace miumiu {
 		/** What the function returned, available as soon as `batch` returns. A nested call returns the outer handle, so it reports the outer function's result. `undefined` for a batch refused on a closed world, whose function never ran. */
 		get_result(): T;
 		/** The stored keys the batch touched, in the order they were first written; empty for a batch that captured nothing. Available as soon as `batch` returns. */
-		get_keys(): readonly string[];
+		get_keys(): readonly BatchKey[];
 		/** True once landed or refused. */
 		is_settled(): boolean;
 		/** Connect to `landed` or `refused`; fires at once if already settled. Returns a disconnect. Callbacks are pcalled and a throw is warned, never raised. */
 		hook<H extends LandedHook | RefusedHook>(hook: H, callback: (...args: H["__hook"]) => void): () => void;
+		/** Accept a refusal silently: the library warns when a batch is refused with nothing hooked and nothing awaiting it, and this says that was expected. It does not stop a world-level `refused` listener from firing. */
+		silence(): void;
 		/** Writes a single-key batch now, then yields until settled and returns the outcome (`landed`, or `refused` with the message); never throws, except when called inside the batch's own function. The result is the decision: branch on it, never discard it. The durability point for receipts. A refusal warns when nothing hooked `refused` or awaited the batch in the same frame. */
 		await(): SettledOutcome;
 	}
@@ -200,11 +259,11 @@ declare namespace miumiu {
 
 	/** Drain queued link/unlink/load/pull events into the world. Call every Heartbeat. No-op after `close`. Unlink, then `step`, then delete the entity: a root deleted while linked keeps its record, and its owned children are deleted with it on the next `step`. */
 	export function step(world: World): void;
-	/** Unload every session and stop stepping. The first thing it does is detach every link, so write leave-time state before calling it or in a `writing` hook; a saveable write made after it began is dropped. Yields until every final write lands or `budget` seconds (default 25) pass. Call from `BindToClose`. */
+	/** Unload every session and stop stepping. The first thing it does is detach every link, so write leave-time state before calling it or in a `writing` hook; a saveable write made after it began is dropped. Yields until every final write lands or `budget` seconds (default 25) pass, and a second call on the same world joins the first rather than returning early. A load still in flight is cancelled, unless it owes a child pair claimed while its root was deleted, which the budget waits out so the pair is written. Call from `BindToClose`. */
 	export function close(world: World, budget?: number): void;
 	/** The open session behind `pair(data_link, collection) = key`, or undefined while loading, failed, unlinked or writing its final record after an unlink. `collection` is the collection tag. */
 	export function get_session(world: World, collection: Entity, key: string): Session | undefined;
-	/** Erase a key in one write: a fresh empty record, every stored key stamped past its old stamp. A loaded key also drops its unwritten changes and lazy marks, refuses every single-key batch still riding it (their hooks fire inside the call), puts initials back on every linked entity, deletes its owned children and resets attached ones; a key nobody here holds is wiped straight in the store. Yields; throws if the write fails, keeping everything. A multi-key batch mid-commit on the key is not refused: its pending entry goes with the record while its other keys may still land it. */
+	/** Erase a key in one write: a fresh empty record, every stored key stamped past its old stamp. A loaded key also drops its unwritten changes and lazy marks, refuses every single-key batch still riding it (their hooks fire inside the call), puts initials back on every linked entity, deletes its owned children and resets attached ones; a key nobody here holds is wiped straight in the store. Yields; throws if the write fails, keeping everything. A key whose load is still in flight has that load cancelled and started again, so the entities take the wiped record. A multi-key batch mid-commit on the key is not refused: its pending entry goes with the record while its other keys may still land it. */
 	export function wipe(world: World, collection: Entity, key: string): void;
 	/** Every write inside lands as one group, on every key it touches, or none. Runs `fn` now, journals the group and returns without yielding; on one key the group rides the session's next write (`await` writes it now, for receipts), across keys it commits in the background, and the returned `Batch` reports it. A write `fn` cannot make (guard, unloaded entity, `fn` throwing) or keys on collections with different commit stores throw here and roll the world back at once; a commit refused later rolls back only the values the batch still holds and fires `refused`. A nested call joins the outer batch and returns the outer handle. A batch that captured no saveable write lands at once; snapshots are evaluated at write time outside any batch. */
 	export function batch<T = void>(world: World, fn: () => T): Batch<T>;
@@ -216,6 +275,10 @@ declare namespace miumiu {
 	export function hook(world: World, hook: RefusedHook, callback: (batch: Batch<unknown>, message: string) => void): () => void;
 	/** True for a `Batch` returned by `batch` or `delta`. */
 	export function is_batch(value: unknown): value is Batch<unknown>;
+	/** The `Ordered` handle behind `meta(entity, miumiu.ordered, config)`, one per world and entity; builds the schema on first use. Throws for an entity without the meta and for a collection whose config or `data_store_service` (no `GetOrderedDataStore`) is bad. */
+	export function get_ordered(world: World, entity: Entity): Ordered;
+	/** True for an `Ordered` returned by `get_ordered`. */
+	export function is_ordered(value: unknown): value is Ordered;
 	/** Route the library's warnings; omit to restore `warn`. */
 	export function set_warn(sink?: (message: string) => void): void;
 
@@ -245,6 +308,8 @@ declare namespace miumiu {
 	export const child: Entity<ChildConfig>;
 	/** The id an owned child is stored under; assigned by the library as soon as the entity carries both the kind tag and the pair, in either order, readable by the game. `undefined` until the first `step` on a child created before it. */
 	export const child_id: Entity<string>;
+	/** Declares an OrderedDataStore ranking one root field of a collection; see `OrderedConfig`. Read it through `get_ordered`. */
+	export const ordered: Entity<OrderedConfig<any>>;
 
 	/** `world.set(e, pair(data_link, c), key)` links an entity to a key and starts the load; `world.remove` unlinks, the final write follows, and the `closed` hook reports it. */
 	export const data_link: Entity<string>;

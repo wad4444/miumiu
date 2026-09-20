@@ -7,10 +7,12 @@ local link = require("./link")
 local listeners = require("./listeners")
 local logging = require("./logging")
 local messages = require("./messages")
+local resets = require("./resets")
 local state = require("./state")
 local util = require("./util")
 
 type World = types.World
+type WorldState = types.WorldState
 type Entity<T = nil> = types.Entity<T>
 type Callback = types.Callback
 type Context = types.Context
@@ -48,7 +50,8 @@ local function drain(context: Context)
 		while #events > 0 do
 			dispatch(context, table.remove(events, 1) :: Event)
 		end
-	until #world_state.cleanups == 0
+		resets.run_all(context)
+	until #world_state.cleanups == 0 and #world_state.events == 0
 end
 
 local function step(world: World)
@@ -56,6 +59,7 @@ local function step(world: World)
 	if world_state.phase.kind ~= "idle" then
 		return
 	end
+
 	local context = contexts.create_context(world)
 	listeners.install(context)
 	world_state.phase = { kind = "stepping" }
@@ -63,6 +67,7 @@ local function step(world: World)
 	if (world_state.phase :: WorldPhase).kind == "stepping" then
 		world_state.phase = { kind = "idle" }
 	end
+
 	if not ok then
 		error(err, 0)
 	end
@@ -85,12 +90,15 @@ local function unload_once(loaded: SessionInternal, deadline: number): UnloadAtt
 	while not done and os.time() < deadline do
 		task.wait()
 	end
+
 	if not done then
 		return { kind = "failed", reason = messages.errors.close_timed_out(loaded:get_key()) }
 	end
+
 	if ok then
 		return { kind = "done" }
 	end
+
 	return { kind = "failed", reason = tostring(err) }
 end
 
@@ -104,9 +112,11 @@ local function unload_until(loaded: SessionInternal, deadline: number)
 			end
 			return
 		end
+
 		if result.kind == "done" then
 			continue
 		end
+
 		local remaining = deadline - os.time()
 		if remaining <= 0 then
 			local message = messages.closures.abandoned(loaded:get_key(), result.reason)
@@ -123,17 +133,15 @@ local function hook(world: World, hook_symbol: Symbol, callback: Callback): () -
 	if hook_symbol ~= (hooks.refused :: any) then
 		error(messages.errors.hook_unknown(tostring(hook_symbol), "hooks.refused"), 0)
 	end
+
 	return callbacks.connect(state.get(world).hooks, hook_symbol, callback)
 end
 
-local function close(world: World, budget: number?)
-	local world_state = state.get(world)
-	world_state.phase = { kind = "closed" }
-	if not listeners.is_installed(world_state) then
-		return
-	end
-
+local function close_world(world: World, world_state: WorldState, budget: number?)
 	local context = contexts.create_context(world)
+	local deadline = os.time() + (budget or close_budget)
+	link.settle_loads(context, deadline)
+
 	local guard = util.create_guard()
 	local events = world_state.events
 	world_state.events = {}
@@ -146,9 +154,11 @@ local function close(world: World, budget: number?)
 			table.insert(world_state.events, event)
 		end
 	end
+
 	for root in world_state.pending_drops do
 		link.resolve_drops(context, root)
 	end
+
 	local detached = link.detach_all(context)
 	link.run_cleanups(context)
 	listeners.uninstall(world_state)
@@ -159,8 +169,9 @@ local function close(world: World, budget: number?)
 	world_state.pending_drops = {}
 	world_state.pending_puts = {}
 	world_state.pending_root_puts = {}
+	world_state.pending_loads = {}
+	world_state.load_waiters = {}
 
-	local deadline = os.time() + (budget or close_budget)
 	util.join_all(detached.sessions, function(loaded)
 		unload_until(loaded, deadline)
 	end)
@@ -168,6 +179,33 @@ local function close(world: World, budget: number?)
 		error(detached.err, 0)
 	end
 	guard.rethrow()
+end
+
+local function close(world: World, budget: number?)
+	local world_state = state.get(world)
+	world_state.phase = { kind = "closed" }
+	local closing = world_state.closing
+	if closing then
+		table.insert(closing, coroutine.running())
+		coroutine.yield()
+		return
+	end
+
+	if not listeners.is_installed(world_state) then
+		return
+	end
+
+	local waiters: { thread } = {}
+	world_state.closing = waiters
+	local ok, err = pcall(close_world, world, world_state, budget)
+	world_state.closing = nil
+	for _, thread in waiters do
+		task.spawn(thread)
+	end
+
+	if not ok then
+		error(err, 0)
+	end
 end
 
 return table.freeze({

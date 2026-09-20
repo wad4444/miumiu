@@ -66,6 +66,7 @@ local function entities_of(link_state: LinkState): { Entity }
 	for entity in link_state.entities do
 		table.insert(entities, entity)
 	end
+
 	return entities
 end
 
@@ -80,6 +81,17 @@ local function convert_pending_puts(context: Context, root: Entity)
 			end, function() end)
 		end
 	end
+end
+
+local function is_receiving(context: Context, link_state: LinkState): boolean
+	local receiving = false
+	for entity in link_state.entities do
+		if not is_shallow(context, entity, link_state.collection) then
+			receiving = true
+		end
+	end
+
+	return receiving
 end
 
 local function supply_all(context: Context, link_state: LinkState, loaded: SessionInternal)
@@ -124,6 +136,7 @@ local function unload_quietly(context: Context, loaded: SessionInternal)
 		if ok then
 			return
 		end
+
 		if loaded:is_open() then
 			logging.warn(messages.warnings.unload_failed(loaded:get_key(), err))
 		else
@@ -137,6 +150,44 @@ local function watch_closed(context: Context, link_state: LinkState, loaded: Ses
 	return loaded:hook(hooks.closed, function()
 		table.insert(events, { kind = "closed", link = link_state, session = loaded })
 	end)
+end
+
+local function loads_of(world_state: WorldState, collection_entity: Entity): { [string]: number }
+	local by_key = world_state.pending_loads[collection_entity]
+	if by_key == nil then
+		by_key = {}
+		world_state.pending_loads[collection_entity] = by_key
+	end
+
+	return by_key
+end
+
+local function owes_a_load(world_state: WorldState): boolean
+	for collection_entity, by_key in world_state.pending_root_puts do
+		local loads = world_state.pending_loads[collection_entity]
+		for key in by_key do
+			if loads ~= nil and (loads[key] or 0) > 0 then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
+local function forget_load(world_state: WorldState, collection_entity: Entity, key: string)
+	local loads = loads_of(world_state, collection_entity)
+	local left = (loads[key] or 0) - 1
+	loads[key] = if left > 0 then left else nil
+	if next(world_state.load_waiters) == nil or owes_a_load(world_state) then
+		return
+	end
+
+	local waiting = world_state.load_waiters
+	world_state.load_waiters = {}
+	for _, wake in waiting do
+		wake()
+	end
 end
 
 local function load(
@@ -154,13 +205,21 @@ local function load(
 		key,
 		context.world_state.warned
 	)
+	local world_state = context.world_state
+	local loads = loads_of(world_state, collection_entity)
+	loads[key] = (loads[key] or 0) + 1
+
 	return task.defer(function()
-		local ok, result = pcall(session.load_session, collection_state, key, migrate)
+		local ok, result = pcall(session.load_session, collection_state, key, migrate, function()
+			return is_receiving(context, link())
+		end)
 		if ok then
-			table.insert(context.world_state.events, { kind = "loaded", link = link(), session = result })
+			table.insert(world_state.events, { kind = "loaded", link = link(), session = result })
 		else
-			table.insert(context.world_state.events, { kind = "load_failed", link = link(), err = tostring(result) })
+			table.insert(world_state.events, { kind = "load_failed", link = link(), err = tostring(result) })
 		end
+
+		forget_load(world_state, collection_entity, key)
 	end)
 end
 
@@ -170,7 +229,9 @@ local function forget_link(context: Context, entity: Entity, collection_entity: 
 	links[collection_entity] = nil
 	if next(links) == nil then
 		world_state.links[entity] = nil
-		world_state.entities[entity] = nil
+		if children.child_of(world_state.children, entity) == nil then
+			world_state.entities[entity] = nil
+		end
 	end
 end
 
@@ -218,29 +279,6 @@ local function snapshot_all(context: Context, link_state: LinkState)
 	guard.rethrow()
 end
 
-local function wipe_key(context: Context, collection_entity: Entity, key: string)
-	local link_state = state.link_states_of(context.world_state, collection_entity)[key]
-	if link_state and link_state.phase.kind == "unloading" then
-		local leaving = link_state.phase.session
-		local ok, err = pcall(leaving.wipe, leaving)
-		if ok then
-			return
-		end
-		if leaving:is_open() then
-			error(err, 0)
-		end
-	end
-	local loaded = state.open_session(link_state)
-	if link_state == nil or loaded == nil then
-		session.wipe_key(collection.get(context.world, collection_entity), key)
-		return
-	end
-	loaded:wipe()
-	util.run_all(entities_of(link_state), function(entity)
-		reconcile.wipe_entity(context, entity, collection_entity)
-	end)
-end
-
 local function loaded_phase(context: Context, link_state: LinkState, loaded: SessionInternal): LinkPhase
 	local events = context.world_state.events
 	local disconnect_pulled = loaded:hook(hooks.pulled, function()
@@ -280,12 +318,14 @@ local function register_link(context: Context, entity: Entity, collection_entity
 		phase.disconnect()
 		by_key[key] = nil
 	end
+
 	local ok, collection_state = pcall(collection.get, context.world, collection_entity)
 	if not ok then
 		forget_link(context, entity, collection_entity)
 		mark(context, entity, collection_entity, "none", tostring(collection_state))
 		return nil
 	end
+
 	return create_link(context, collection_state, collection_entity, key)
 end
 
@@ -295,17 +335,20 @@ local function overlapping_link(context: Context, entity: Entity, collection_ent
 	if not links or not root then
 		return nil
 	end
+
 	local kinds = root.kinds
 	for other in links do
-		if not context.world:has(entity, jecs.pair(ids.data_link, other)) then
+		if other == collection_entity or not context.world:has(entity, jecs.pair(ids.data_link, other)) then
 			continue
 		end
+
 		for _, kind in context.schema.roots[other].kinds do
 			if table.find(kinds, kind) then
 				return other
 			end
 		end
 	end
+
 	return nil
 end
 
@@ -321,6 +364,7 @@ local function on_link(context: Context, entity: Entity, collection_entity: Enti
 	if not world:contains(entity) then
 		return
 	end
+
 	if type(key) ~= "string" or #key == 0 then
 		local err =
 			messages.errors.link_key_invalid(util.describe(world, entity), util.describe(world, collection_entity))
@@ -350,6 +394,7 @@ local function on_link(context: Context, entity: Entity, collection_entity: Enti
 		readopt(context, link_state, phase.session, phase.disconnect)
 		phase = link_state.phase
 	end
+
 	local ok, err = pcall(function()
 		reconcile.apply_initials(context, entity, collection_entity)
 		if phase.kind == "loaded" then
@@ -368,19 +413,81 @@ local function has_stashed_puts(context: Context, link_state: LinkState): boolea
 	return by_key ~= nil and by_key[link_state.key] ~= nil
 end
 
+local function settle_loads(context: Context, deadline: number)
+	local world_state = context.world_state
+	if not owes_a_load(world_state) then
+		return
+	end
+
+	local waiting = coroutine.running()
+	local timeout = task.delay(math.max(deadline - os.time(), 0), function()
+		world_state.load_waiters[waiting] = nil
+		task.spawn(waiting)
+	end)
+	world_state.load_waiters[waiting] = function()
+		task.cancel(timeout)
+		task.spawn(waiting)
+	end
+	coroutine.yield()
+end
+
 local function detach(context: Context, link_state: LinkState): SessionInternal?
 	local phase = link_state.phase
 	if phase.kind == "loading" then
 		if coroutine.status(phase.thread) ~= "dead" and not has_stashed_puts(context, link_state) then
 			task.cancel(phase.thread)
+			forget_load(context.world_state, link_state.collection, link_state.key)
 		end
+
 		return nil
 	end
+
 	if phase.kind == "unloading" then
 		return nil
 	end
 	phase.disconnect()
 	return phase.session
+end
+
+local function wipe_key(context: Context, collection_entity: Entity, key: string)
+	local stashed = context.world_state.pending_root_puts[collection_entity]
+	if stashed then
+		stashed[key] = nil
+	end
+
+	local link_state = state.link_states_of(context.world_state, collection_entity)[key]
+	if link_state and link_state.phase.kind == "unloading" then
+		local leaving = link_state.phase.session
+		local ok, err = pcall(leaving.wipe, leaving)
+		if ok then
+			return
+		end
+
+		if leaving:is_open() then
+			error(err, 0)
+		end
+	end
+
+	if link_state ~= nil and link_state.phase.kind == "loading" then
+		local waiting = entities_of(link_state)
+		detach(context, link_state)
+		state.link_states_of(context.world_state, collection_entity)[key] = nil
+		session.wipe_key(collection.get(context.world, collection_entity), key)
+		util.run_all(waiting, function(entity)
+			on_link(context, entity, collection_entity, key)
+		end)
+		return
+	end
+
+	local loaded = state.open_session(link_state)
+	if link_state == nil or loaded == nil then
+		session.wipe_key(collection.get(context.world, collection_entity), key)
+		return
+	end
+	loaded:wipe()
+	util.run_all(entities_of(link_state), function(entity)
+		reconcile.wipe_entity(context, entity, collection_entity)
+	end)
 end
 
 local function resolve_drops(context: Context, root: Entity)
@@ -391,13 +498,19 @@ local function resolve_drops(context: Context, root: Entity)
 	end
 	world_state.pending_drops[root] = nil
 	local alive = context.world:contains(root)
+	local linked = alive and world_state.links[root] ~= nil
 	for _, drop in drops do
-		if alive then
+		if linked and #capture.ancestry_sessions(context, drop.ancestry) > 0 then
 			capture.emit_child(context, drop.ancestry, capture.child_drop, function() end)
-		elseif drop.kept then
+		elseif drop.kept and (drop.stored or not alive) then
 			table.insert(world_state.cleanups, { kind = "delete", entity = drop.entity })
 		end
 	end
+end
+
+local function is_relinking(context: Context, entity: Entity, collection_entity: Entity, key: string): boolean
+	local world = context.world
+	return world:contains(entity) and world:get(entity, jecs.pair(ids.data_link, collection_entity)) == key
 end
 
 local function on_unlink(context: Context, entity: Entity, collection_entity: Entity)
@@ -414,6 +527,7 @@ local function on_unlink(context: Context, entity: Entity, collection_entity: En
 	guard.run(function()
 		mark(context, entity, collection_entity, "none")
 	end)
+
 	if key and link_state then
 		forget_link(context, entity, collection_entity)
 		local held = children.child_of(context.world_state.children, entity)
@@ -423,15 +537,17 @@ local function on_unlink(context: Context, entity: Entity, collection_entity: En
 			end, function() end)
 			reconcile.refresh_shadows(context, entity, held.kind)
 		end
+
 		if not context.world:contains(entity) then
 			children.forget_parent(context.world_state.children, entity)
 		end
 		link_state.entities[entity] = nil
-		if link_state.phase.kind == "loaded" then
+		if link_state.phase.kind == "loaded" and not is_relinking(context, entity, collection_entity, key) then
 			guard.run(function()
 				reconcile.release_children(context, entity, context.schema.roots[collection_entity].kinds)
 			end)
 		end
+
 		if next(link_state.entities) == nil then
 			local loaded = detach(context, link_state)
 			if loaded and loaded:is_open() then
@@ -453,6 +569,7 @@ local function on_loaded(context: Context, link_state: LinkState, loaded: Sessio
 		stashed[link_state.key] = nil
 		loaded:journal({ id = util.create_guid(), ops = ops, kind = "single" })
 	end
+
 	if not is_current(context, link_state) or link_state.phase.kind ~= "loading" then
 		unload_quietly(context, loaded)
 		return
@@ -466,6 +583,7 @@ local function on_loaded(context: Context, link_state: LinkState, loaded: Sessio
 	if not ok then
 		error(err, 0)
 	end
+
 	if not marked then
 		error(mark_err, 0)
 	end
@@ -475,9 +593,11 @@ local function error_of(reason: DropReason): string?
 	if reason.kind == "failed" then
 		return reason.message
 	end
+
 	if reason.kind == "unloaded" then
 		return nil
 	end
+
 	local closure = reason.closure
 	return if closure.kind == "clean" then nil else closure.message
 end
@@ -495,6 +615,12 @@ local function drop_link(context: Context, link_state: LinkState, reason: DropRe
 end
 
 local function on_load_failed(context: Context, link_state: LinkState, err: string)
+	local world_state = context.world_state
+	local stashed = world_state.pending_root_puts[link_state.collection]
+	if stashed and state.link_states_of(world_state, link_state.collection)[link_state.key] == nil then
+		stashed[link_state.key] = nil
+	end
+
 	if not is_current(context, link_state) then
 		return
 	end
@@ -505,6 +631,7 @@ local function on_closed(context: Context, link_state: LinkState, closed: Sessio
 	if not is_current(context, link_state) then
 		return
 	end
+
 	local phase = link_state.phase
 	if phase.kind == "unloading" then
 		drop_link(context, link_state, { kind = "unloaded" })
@@ -521,9 +648,11 @@ local function run_cleanup(context: Context, cleanup: Cleanup)
 	if not context.world:contains(cleanup.entity) then
 		return
 	end
+
 	if children.child_of(context.world_state.children, cleanup.entity) ~= nil then
 		return
 	end
+
 	if cleanup.kind == "delete" then
 		reconcile.remove_child(context, cleanup.entity)
 	else
@@ -539,6 +668,7 @@ local function run_cleanups(context: Context)
 			existing.dropped = false
 		end
 	end
+
 	table.clear(world_state.dropped_entities)
 	while #world_state.cleanups > 0 do
 		local cleanups = world_state.cleanups
@@ -548,6 +678,7 @@ local function run_cleanups(context: Context)
 			run_cleanup(context, cleanup)
 		end)
 	end
+
 	table.clear(world_state.deleting)
 end
 
@@ -583,10 +714,12 @@ local function detach_all(context: Context): Detached
 			end
 		end
 	end
+
 	for loaded in world_state.orphans do
 		forget_orphan(world_state, loaded)
 		table.insert(sessions, loaded)
 	end
+
 	return { sessions = sessions, err = guard.get_error() }
 end
 
@@ -599,6 +732,7 @@ return table.freeze({
 	on_closed = on_closed,
 	on_pulled = on_pulled,
 	resolve_drops = resolve_drops,
+	settle_loads = settle_loads,
 	run_cleanups = run_cleanups,
 	resupply = resupply,
 	wipe_key = wipe_key,

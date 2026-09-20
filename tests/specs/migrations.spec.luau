@@ -1,7 +1,9 @@
 return function()
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+	local jecs = require(ReplicatedStorage.Packages.jecs)
 	local miumiu = require(ReplicatedStorage.Packages.miumiu)
+	local schema = require(ReplicatedStorage.Packages.miumiu.schema)
 	local utils = require(ReplicatedStorage.Tests.utils)
 
 	afterEach(utils.cleanup)
@@ -361,6 +363,220 @@ return function()
 			settle(t, player)
 			local err = t.world:get(player, t.data_error)
 			expect((string.find(err, "holds children keyed by id", 1, true))).to.be.ok()
+		end)
+
+		it("carries a migration's write forty levels deep back into the record", function()
+			local t = setup({ pull_interval = never })
+			local world = t.world
+			local under = world:entity()
+			world:add(under, jecs.Exclusive)
+			local node = world:entity()
+			world:set(node, jecs.Name, "node")
+			world:set(node, miumiu.child, { via = under, key = "nodes", mode = "owned" })
+			utils.scope(world, { node }, { t.player_data, node })
+			utils.scope(world, { t.money }, { node })
+			local nested: any = { money = 1 }
+			for _ = 1, 40 do
+				nested = { nodes = { ["1"] = nested } }
+			end
+			t.backend:seed("p1", { data = nested, migrations = 0 })
+			world:set(t.player_data, miumiu.migrations, {
+				function(scratch, entity)
+					local cursor = entity
+					for _ = 1, 40 do
+						for child in scratch:each(jecs.pair(under, cursor)) do
+							cursor = child
+							break
+						end
+					end
+					scratch:set(cursor, t.money, 99)
+				end,
+			})
+			local player = utils.link_entity(t, "p1")
+			expect(world:has(player, t.data_error)).to.equal(false)
+			local found = t.backend:dump("p1").data
+			for _ = 1, 40 do
+				local _, only = next(found.nodes)
+				found = only
+			end
+			expect(found.money).to.equal(99)
+		end)
+
+		it("fails a migration that links an attached kind without its id", function()
+			local t = setup({ pull_interval = never })
+			local world = t.world
+			local k = utils.declare_kinds(world, t.player_data)
+			utils.scope(world, { t.money }, { k.container })
+			t.backend:seed("p1", { data = { money = 1 }, migrations = 0 })
+			world:set(t.player_data, miumiu.migrations, {
+				function(scratch, entity)
+					local child = scratch:entity()
+					scratch:add(child, k.container)
+					scratch:add(child, jecs.pair(k.holds, entity))
+				end,
+			})
+			local player = utils.link_entity(t, "p1")
+			expect(world:has(player, t.data_error)).to.equal(true)
+			local reported = world:get(player, t.data_error)
+			expect(string.find(reported, "has no id", 1, true) ~= nil).to.equal(true)
+			expect(string.find(reported, 'of kind "container"', 1, true) ~= nil).to.equal(true)
+		end)
+
+		it("never reads the foreign store for a key that already has a record", function()
+			local docs = { p2 = { coins = 5 } }
+			local lapis = { created = {} }
+			function lapis.createCollection(name, options)
+				local created = { name = name, options = options, reads = 0 }
+				lapis.created[name] = created
+				function created:read(key)
+					self.reads += 1
+					return {
+						expect = function()
+							return docs[key]
+						end,
+					}
+				end
+				return created
+			end
+			local t = setup({ pull_interval = never })
+			t.world:set(t.player_data, miumiu.from_foreign, {
+				type = "lapis",
+				name = "LapisPlayers",
+				source = lapis,
+				options = { defaultData = {} },
+			})
+			t.backend:seed_raw("p2", { data = { money = 9 }, stamps = {}, version = 0 })
+			local existing = t.world:entity()
+			t.world:set(existing, t.link, "p2")
+			settle(t, existing)
+			expect(t.world:get(existing, t.money)).to.equal(9)
+			expect((next(lapis.created))).to.equal(nil)
+		end)
+
+		it("leaves a migration's child out of a record whose root does not hold the kind", function()
+			local t = setup({ pull_interval = never })
+			local k = utils.declare_kinds(t.world, t.player_data)
+			local part_of = t.world:entity()
+			t.world:add(part_of, jecs.Exclusive)
+			local part = t.world:entity()
+			t.world:set(part, jecs.Name, "part")
+			t.world:set(part, miumiu.child, { via = part_of, key = "parts", mode = "owned" })
+			utils.scope(t.world, { part }, { k.item })
+			utils.scope(t.world, { t.money }, { k.item, part })
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(world, entity)
+					local bolt = world:entity()
+					world:add(bolt, part)
+					world:set(bolt, t.money, 77)
+					world:add(bolt, jecs.pair(part_of, entity))
+				end,
+			})
+			t.backend:seed("p1", { data = { money = 5 }, stamps = { money = 1 }, migrations = 0, version = 1 })
+			local player = t.world:entity()
+			t.world:set(player, t.link, "p1")
+			settle(t, player)
+			expect(t.world:has(player, t.loaded)).to.equal(true)
+			expect(t.backend:dump("p1").data.parts).to.equal(nil)
+			expect(t.backend:dump("p1").data.money).to.equal(5)
+		end)
+
+		local function create_lapis(docs: { [string]: any })
+			local lapis = { created = {} }
+			function lapis.createCollection(name, options)
+				local created = { name = name, options = options, reads = 0 }
+				table.insert(lapis.created, created)
+				function created:read(key)
+					self.reads += 1
+					return {
+						expect = function()
+							local doc = docs[key]
+							return if doc then options.transform(doc) else nil
+						end,
+					}
+				end
+				return created
+			end
+			return lapis
+		end
+
+		local function import(world, collection, lapis, options)
+			world:set(collection, miumiu.from_foreign, {
+				type = "lapis",
+				name = "Shared",
+				source = lapis,
+				options = options,
+			})
+		end
+
+		local function transform(factor: number)
+			return {
+				transform = function(doc)
+					return { money = doc.coins * factor }
+				end,
+			}
+		end
+
+		it("rejects two collections importing one foreign collection with different options", function()
+			local lapis = create_lapis({})
+			local t = setup({ pull_interval = never })
+			local other = utils.create_collection(t.world, utils.create_backend(), { pull_interval = never })
+			utils.scope(t.world, { t.money }, { other })
+			import(t.world, t.player_data, lapis, transform(1))
+			import(t.world, other, lapis, transform(100))
+			expect(function()
+				schema.create_schema(t.world)
+			end).to.throw("different options")
+		end)
+
+		it("lets two collections import one foreign collection with one options table", function()
+			local lapis = create_lapis({ p1 = { coins = 5 } })
+			local t = setup({ pull_interval = never })
+			local other_backend = utils.create_backend()
+			local other = utils.create_collection(t.world, other_backend, { pull_interval = never })
+			utils.scope(t.world, { t.money }, { other })
+			local options = transform(2)
+			import(t.world, t.player_data, lapis, options)
+			import(t.world, other, lapis, options)
+			local mine = t.world:entity()
+			t.world:set(mine, t.link, "p1")
+			settle(t, mine)
+			local theirs = t.world:entity()
+			t.world:set(theirs, jecs.pair(miumiu.data_link, other), "p1")
+			expect(utils.wait_until(function()
+				miumiu.step(t.world)
+				return t.world:has(theirs, jecs.pair(miumiu.data_loaded, other))
+					or t.world:has(theirs, jecs.pair(miumiu.data_error, other))
+			end)).to.equal(true)
+			expect(t.world:get(mine, t.money)).to.equal(10)
+			expect(t.world:get(theirs, t.money)).to.equal(10)
+			expect(#lapis.created).to.equal(1)
+			expect(other_backend:dump("p1").data.money).to.equal(10)
+		end)
+
+		it("keeps the root stamp of a key a migration removed through every later write", function()
+			local t = setup({ pull_interval = never })
+			local long_ago = os.time() - 100000
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(world, entity, context)
+					world:remove(entity, context.legacy("luck_boosts"))
+				end,
+			})
+			t.backend:seed("p1", {
+				data = { luck_boosts = { 1, 2, 3 }, money = 1 },
+				stamps = { luck_boosts = long_ago, money = long_ago },
+			})
+			local player = utils.link_entity(t, "p1")
+			local migrated = t.backend:dump("p1")
+			expect(migrated.data.luck_boosts).to.equal(nil)
+			expect(migrated.stamps.luck_boosts).to.equal(long_ago)
+			t.world:set(player, t.money, 2)
+			utils.session_of(t, "p1"):sync()
+			t.world:set(player, t.money, 3)
+			utils.session_of(t, "p1"):sync()
+			local written = t.backend:dump("p1")
+			expect(written.data.money).to.equal(3)
+			expect(written.data.luck_boosts).to.equal(nil)
+			expect(written.stamps.luck_boosts).to.equal(long_ago)
 		end)
 	end)
 end

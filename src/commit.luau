@@ -11,6 +11,7 @@ type DataStore = types.DataStore
 type DataStoreService = types.DataStoreService
 type Pending = types.Pending
 type Resolution = types.Resolution
+type RetryConfig = types.RetryConfig
 type ResolvedCollectionConfig = types.ResolvedCollectionConfig
 type State = types.State
 
@@ -41,10 +42,11 @@ local function get_status(id: string): CommitStatus
 	if known == nil then
 		return "unknown"
 	end
+
 	return if known.committed then "committed" else "failed"
 end
 
-local function fetch(config: ResolvedCollectionConfig, id: string, created: number): CommitStatus
+local function fetch(config: ResolvedCollectionConfig, retry: RetryConfig, id: string, created: number): CommitStatus
 	local known = get_status(id)
 	if known ~= "unknown" then
 		return known
@@ -52,20 +54,23 @@ local function fetch(config: ResolvedCollectionConfig, id: string, created: numb
 	prune(config)
 
 	local ok, result = pcall(function()
-		return datastore.get_async(get_store(config), id, config)
+		return datastore.get_async(get_store(config), id, retry)
 	end)
 	if not ok then
 		logging.warn(messages.warnings.commit_lookup_failed(id, result))
 		return "undecided"
 	end
+
 	if result then
 		remember(id, true)
 		return "committed"
 	end
+
 	if type(created) ~= "number" or os.time() - created >= config.commit_timeout then
 		remember(id, false)
 		return "failed"
 	end
+
 	return "undecided"
 end
 
@@ -75,17 +80,38 @@ local function mark(config: ResolvedCollectionConfig, id: string)
 	remember(id, true)
 end
 
+local function is_op_list(ops: any): boolean
+	if type(ops) ~= "table" then
+		return false
+	end
+
+	for _, op in ops do
+		if type(op) ~= "table" or type(op.kind) ~= "string" then
+			return false
+		end
+	end
+
+	return true
+end
+
 local function resolve(state: State, pending: Pending): Resolution
 	local next_pending = pending
 	local unknown: { string } = {}
 	local decided: { string } = {}
 
 	for id, entry in pending do
+		if type(entry) ~= "table" or not is_op_list(entry.ops) then
+			next_pending = util.own(pending, next_pending)
+			next_pending[id] = nil
+			continue
+		end
+
 		local known = get_status(id)
 		if known == "unknown" then
 			table.insert(unknown, id)
 			continue
 		end
+
 		if known == "committed" then
 			state = ops.replay(state, entry.ops)
 		end

@@ -29,6 +29,7 @@ local function held_kind_of(context: Context, entity: Entity): ChildKind?
 	if held then
 		return held.kind
 	end
+
 	return children.kind_of(context.world, context.schema.kinds, entity)
 end
 
@@ -40,12 +41,15 @@ local function is_held_by(context: Context, kind: ChildKind, parent: Entity): bo
 				return true
 			end
 		end
+
 		return false
 	end
+
 	local parent_kind = held_kind_of(context, parent)
 	if parent_kind then
 		return kind.holders[parent_kind.tag] == true
 	end
+
 	return true
 end
 
@@ -70,9 +74,11 @@ local function assign_id(context: Context, write: RelationWrite): string
 	if existing then
 		return existing
 	end
+
 	if write.child.mode == "attached" then
 		children.reject_unnamed(world, write.entity, write.child)
 	end
+
 	return children.mint_id(world, write.entity)
 end
 
@@ -82,6 +88,7 @@ local function is_shallow_root(context: Context, root: Entity, kind: ChildKind):
 			return true
 		end
 	end
+
 	return false
 end
 
@@ -90,15 +97,18 @@ local function supply_claimed(context: Context, entity: Entity, kind: ChildKind)
 	if not ancestry then
 		return
 	end
+
 	local sessions = capture.ancestry_sessions(context, ancestry)
 	if #sessions == 0 or is_shallow_root(context, ancestry.root, ancestry.kind) then
 		return
 	end
+
 	local split = capture.split_path(ancestry)
 	local stored = ops.resolve(sessions[1]:get_truth(), split.key, split.path, #split.path)
 	if type(stored) ~= "table" then
 		return
 	end
+
 	reconcile.supply_child(context, entity, kind, stored, false)
 end
 
@@ -119,6 +129,7 @@ local function is_legacy_group(context: Context, ancestry: Ancestry): boolean
 	if #sessions == 0 then
 		return false
 	end
+
 	local split = capture.split_path(ancestry)
 	local group = ops.resolve(sessions[1]:get_truth(), split.key, split.path, #split.path - 1)
 	return type(group) == "table" and group[1] ~= nil
@@ -128,6 +139,7 @@ local function stored_id_of(context: Context, entity: Entity, kind: ChildKind): 
 	if kind.mode == "owned" then
 		return context.world:get(entity, ids.child_id)
 	end
+
 	return context.world:get(entity, kind.id)
 end
 
@@ -141,6 +153,7 @@ local function attach(context: Context, write: RelationWrite, was_dropped: boole
 	if not was_dropped then
 		reconcile.record_baselines(context, write.entity, write.child)
 	end
+
 	reconcile.refresh_shadows(context, write.entity, write.child)
 	supply_claimed(context, write.entity, write.child)
 end
@@ -154,18 +167,20 @@ local function is_unlinking_root(context: Context, root: Entity): boolean
 		end
 		unlinking = true
 	end
+
 	return unlinking
 end
 
-local function is_loading_root(context: Context, root: Entity): boolean
+local function is_holder_phase(context: Context, ancestry: Ancestry, phase: string): boolean
 	local world_state = context.world_state
-	local links: { [Entity]: string } = world_state.links[root] or {}
+	local links: { [Entity]: string } = world_state.links[ancestry.root] or {}
 	for collection, key in links do
 		local link_state = state.link_states_of(world_state, collection)[key]
-		if link_state and link_state.phase.kind == "loading" then
+		if ancestry.kind.holders[collection] and link_state and link_state.phase.kind == phase then
 			return true
 		end
 	end
+
 	return false
 end
 
@@ -175,6 +190,7 @@ local function defer_drop(world_state: WorldState, root: Entity, drop: PendingDr
 		pending = {}
 		world_state.pending_drops[root] = pending
 	end
+
 	table.insert(pending, drop)
 end
 
@@ -184,6 +200,7 @@ local function is_same_place(a: Ancestry, b: Ancestry): boolean
 			return false
 		end
 	end
+
 	return a.kind == b.kind and #a.path == #b.path
 end
 
@@ -192,6 +209,7 @@ local function cancel_drop(world_state: WorldState, ancestry: Ancestry, entity: 
 	if pending == nil then
 		return
 	end
+
 	for index = #pending, 1, -1 do
 		local drop = pending[index]
 		if drop.entity == entity and is_same_place(drop.ancestry, ancestry) then
@@ -210,12 +228,12 @@ local function stash_put(context: Context, ancestry: Ancestry, op: Op)
 				by_key = {}
 				world_state.pending_root_puts[collection] = by_key
 			end
-			local ops = by_key[key]
-			if ops == nil then
-				ops = {}
-				by_key[key] = ops
+			local stashed = by_key[key]
+			if stashed == nil then
+				stashed = {}
+				by_key[key] = stashed
 			end
-			table.insert(ops, op)
+			table.insert(stashed, op)
 		end
 	end
 end
@@ -228,14 +246,17 @@ local function on_detached(context: Context, write: RelationWrite)
 	if previous and (previous.kind ~= write.child or previous.parent ~= write.parent) then
 		return
 	end
+
 	local ancestry = if previous then children.ancestry(world_state, write.entity) else nil
 	local applying = state.is_applying(world_state, write.entity, pair)
 	if write.child.mode == "attached" and previous and not write.deleted and not applying then
 		capture.flush_lazy(context, write.entity, write.child.entries)
 	end
+
 	if ancestry and world_state.pending_puts[write.entity] and world_state.deleting[write.parent] then
 		stash_put(context, ancestry, capture.child_put(context, ancestry))
 	end
+
 	children.forget(index, write.entity)
 	world_state.pending_puts[write.entity] = nil
 	if write.deleted then
@@ -243,9 +264,11 @@ local function on_detached(context: Context, write: RelationWrite)
 		world_state.entities[write.entity] = nil
 		children.forget_parent(index, write.entity)
 	end
+
 	if applying then
 		return
 	end
+
 	local leaving = world_state.deleting[write.parent]
 	if write.child.mode == "attached" then
 		local held = (previous ~= nil and leaving)
@@ -253,6 +276,7 @@ local function on_detached(context: Context, write: RelationWrite)
 		if not write.deleted and held then
 			table.insert(world_state.cleanups, { kind = "reset", entity = write.entity, child = write.child })
 		end
+
 		if not write.deleted then
 			mark_dropped(context, write.entity)
 			local active = world_state.capture
@@ -260,25 +284,32 @@ local function on_detached(context: Context, write: RelationWrite)
 				table.insert(active.undo, pair_undo(write, true, stored_id_of(context, write.entity, write.child)))
 			end
 		end
+
 		return
 	end
+
 	if leaving then
 		if previous and not write.deleted then
 			table.insert(world_state.cleanups, { kind = "delete", entity = write.entity })
 		end
+
 		return
 	end
+
 	if not write.deleted then
 		mark_dropped(context, write.entity)
 	end
+
 	if ancestry and world_state.capture == nil and is_unlinking_root(context, ancestry.root) then
 		defer_drop(world_state, ancestry.root, {
 			entity = write.entity,
 			ancestry = ancestry,
 			kept = previous ~= nil and not write.deleted,
+			stored = is_holder_phase(context, ancestry, "loaded"),
 		})
 		return
 	end
+
 	local stored_id = stored_id_of(context, write.entity, write.child)
 	capture.emit_child(context, ancestry, capture.child_drop, function(active)
 		table.insert(active.undo, pair_undo(write, true, stored_id))
@@ -300,6 +331,7 @@ local function validate_kind(context: Context, write: RelationWrite)
 			)
 		end
 	end
+
 	local held = children.child_of(world_state.children, write.entity)
 	if held then
 		capture.undo_trigger(context, write)
@@ -325,11 +357,13 @@ local function on_attached(context: Context, write: RelationWrite)
 		warn_unheld(context, write)
 		return
 	end
+
 	local named, id = pcall(assign_id, context, write)
 	if not named then
 		capture.undo_trigger(context, write)
 		error(id, 0)
 	end
+
 	local taken = children.children_of(index, write.parent, write.child.key)[id]
 	if taken ~= nil and taken ~= write.entity then
 		capture.undo_trigger(context, write)
@@ -343,19 +377,23 @@ local function on_attached(context: Context, write: RelationWrite)
 			0
 		)
 	end
+
 	children.record(index, write.entity, write.child, write.parent, id)
 	local ancestry = children.ancestry(world_state, write.entity)
 	if ancestry then
 		cancel_drop(world_state, ancestry, write.entity)
 	end
+
 	local existing = world_state.entities[write.entity]
 	local was_dropped = existing ~= nil and existing.dropped
 	if existing then
 		existing.dropped = false
 	end
+
 	if applying then
 		return
 	end
+
 	if ancestry and is_legacy_group(context, ancestry) then
 		children.forget(index, write.entity)
 		capture.undo_trigger(context, write)
@@ -368,21 +406,26 @@ local function on_attached(context: Context, write: RelationWrite)
 			0
 		)
 	end
+
 	if world_state.capture and (ancestry == nil or #capture.ancestry_sessions(context, ancestry) == 0) then
 		capture.reject_unloaded(context, write)
 	end
+
 	if write.child.mode == "attached" then
 		attach(context, write, was_dropped)
 		local active = world_state.capture
 		if active then
 			table.insert(active.undo, pair_undo(write, false, stored_id_of(context, write.entity, write.child)))
 		end
+
 		return
 	end
+
 	reconcile.refresh_shadows(context, write.entity, write.child)
-	if ancestry and is_loading_root(context, ancestry.root) then
+	if ancestry and is_holder_phase(context, ancestry, "loading") then
 		world_state.pending_puts[write.entity] = true
 	end
+
 	local stored_id = stored_id_of(context, write.entity, write.child)
 	capture.emit_child(context, ancestry, function(found)
 		return capture.child_put(context, found)
@@ -397,6 +440,7 @@ local function on_marked(context: Context, write: MarkWrite)
 	if active == nil or state.is_applying(world_state, write.entity, write.child.tag) then
 		return
 	end
+
 	table.insert(active.undo, {
 		kind = "mark",
 		entity = write.entity,
@@ -428,6 +472,7 @@ local function collect_existing(context: Context): { ExistingChild }
 			end
 		end
 	end
+
 	return found
 end
 
@@ -438,6 +483,7 @@ local function index_existing(context: Context)
 		if not is_held_by(context, kind, existing.parent) then
 			continue
 		end
+
 		local prior = children.child_of(world_state.children, entity)
 		if prior then
 			logging.warn(
@@ -449,14 +495,17 @@ local function index_existing(context: Context)
 			)
 			continue
 		end
+
 		local resolved, id = pcall(children.resolve_id, world, entity, kind)
 		if not resolved then
 			logging.warn(messages.warnings.child_indexing_failed(util.describe(world, entity), id))
 			continue
 		end
+
 		if id == nil and kind.mode == "owned" then
 			id = children.mint_id(world, entity)
 		end
+
 		if id == nil then
 			logging.warn(
 				messages.warnings.child_unnamed_existing(
@@ -466,6 +515,7 @@ local function index_existing(context: Context)
 			)
 			continue
 		end
+
 		local taken = children.children_of(world_state.children, existing.parent, kind.key)[id]
 		if taken ~= nil then
 			logging.warn(
@@ -478,6 +528,7 @@ local function index_existing(context: Context)
 			)
 			continue
 		end
+
 		children.record(world_state.children, entity, kind, existing.parent, id)
 		if kind.mode == "attached" then
 			reconcile.record_baseline(context, entity, kind)

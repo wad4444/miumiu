@@ -964,5 +964,146 @@ return function()
 			x:unload()
 			y:unload()
 		end)
+
+		it("forgets a record stored with version 0 once the store no longer holds it", function()
+			local backend = utils.create_backend()
+			backend:seed_raw("k", { data = { money = 5 }, stamps = { money = 1 }, version = 0, migrations = 0 })
+			local loaded = utils.open_session(backend, "k")
+			expect(loaded:get_truth().money).to.equal(5)
+			backend.store:RemoveAsync("k")
+			loaded:sync()
+			expect(loaded:get_truth().money).to.equal(nil)
+			expect(backend:dump("k")).to.equal(nil)
+			loaded:unload()
+		end)
+
+		it("reads a record whose stored fields are not the types it writes as an empty one", function()
+			local backend = utils.create_backend()
+			backend:seed_raw("k", { data = 5, stamps = 7, version = "one", migrations = "none", format = "old" })
+			local loaded = utils.open_session(backend, "k")
+			expect((next(loaded:get_truth()))).to.equal(nil)
+			utils.journal(loaded, { set("money", 3, os.time()) })
+			loaded:sync()
+			expect(backend:dump("k").data.money).to.equal(3)
+			loaded:unload()
+		end)
+
+		it("keeps only the stamps stored as a string key and a number", function()
+			local backend = utils.create_backend()
+			backend:seed_raw("k", {
+				data = { money = 5 },
+				stamps = { money = 2, items = "soon" },
+				version = 1,
+				migrations = 0,
+			})
+			local loaded = utils.open_session(backend, "k")
+			utils.journal(loaded, { set("items", { "a" }, os.time()) })
+			loaded:sync()
+			local record = backend:dump("k")
+			expect(record.data.money).to.equal(5)
+			expect(record.data.items[1]).to.equal("a")
+			expect(record.stamps.items > 0).to.equal(true)
+			loaded:unload()
+		end)
+
+		it("reads a record whose pending and landed are not tables as an empty one", function()
+			local backend = utils.create_backend()
+			backend:seed_raw("k", {
+				data = { money = 5 },
+				stamps = { money = 1 },
+				version = 1,
+				migrations = 0,
+				pending = 5,
+				landed = "gone",
+			})
+			local loaded = utils.open_session(backend, "k")
+			expect(loaded:get_truth().money).to.equal(5)
+			utils.journal(loaded, { set("money", 9, os.time()) })
+			loaded:sync()
+			expect(backend:dump("k").data.money).to.equal(9)
+			loaded:unload()
+		end)
+
+		it("writes over a key whose stored value is not a record at all", function()
+			local backend = utils.create_backend()
+			backend:seed_raw("k", "just a string")
+			local loaded = utils.open_session(backend, "k")
+			utils.journal(loaded, { set("money", 9, os.time()) })
+			loaded:sync()
+			expect(backend:dump("k").data.money).to.equal(9)
+			loaded:unload()
+		end)
+
+		it("reads a record whose pending is not a table while a shared group is awaiting", function()
+			local backend = utils.create_backend()
+			local loaded = utils.open_session(backend, "k")
+			utils.journal(loaded, { set("money", 3, os.time()) }, fresh_id(), true)
+			loaded:sync()
+			local record = backend:dump("k")
+			record.pending = 5
+			backend:seed_raw("k", record)
+			loaded:sync()
+			utils.journal(loaded, { set("money", 7, os.time()) })
+			loaded:sync()
+			expect(backend:dump("k").data.money).to.equal(7)
+			loaded:unload()
+		end)
+
+		it("does not double-apply a group still unwritten commit_timeout after it landed", function()
+			local backend = utils.create_backend()
+			local loaded = utils.open_session(backend, "k", {
+				pull_interval = never,
+				retry_attempts = 1,
+				commit_timeout = utils.timings.commit_timeout,
+			})
+			local first = fresh_id("landed")
+			utils.journal(loaded, { add("money", 100) }, first)
+			backend:fail_next("UpdateAsync", "after", "response lost")
+			expect(pcall(loaded.sync, loaded)).to.equal(false)
+			expect(backend:dump("k").data.money).to.equal(100)
+			local landed_at = backend:dump("k").landed[first]
+			expect(landed_at).to.be.ok()
+			expect(loaded:is_dirty()).to.equal(true)
+			expect(utils.wait_until(function()
+				return os.time() - landed_at > utils.timings.commit_timeout
+			end, utils.timings.long)).to.equal(true)
+			utils.journal(loaded, { add("gems", 5) })
+			backend:fail_next("UpdateAsync", "after", "response lost")
+			expect(pcall(loaded.sync, loaded)).to.equal(false)
+			expect(backend:dump("k").landed[first]).to.be.ok()
+			expect(backend:dump("k").data.money).to.equal(100)
+			loaded:sync()
+			expect(backend:dump("k").data.gems).to.equal(5)
+			expect(backend:dump("k").data.money).to.equal(100)
+			loaded:unload()
+		end)
+
+		it("rejects a stale set with the root stamp of a key that is gone from the record", function()
+			local backend = utils.create_backend()
+			local now = os.time()
+			backend:seed("kept", { data = { money = 5 }, stamps = { money = now - 100 } })
+			backend:seed("pruned", { data = { money = 5 }, stamps = { money = now - 100 } })
+			local stale_kept = utils.open_session(backend, "kept", { pull_interval = never })
+			local stale_pruned = utils.open_session(backend, "pruned", { pull_interval = never })
+			utils.journal(stale_kept, { set("money", 99, now - 50) })
+			utils.journal(stale_pruned, { set("money", 99, now - 50) })
+			for _, key in { "kept", "pruned" } do
+				local remover = utils.open_session(backend, key, { pull_interval = never })
+				utils.journal(remover, { utils.remove("money", now - 10) })
+				remover:sync()
+				expect(backend:dump(key).data.money).to.equal(nil)
+				expect(backend:dump(key).stamps.money).to.equal(now - 10)
+				remover:unload()
+			end
+			local stripped = backend:dump("pruned")
+			stripped.stamps.money = nil
+			backend:seed_raw("pruned", stripped)
+			stale_kept:sync()
+			stale_pruned:sync()
+			expect(backend:dump("kept").data.money).to.equal(nil)
+			expect(backend:dump("pruned").data.money).to.equal(99)
+			stale_kept:unload()
+			stale_pruned:unload()
+		end)
 	end)
 end

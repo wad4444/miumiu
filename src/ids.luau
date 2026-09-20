@@ -7,6 +7,7 @@ type CollectionConfig = types.CollectionConfig
 type ForeignSource = types.ForeignSource
 type Guard = types.Guard
 type Migration = types.Migration
+type OrderedConfig = types.OrderedConfig
 type PairsConfig = types.PairsConfig
 type Serdes = types.Serdes
 type Snapshot = types.Snapshot
@@ -30,6 +31,7 @@ local ids = {
 	pairs = named(jecs.component() :: Entity<PairsConfig>, "miumiu.pairs"),
 	child = named(jecs.component() :: Entity<ChildConfig>, "miumiu.child"),
 	child_id = named(jecs.component() :: Entity<string>, "miumiu.child_id"),
+	ordered = named(jecs.component() :: Entity<OrderedConfig>, "miumiu.ordered"),
 
 	data_link = named(jecs.component() :: Entity<string>, "miumiu.data_link"),
 	data_shallow = named(jecs.tag(), "miumiu.data_shallow"),

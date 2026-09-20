@@ -2,6 +2,72 @@
 
 ## 0.2.0 (unreleased)
 
+Ordered stores: `meta(entity, miumiu.ordered, { component, period?, reset?, map?,
+period_threshold?, poll_interval?, on_period_change? })` plus `pair(miumiu.field_of, collection)` ranks one
+root field in an `OrderedDataStore` named by the entity's `jecs.Name`. Sessions push the
+score with the record's write that changed it, on the ordered store's own budget. With
+`period` the store is per period (`name_index`), the field resets to its initial when a
+record crosses into a new period unless `reset = false` (a per-period ranking of a value
+the crossing leaves alone, which may share its field with other stores), and
+`on_period_change(world, entity, value, place, period)` runs for the keys that placed
+within `period_threshold` of a finished period's ranking, exactly once per key and period
+however many servers hold the key, inside a batch that claims the change. The claim is a
+lease taken by a write, so one holder delivers it and a holder that dies without doing so
+is taken over after `commit_timeout`; a session that is closing, one whose links on that
+key are all shallow, and a build whose store declares no callback take no lease at all. A
+record that skipped periods gets one call per period it placed in, in order, with the
+value that period held, bounded to sixteen periods per pull. `Batch:silence()` accepts a
+refusal without the unhooked-refusal warning. `miumiu.get_ordered(world, entity)` returns the `Ordered`
+handle (`get_top`, `get_score`, `get_period`, `get_name`), `miumiu.is_ordered` tells it
+apart. The record keeps its bookkeeping under `data["miumiu.ordered"]`; keys starting
+with `miumiu.` are reserved, for saveables, child kinds and `context.legacy`. `wipe`
+removes the key from the collection's ordered stores. A collection with an ordered
+store needs a `data_store_service` with `GetOrderedDataStore`.
+
+A group still unwritten when its landed id ages past `commit_timeout` is no longer
+applied a second time, which used to credit a delta's `add` twice. A child claimed
+under a root whose record holds an array under that kind's key is refused at landing
+instead of writing a string id into the array, which used to produce a table the
+DataStore refuses and leave the key unwritable for good. A deferred child drop whose
+root was refused before the step deletes its entity with the rest of the owned tree
+instead of leaving it alive and still listed in the record, and that step no longer
+throws when the refusal is stepped before the unlink. An unlink and a relink to the same
+key in one frame keep the owned child entities, since that link never lapsed. Two
+collections importing one foreign collection with different options are rejected at the
+schema build rather than silently sharing the first one's.
+
+A lazy value that cannot be read at write time no longer takes the entity's other lazy
+values, its children's, or the whole final write with it: each key is flushed on its own
+and a failure warns by name. A snapshot whose value a guard rejects no longer stops the
+snapshots after it, and a listener that throws on a snapshot's write still reaches every
+other entry before the error leaves `step`. Wiping one collection keeps a lazy value a
+second collection still owes. A migration can no longer nest a child under a parent that
+does not hold the kind, which used to write a group into the record that nothing
+reconciles.
+
+`Batch:get_keys()` returns `{ collection, key }` records instead of bare key strings,
+since a batch may span collections and two collections may use one key string. The
+exported type `Map` (an ordered store's score function) is now `ScoreMap`, in both the
+Luau and the roblox-ts surface, because `Map` read as a dictionary and shadowed the
+global `Map<K, V>` inside the TypeScript definitions. Both are breaking and land before
+0.2.0 ships. `close` now waits, inside its budget, for a load that still owes a child
+put stashed while its root was deleted, so the put is written instead of lost with the
+session that would have written it; a second `close` on the same world joins the first
+instead of returning while the write is still in flight.
+
+Two collections of one world can no longer name the same store, an ordered config
+field the library does not know fails the schema build, and a collection config that is
+not a table fails the link. `idle_interval` is unconstrained when `pull_interval` is
+`math.huge`. `wipe` of a key whose load is still in flight cancels that load and starts
+it again instead of letting the stale record land. A record whose stored `data`,
+`stamps`, `version`, `migrations` or `format` is not the type the library writes is read
+as an empty record rather than failing the key, and a record stored with `version = 0`
+is forgotten when the store no longer holds it. `Batch:get_result()` of a batch that
+spanned several keys hands back the function's value, not the collection's config. A
+delta that changes nothing on a key leaves that key out of the batch. A delta keeps an
+untouched dictionary key containing `/` and rejects one it would drop. Owned trees and
+migrations are no longer capped at 32 levels of nesting.
+
 `Batch:await()` returns the `SettledOutcome` instead of throwing on a refusal, so a
 caller written for the throwing form must branch on the result. `Batch:get_result()`
 hands back what the function returned. `miumiu.hook(world, hooks.refused, fn)` hears

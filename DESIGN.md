@@ -14,6 +14,7 @@ any time; everything converges.
 | saveable | `jecs.meta(id, miumiu.saveable, "key")` | a component or tag stored under `key`; the key is the stored identity and never follows a rename |
 | field | `jecs.meta(id, pair(miumiu.field_of, c or kind))` | where a saveable lives; every saveable and kind needs at least one |
 | linked entity | `world:set(e, pair(miumiu.data_link, c), key)` | one stored key; pulls while linked, whether it is "your" player, another server's, or nobody's |
+| ordered store | `jecs.meta(o, miumiu.ordered, { component = field, ... })` plus `pair(field_of, c)`, named by `jecs.Name` | an `OrderedDataStore` ranking one root field of `c`, one store per period, optionally resetting the field, with `on_period_change` for the keys that placed; or all-time (Ordered) |
 
 There is one kind of link, plus `pair(miumiu.data_shallow, c)` on the entity to load
 only the root's own fields. Gifting to an offline player is: link (shallow), write,
@@ -99,7 +100,12 @@ Two modes, decided by who owns the entity:
   collection the kind is a field of, an unlinked one through its own kind tag or, with
   no kind tag, always; a parent's own pair may come later). A linked parent is a root
   for its children even when it carries a kind tag itself, matching where a write on it
-  goes. Two children of one kind under one parent cannot share an id: the second claim
+  goes: to nest under an owned child that carries its own link, the nested kind must name
+  that COLLECTION in a field_of pair, since naming only the parent kind stops holding once
+  the parent becomes a root. A child already indexed when its parent gains a link keeps
+  its pair and its place in the parent's stored subtree, but its own writes stop
+  journaling, with the unsaved warning, until the parent unlinks and the leave re-puts the
+  subtree; the same exposure a kind-only field on that entity already has. Two children of one kind under one parent cannot share an id: the second claim
   throws and takes the pair back, a second existing one is skipped with a warning.
   Removing the pair or deleting the
   entity drops it from the record; loading spawns it; a remote drop deletes it, and its
@@ -107,7 +113,9 @@ Two modes, decided by who owns the entity:
   record and a put on the other (the Exclusive
   relation fires the removal itself; inside `batch` both land as one group or neither).
   The entities the library spawned are its own: when the root unlinks, or its session
-  is refused, the owned tree under it is deleted after the final write, so a gift link
+  is refused, the owned tree under it is deleted once the leave has journalled what it
+  owes (before the write goes out, not after it lands), and not at all when the game set
+  the link back to the same key in the same frame, since that link never lapsed; so a gift link
   to an offline player does not leave that player's inventory alive in the world.
   Deleting a linked root is not a save: the record keeps its children, and the owned
   tree under the root is deleted on the next `step`. An owned child's pair removed
@@ -115,7 +123,10 @@ Two modes, decided by who owns the entity:
   back: at that `step` it is journaled as a drop if the root still exists (the game
   dropped it), and otherwise treated like the root's deletion (record kept, entity
   deleted). An owned child claimed under a root whose load is in flight is put into the
-  record once the load finishes instead of being removed as absent. Deleting an owned child deletes its
+  record once the load finishes instead of being removed as absent, unless the record
+  holds an array under that kind's key, in which case the claim is refused at landing the
+  way a claim made after the load is: the pair comes off, the entity and its id survive,
+  and a warning names the migration that would rebuild the array. Deleting an owned child deletes its
   own owned tree the same way, and every entity the library deletes is marked as
   deleting for that step so an attached child hanging off it is reset rather than left
   with supplied values; queued cleanups run until none are left, so the reset lands in
@@ -231,6 +242,199 @@ that is not a table is skipped with a warning. The set is stored
 whole: no guard, serdes, snapshot, lazy or `delta` (it throws `not a delta`), and a
 batch rollback restores the previous set when the entity's pairs still match what the
 batch wrote. Migrations see the pairs on the scratch entity and store what they leave.
+
+## Ordered
+
+An ordered store is an `OrderedDataStore` ranking one root field: its entry for a key is
+the score of that key's field, kept by the sessions that write the record. It is
+declared on an entity of its own and scoped to a collection with `field_of`, like a
+saveable:
+
+```luau
+local weekly_coins = jecs.tag()
+jecs.meta(weekly_coins, jecs.Name, "weekly_coins")
+jecs.meta(weekly_coins, jecs.pair(miumiu.field_of, player_data))
+jecs.meta(weekly_coins, miumiu.ordered, {
+	component = coins_this_week,
+	period = { length = 7 * 86400, epoch = 345600 },
+	map = function(stored) return stored end,
+	period_threshold = 10,
+	poll_interval = 60,
+	on_period_change = function(world, entity, value, place, period) ... end,
+})
+```
+
+| field | meaning |
+|---|---|
+| `component` | a component saveable that is a root field of the collection the `field_of` pair names. An ordered store has exactly one pair, on a collection; a saveable two collections hold gets one ordered store per collection |
+| `period` | optional. `seconds`, `{ length, epoch? }` (`epoch` defaults to 0, so a 7-day period rolls over Thursday 00:00 UTC) or `function(now) -> Period`, with `Period = { index, start, finish }`; `index` must never decrease as `now` grows. Absent means all-time |
+| `reset` | optional, needs `period`; default `true`. `false` keeps the field across a crossing, so each period ranks the value as it stands rather than what was earned in it |
+| `map` | optional. `function(stored) -> integer?` over the stored form of the field; the default is `math.floor` of a number and nil for anything else. Nil is "not ranked" |
+| `on_period_change` | optional, needs `period`. `function(world, entity, value, place, period)`, run once per key and finished period, for the keys that placed within `period_threshold` of that period's ranking: `value` is the field as that period held it, `place` its rank, `period` the finished period's index. Every period a record skipped is delivered, in order |
+| `period_threshold` | how many ranks `on_period_change` reaches; a key below them is never called; default 10 |
+| `poll_interval` | seconds after a period's end before its ranking is read for `on_period_change`; default 60. A change whose holder never delivered it is taken over after `commit_timeout` |
+
+Its entity's `jecs.Name`, required, is the `OrderedDataStore` name: unique among the
+world's ordered stores, different from every collection's store, and not another store's
+name followed by a period index (a store named `weekly_3` would share a DataStore with
+period 3 of a store named `weekly`), and at most 40
+characters so that a period suffix fits the 50 a DataStore name allows. The score must be an
+integer; Roblox documents ordered values as positive integers, so a negative score
+counts as nil with one warning per store. A lower-is-better metric reads with
+`ascending = true` rather than mapping. A throwing `map` is warned about once per
+store and counts as nil; it must not yield. A `period` that throws or returns a bad
+result is warned about once per store the same way, and the store is skipped entirely
+until it works again: no push, no reset, no bookkeeping, and no change resolved, while
+every other store and the record itself go on being written. `get_period`, which is the
+game asking directly, still throws. `map`, `period` and `on_period_change` freeze with
+the schema, like `saveable`. The name plus the widest period suffix must fit the
+50-character DataStore limit; the build resolves the current period once to check it.
+
+An all-time ranking lives in `GetOrderedDataStore(name)`; a periodic one in
+`GetOrderedDataStore(name .. "_" .. index)`, one store per period, so a new period
+starts on an empty store and an old one stays readable. Nothing on Roblox wipes a
+store, so a period's store is never reused; scopes are not used. A periodic store's
+field is the score *for the period*: when a record's field belongs to an earlier period
+than the one the pulling server is in, the pull's transform resets the field to its
+initial (removes it, when it has none) with a stamp of now, after landing the session's
+unwritten groups, so what was journaled up to that pull counts for the ending period and
+at most `pull_interval` of the new period's play lands with it. The reset is the
+session's own write, not another server's, so a write journaled while the crossing write
+was in flight is stamped past it rather than tying with it and losing: a single writer
+never ties with itself. The reset reaches the entities like any remote change, on the
+next `step`. A field a periodic store resets therefore feeds no other ordered store, and
+the build says so, while several all-time stores may share a field, each with its own
+`map` (wins and win rate from one stats table). `reset = false` is the periodic store
+that does not own its field: the crossing moves it to the new period's store and leaves
+the field alone, so the first pull of each period puts the value as it stands into that
+period's ranking and the rest of the period tracks it. A board of totals per month, next
+to the all-time one, is that: `on_period_change` still fires with the value at the
+crossing, and such a store shares its field with any other store, since it resets
+nothing. A
+record that skipped several periods resets once, from the last period it was written
+in, and one that crosses a second period before its `on_period_change` ran keeps the
+earlier change owed. A record whose field has never scored belongs to no period until
+it does, so a fresh key costs no write, and a record written before its ordered store
+was declared belongs to the period in which its score is first pushed: nothing is
+reset. `map` never sees nil: a field the record lacks counts as its initial, and one
+without an initial is unranked.
+
+The record keeps its ranking bookkeeping in `data["miumiu.ordered"]`, one entry per
+ordered store name: `{ period, pushed, owed }`. `period` is the index the field's value
+belongs to, `pushed` the last score pushed to the store, `owed` the finished periods no
+holder has delivered yet: `{ from, last, values }`, the first and last of them and the
+field's value at each crossing that produced one, plus the lease naming the holder that
+took them. Each of the three is written as its own path, never as one put of the whole
+entry, so an ordinary push cannot outrank a pending delivery. An entry whose `from` or
+`last` is missing, fractional or out of order is read as absent, and so is a lease whose
+holder is not a string or whose stamp is not a number. An entry whose shape is
+wrong (a hand-written record, a newer build's field the reader does not know) is read as
+if the bad fields were absent, never as a reason to fail the key, and the fields the
+reader does not know survive its writes. It is data like any other key
+(in `get_truth`, the `pulled`
+payload, `context.stored`), managed by the transform and by ops the library journals;
+`miumiu.` is a reserved prefix for saveable and child keys, and `context.legacy` throws
+for it.
+
+Pushing. After every pull that wrote, and after a load, a session compares the score of
+the merged field with `pushed`; when they differ, that same transform writes
+`pushed = score` (a load whose record is behind escalates its read to a write, like a
+migration) and then, still under the session's lock, `SetAsync(key, score)` goes to the
+store of the period *the record names*, not of the period this server's clock is in
+(`RemoveAsync` for a nil score), so a server whose clock trails the record writes into
+the ranking the record belongs to instead of reopening a finished one. A key whose score
+is still its
+initial's and was never pushed is not ranked, so a new store does not fill with zeros. A
+rollover first pushes the final score of the ending period to that period's store, when
+it differs from `pushed`. A transform Roblox reran keeps every push its runs produced,
+so a write whose response was lost still pushes what its record claims. A push that
+fails after its retries is warned about and
+retried on the session's next pull, and a session that would otherwise close clean
+drains what it still owes first; the record already claims it, so a server that dies
+between the write and the push leaves the ranking behind until the next score change
+(the window is one request). A push is `SetAsync` of an absolute value, so a repeated
+one is harmless. It goes out on the retry budget of the pull that produced it, so the
+final write of a `close` does not spend the whole budget on ordered retries. Pushes ride
+the record's writes, so they cost at most one ordered write
+per record write and two on the write that crosses a period, on the `SetIncrementSortedAsync` budget, which nothing else in the
+library uses.
+
+Changes. When a transform rolls a record over and the store declares `on_period_change`,
+it records `owed = { from, last, values }`: the first finished period nobody has delivered
+yet, the last one, and the field's stored value under each period the crossing found it
+in. The lease a holder takes adds `taken` and `taken_at` to the same entry. A record that
+crosses again before its change is delivered extends `last` and keeps `from`, so a key
+away for three periods owes all three, not the newest.
+
+Delivery is exactly once per key and period, not once per holder, so it is arbitrated by
+a write rather than a read. A transform that finds an owed entry that is due, and whose
+`taken` is either absent or older than `commit_timeout`, stamps it with the holder's id
+and the time in the same `UpdateAsync` that writes the record; a second server's
+transform then sees a fresh lease and leaves it alone. Only the holder named by the
+record, and only while its lease is still fresh, resolves and runs the change; a holder
+that dies before running it loses the lease and the next one takes it over. Three kinds
+of holder take no lease at all, because none of them could deliver: a session already
+closing, a session whose every entity on that key is `data_shallow` (a gift link), and a
+build whose store declares no `on_period_change`. Two entities of one world linked to the
+same key share one session, so they were never at risk of running it twice.
+
+A period is deliverable once it has been over for `poll_interval` seconds, long enough
+for the final pushes of sessions that were dirty at the rollover; a period older than
+that waits for nothing. A holder therefore delivers `from` up to the newest deliverable
+period, which is never past the last period this server itself considers finished, and
+never more than sixteen periods in one pull: what is left keeps its place in the record
+with `from` advanced, and the next pull continues. That bound is what keeps a record
+absent for a year, or one written before the period's length changed, from spending a
+ranking read per period inside the session's lock. The holder reads the top
+`period_threshold` entries of each period it delivers, once per server, store and period
+(cached; `get_top` of a finished period reads the same cache), and keeps the periods the
+key placed in. `on_period_change` is for the keys that placed: a period the
+key is not in the top of does not call it, and a key that placed in none settles the
+change with no call at all, narrowing `owed` to the periods still undelivered and
+dropping it when none are left.
+
+The next `step` then runs `on_period_change(world, entity, value, place, period)` on the
+first loaded, non-shallow entity of the key, once per placed period in order, `place`
+always being a rank within `period_threshold`; the value is the field as that period held
+it, since every crossing records what it found under its own period, a period nobody
+played gets the initial, and a store that does not reset carries the last recorded value
+forward instead. Every call of one change runs inside
+one `batch` whose group also carries the settlement of `owed`, which narrows it to the
+periods still undelivered or drops it when none are left: the callback's writes (a
+reward) and the claim land together or not at all, so a refused batch, a crash before the
+write or a throwing `on_period_change` (warned) leave it owed and a later load runs it
+again. It runs on the stepping thread and must not yield. A callback that threw blocks
+only that change: a later period's resolves normally, and another load on the same server
+retries this one. The library knows no players, only entities and keys: the game maps the
+entity back to its `Player`. A late push that reshuffles a finished ranking after the
+holder read it changes nobody's place, since only that one read decides. Absent players
+are not swept: `on_period_change` reaches a key when it is next loaded, which is when
+someone is there to receive the reward.
+
+Reading. `miumiu.get_ordered(world, weekly_coins)` returns the `Ordered` handle behind
+the declaration (one per world and entity, built with the schema; an entity without the
+meta, or a collection whose config fails, throws): `get_top(count, { period?, ascending? })`
+yields and returns `{ { key, score } }` in rank order, one `GetSortedAsync` per hundred
+entries (`count` is an integer of at least 1; `period` defaults to the current one and
+is an error on an all-time store; a finished period is served from the change's cache
+once read, whole when the ranking is shorter than asked, and the entries handed back are
+the caller's own to keep); `get_score(key, period?)`
+yields, one `GetAsync`; `get_period()` is the current `Period` without a request, or nil
+for an all-time store: `finish` is when the ranking next resets, for a countdown, and
+`index - 1` names the previous ranking for a "last week" page; `get_name()` is the
+store's name. `miumiu.is_ordered(value)` tells a handle from anything else. The library
+keeps no cache of the current period: the game reads the top on its own schedule, one
+request per read.
+
+`wipe` also removes the key from every ordered store of the collection, from the period
+its own record names (the current one when the record names none), after the record
+write; a store whose period cannot be resolved is skipped and a failed removal is warned
+about, and either way the entry stays until the next push and the wipe itself finishes.
+Entries in the stores of periods the key played in earlier stay: nothing on Roblox wipes
+an ordered store, and the record names only the period it last belonged to. A `data_shallow` link pushes like any other holder but never runs
+`on_period_change`. Migrations see the field through its component; a migration that rewrites it
+changes the score the next push carries. A `data_store_service` without
+`GetOrderedDataStore` fails the link of a collection that has an ordered store.
 
 ## Migrations
 
@@ -413,8 +617,10 @@ end)
   refused means the group is dropped from every session, the world rolled back (values
   the batch still holds) and a warning when nothing hooked or awaited the handle in the
   same frame. The handle: `get_outcome` (`pending`, `landed`, `refused` with the
-  message), `get_result` (what the function returned), `get_keys` (the stored keys it
-  touched), `is_settled`, `hook(landed | refused)` (fires at once when
+  message), `get_result` (what the function returned), `get_keys` (the keys it
+  touched, each as `{ collection, key }`, since two collections can use one key string),
+  `is_settled`, `silence` (accept a refusal without the unhooked warning),
+  `hook(landed | refused)` (fires at once when
   already settled, pcalled and warned like session hooks), `await` (yields until settled
   and returns the outcome, never throws: the durability point). A nested `batch` or `delta`
   returns the outer handle. Every key in a multi-key batch must share one
@@ -448,12 +654,20 @@ end)
 `pending` holds the entries of multi-key groups that are not decided yet. `landed` holds
 the ids of groups this record has taken, with the time, for `commit_timeout` seconds: a
 write that fails after reaching storage is retried, and the retry skips groups the
-record already holds instead of applying `add` twice. `version` bumps on every write.
+record already holds instead of applying `add` twice. An id whose writer still holds that
+group unwritten outlives the timeout, because the timeout garbage-collects ids nobody
+holds any more and a group still in flight is still in play; pruning it would let the
+next write apply the group a second time. `version` bumps on every write.
 `migrations` is how many declared migrations have been applied. `format` is the
 record-format version this library writes; a read of a record in a higher `format`
 closes the session like a newer migration count, so an old server cannot mangle a record
 a new one owns. Top-level fields a build does not know are carried through its writes
-untouched, so a new field costs nothing to add.
+untouched, so a new field costs nothing to add. The reader is defensive about the fields
+it does know: a `data`, `stamps`, `pending`, `landed`, `version`, `migrations` or
+`format` that is not the type this build writes reads as absent rather than failing the
+key, and a stamp, pending entry or landed id of the wrong shape is dropped, so a
+hand-written or half-migrated record loses what it cannot express instead of becoming
+unreadable.
 
 ## Pull
 
@@ -466,7 +680,9 @@ idle clock). A clean session reads (`GetAsync`, past the read cache) and adopts 
 record when its `written` id differs from the last one adopted. The read hands over to the
 `UpdateAsync` below when the session has groups to write, holds a foreign seed, or the read shows
 something only a write can settle: pending entries that are decided, a version-less
-record, or a migration count under what this server declares.
+record, a migration count under what this server declares, an ordered store whose field
+belongs to a past period or whose pushed score is behind, or an owed period change this
+server can take the lease on (Ordered).
 
 ```
 transform(old):
@@ -485,7 +701,7 @@ transform(old):
     single-key group     -> replay its ops
     multi-key group      -> pending[group.id] = { created, ops = its entry for this key }
   format > known           -> fail: a newer server owns the key
-  drop landed ids older than commit_timeout
+  drop landed ids older than commit_timeout that no unwritten group still claims
   return { data = truth, stamps, pending, landed, version + 1, written = new id, migrations = declared, format = 1 }
                                            (nil when nothing changed)
 ```
@@ -510,7 +726,11 @@ a dirty leave one write. A single-key `batch` costs nothing of its own: it rides
 next pull, or one write when awaited. A multi-key `batch` over N keys costs N writes, one
 commit-store write, then N reads and N writes to settle. Against Roblox's
 `60 + 10 × players` requests per minute per method that stays under 40% of each budget
-at any player count, leaving room for the game's own DataStore use.
+at any player count, leaving room for the game's own DataStore use. An ordered store adds, per
+key, one ordered write per record write that changed the score (its own budget), one
+record write and one push when a key first meets a store or crosses a period, and one
+`GetSortedAsync` per server, store and finished period for `on_period_change`; `get_top` is one
+sorted read per hundred entries.
 
 Journaling is cheap per write: the session keeps its merged state incrementally (the
 state before the last unwritten group is kept too, so replacing that group by coalescing
@@ -522,7 +742,12 @@ with the same version count is still adopted rather than overwritten from a stal
 
 After the write: merged truth → reconcile onto every entity linked to that key: for each
 schema entry, if the entity's value differs (same reference, else deep-equal after
-deserializing), set it. Each such set runs under an `applying` mark naming that entity
+deserializing), set it. A lazy key is flushed on its own: one whose value the guard
+rejects at write time, or whose serialize throws, is warned about by name and the rest of
+the entity and its children still reach the write. The rejected flush writes nothing back
+to the entity, because a child's flush runs inside a `removed` hook. A runtime value must be acyclic: the deep comparison walks it
+without a visited set, so a table that reaches itself overflows the stack, which the
+supply catches and warns rather than applying. Each such set runs under an `applying` mark naming that entity
 and id, so the listener for that exact write is skipped while a write a listener makes
 to another key (or another entity) is journaled as usual. A listener that throws
 propagates out of `step`; the entity's shadow is refreshed first so the value it did
@@ -598,6 +823,8 @@ world:set(e, pair(data_link, c), key)  -> while "unloading": the same session is
                                           in-flight final write finishes as an ordinary
                                           pull and the entity is loaded immediately
 miumiu.get_session(world, c, key)      -> the open Session behind a loaded link, else nil
+miumiu.get_ordered(world, o)           -> the Ordered handle behind a declaration: get_top,
+                                          get_score, get_period; reads only, sessions push
 miumiu.wipe(world, c, key)             -> one write: empty record, every stored key stamped
                                           past its old stamp, version bumped; a loaded key
                                           drops its unwritten groups and lazy marks,
@@ -605,14 +832,25 @@ miumiu.wipe(world, c, key)             -> one write: empty record, every stored 
                                           re-initialises its entities, an unloaded key is
                                           wiped straight in the store; a failed write
                                           throws and keeps everything
-miumiu.close(world, budget?)           -> cancel loads, unload every session, disconnect
-                                          listeners, reset; yields until done; every
+miumiu.close(world, budget?)           -> wait out the loads that owe a stashed child
+                                          put, cancel the rest, unload every session,
+                                          disconnect listeners, reset; yields until
+                                          done; a second call joins the first; every
                                           later step is a no-op
 ```
 
 A link without a string key, or whose collection fails to resolve, gets
 `pair(data_error, c)` at the next `step` and nothing else. Setting the link to the key it
 already has is a no-op.
+
+A child pair claimed under a root whose load is still in flight is held as a stashed
+put, and the load that lands consumes it (Children). That gives `close` an invariant to
+keep: **every stashed child put is journaled into its key's session, or abandoned with
+the record untouched, before `close` returns** - it is never dropped while the load that
+would have written it is still running. So `close` waits, inside its budget, for any load
+still in flight while a stashed put is owed, and only then drains the `loaded` events;
+loads that owe nothing are cancelled as before. A budget that runs out abandons the wait,
+and the put with it, rather than holding the shutdown open.
 
 `close` collects every session it can reach: those behind loaded links, those whose
 `loaded` event is still queued, and every session an unlink handed to its final write
@@ -626,7 +864,7 @@ once); a game's `BindToClose` has 30, and the budget is per world. A
 final write the record refuses (newer server) is warned about as lost.
 
 `Batch` is the public surface of one `batch`/`delta` call: `get_outcome`, `get_result`,
-`get_keys`, `is_settled`, `hook(landed | refused)`, `await`; one key settles through the session's
+`get_keys`, `is_settled`, `hook(landed | refused)`, `await`, `silence`; one key settles through the session's
 watch on whichever write carries it, several keys through the commit sequence above in a
 thread of their own. `miumiu.hook(world, refused, fn)` is
 the world-level listener: every refusal on the world reaches it after the batch's own
@@ -702,8 +940,8 @@ Rules:
   first error afterwards.
 - The schema (every id carrying `saveable`) is built once per world on first use, then
   frozen. Adding, changing or removing `saveable`, `collection`, `config`, `migrations`,
-  `from_foreign`, `field_of`, `guard`, `serdes`, `snapshot`, `lazy`, `pairs` or `child`
-  after that throws.
+  `from_foreign`, `field_of`, `guard`, `serdes`, `snapshot`, `lazy`, `pairs`, `child` or
+  `ordered` after that throws.
 - A failed write never loses ops. A failed load never writes.
 - The module loads on the client. Only `datastore.luau` calls DataStoreService, and only
   from inside functions.
@@ -760,9 +998,12 @@ Rules:
 a function of the key, returns the user ids every `UpdateAsync` and wipe of that key
 carries (the DataStore GDPR association); it must be a function or absent.
 `pull_interval` and `commit_timeout` must be positive, `idle_interval` at least
-`pull_interval`, `retry_attempts` at least 1, `retry_base` at least 0, `commit_store` a
-non-empty string, `data_store_service` a table offering `GetDataStore`; a config field
-the library does not know fails the link, and so does anything above. `pull_interval =
+`pull_interval` unless `pull_interval` is `math.huge`, which leaves it unconstrained
+because no pull loop runs, `retry_attempts` at least 1, `retry_base` at least 0,
+`commit_store` a non-empty string, `data_store_service` a table offering `GetDataStore`;
+a config that is not a table, and a config field the library does not know, fail the
+link, and so does anything above. Two collections of one world cannot name the same
+store: one DataStore holds one collection, and the schema build says so. `pull_interval =
 math.huge` runs no pull loop at all, so idle reads are off whatever `idle_interval` says:
 only `sync`, `await`, an unlink and `close` write. On the real `DataStoreService` a
 `pull_interval` under Roblox's 6 s per-key write cooldown warns once per collection.
@@ -833,4 +1074,8 @@ nobody awaits, can sit unwritten;
 
 peek, a MessagingService nudge so a
 write reaches other holders before their next pull, an advisory lock that kicks a second
-holder, a strict mode that warns when a system writes to an entity it did not link.
+holder, a strict mode that warns when a system writes to an entity it did not link, an
+ordered store's rank lookup for one key (a page scan), removing a key from it for
+moderation (the next push would put it back), a sweep that runs `on_period_change` for absent
+keys at rollover through gift links (needs a claim key per store and period), a cached
+`get_top` of the current period on an interval.

@@ -6,6 +6,7 @@ local messages = require("./messages")
 local symbol = require("./symbol")
 
 type BatchInternal = types.BatchInternal
+type BatchKey = types.BatchKey
 type BatchPhase = types.BatchPhase
 type Callback = types.Callback
 type Outcome = types.Outcome
@@ -23,7 +24,7 @@ local function get_result(self: BatchInternal): any
 	return if phase.kind == "held" then phase.result else nil
 end
 
-local function get_keys(self: BatchInternal): { string }
+local function get_keys(self: BatchInternal): { BatchKey }
 	return self.internal_keys
 end
 
@@ -35,12 +36,14 @@ local function hook(self: BatchInternal, hook_symbol: Symbol, callback: Callback
 	if hook_symbol ~= (hooks.landed :: any) and hook_symbol ~= (hooks.refused :: any) then
 		error(messages.errors.hook_unknown(tostring(hook_symbol), "hooks.landed or hooks.refused"), 0)
 	end
+
 	local outcome = self.internal_values.outcome
 	if outcome.kind == "landed" and hook_symbol == (hooks.landed :: any) then
 		callbacks.invoke(hook_symbol, self, callback)
 	elseif outcome.kind == "refused" and hook_symbol == (hooks.refused :: any) then
 		callbacks.invoke(hook_symbol, self, callback, outcome.message)
 	end
+
 	return callbacks.connect(self.internal_hooks, hook_symbol, callback)
 end
 
@@ -55,11 +58,17 @@ local function await(self: BatchInternal): SettledOutcome
 		values.flush = nil
 		flush()
 	end
+
 	if not is_settled(self) then
 		table.insert(self.internal_waiters, coroutine.running())
 		coroutine.yield()
 	end
+
 	return self.internal_values.outcome :: SettledOutcome
+end
+
+local function silence(self: BatchInternal)
+	self.internal_values.silenced = true
 end
 
 local function flush_with(self: BatchInternal, flush: () -> ())
@@ -70,6 +79,7 @@ local function settle(self: BatchInternal, outcome: Outcome)
 	if is_settled(self) then
 		return
 	end
+
 	self.internal_values.outcome = table.freeze(outcome)
 	self.internal_values.flush = nil
 	if outcome.kind == "refused" then
@@ -77,6 +87,7 @@ local function settle(self: BatchInternal, outcome: Outcome)
 	else
 		callbacks.fire(self.internal_hooks, hooks.landed, self)
 	end
+
 	local waiters = table.clone(self.internal_waiters)
 	table.clear(self.internal_waiters)
 	for _, waiter in waiters do
@@ -90,7 +101,7 @@ local function enter(self: BatchInternal)
 	self.internal_values.phase = { kind = "running" }
 end
 
-local function hold(self: BatchInternal, result: any, keys: { string })
+local function hold(self: BatchInternal, result: any, keys: { BatchKey })
 	self.internal_values.phase = { kind = "held", result = result }
 	self.internal_keys = table.freeze(table.clone(keys))
 end
@@ -105,6 +116,7 @@ local function refuse(self: BatchInternal, id: string, message: string, heard: b
 		if
 			not heard
 			and not self.internal_values.awaited
+			and not self.internal_values.silenced
 			and not callbacks.is_connected(self.internal_hooks, hooks.refused)
 		then
 			logging.warn(messages.warnings.batch_refused(id, self.internal_keys, message))
@@ -122,6 +134,7 @@ local template = {
 		outcome = table.freeze({ kind = "pending" }) :: Outcome,
 		phase = table.freeze({ kind = "held", result = nil }) :: BatchPhase,
 		awaited = false,
+		silenced = false,
 		flush = nil :: (() -> ())?,
 	},
 	internal_hooks = {},
@@ -133,6 +146,7 @@ local template = {
 	is_settled = is_settled,
 	hook = hook,
 	await = await,
+	silence = silence,
 	enter = enter,
 	hold = hold,
 	land = land,

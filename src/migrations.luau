@@ -6,6 +6,7 @@ local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
 local ops = require("./ops")
+local rankings = require("./rankings")
 local recorder = require("./recorder")
 local relations = require("./relations")
 local state = require("./state")
@@ -37,25 +38,31 @@ local function mirror_ids(scratch: World, schema: Schema)
 		if not scratch:contains(entry.id) then
 			scratch:entity(entry.id)
 		end
+
 		if entry.kind == "component" or (entry.kind == "relation" and not entry.tagged) then
 			mirror_component(scratch, entry.id)
 		end
 	end
+
 	for name, target in schema.named do
 		if not scratch:contains(target) then
 			scratch:entity(target)
 		end
+
 		scratch:set(target, jecs.Name, name)
 	end
+
 	for _, kind in schema.kinds do
 		for _, id in { kind.tag, kind.via } do
 			if not scratch:contains(id) then
 				scratch:entity(id)
 			end
 		end
+
 		if not scratch:has(kind.via, jecs.Exclusive) then
 			scratch:add(kind.via, jecs.Exclusive)
 		end
+
 		if kind.mode == "attached" then
 			mirror_component(scratch, kind.id)
 		end
@@ -67,19 +74,30 @@ local function touch(scratch: MigrationScratch, entity: Entity)
 	if not scratch.recording then
 		return
 	end
+
 	local index = scratch.children
 	local current = entity
-	for _ = 1, 32 do
+	while true do
 		local held = index.by_entity[current]
 		if not held then
 			return
 		end
+
 		if held.parent == scratch.entity then
 			scratch.touched[`{held.kind.key}/{held.id}`] = { key = held.kind.key, id = held.id }
 			return
 		end
 		current = held.parent
 	end
+end
+
+local function holds_kind(scratch: MigrationScratch, kind: ChildKind, parent: Entity): boolean
+	if parent == scratch.entity then
+		return table.find(scratch.kinds, kind) ~= nil
+	end
+
+	local held = children.child_of(scratch.children, parent)
+	return held ~= nil and kind.holders[held.kind.tag] == true
 end
 
 local function index_relation(scratch: MigrationScratch, write: RelationWrite)
@@ -90,9 +108,31 @@ local function index_relation(scratch: MigrationScratch, write: RelationWrite)
 		if write.deleted then
 			children.forget_parent(index, write.entity)
 		end
+
 		return
 	end
-	local id = children.resolve_id(world, write.entity, write.child) or children.mint_id(world, write.entity)
+
+	if not holds_kind(scratch, write.child, write.parent) then
+		logging.warn_once(
+			scratch.warned,
+			`child_unheld:{write.child.tag}/{write.parent}`,
+			messages.warnings.child_unheld(
+				util.describe(world, write.entity),
+				util.describe(world, write.child.tag),
+				util.describe(world, write.parent)
+			)
+		)
+		return
+	end
+
+	local id = children.resolve_id(world, write.entity, write.child)
+	if id == nil and write.child.mode == "attached" then
+		error(
+			messages.errors.child_unnamed(util.describe(world, write.entity), util.describe(world, write.child.tag)),
+			0
+		)
+	end
+	id = id or children.mint_id(world, write.entity)
 	children.record(index, write.entity, write.child, write.parent, id)
 	touch(scratch, write.entity)
 end
@@ -104,10 +144,12 @@ local function create_scratch(schema: Schema, root: Fields, warned: Warned): Mig
 	for _, entry in root.entries do
 		held[entry] = true
 	end
+
 	local scratch: MigrationScratch
 	scratch = {
 		world = world,
 		entity = world:entity(),
+		kinds = root.kinds,
 		children = { by_entity = {}, by_parent = {} },
 		named = table.clone(schema.named),
 		warned = warned,
@@ -155,12 +197,14 @@ local function set_stored(
 			end
 			continue
 		end
+
 		if entry.kind == "relation" then
 			if type(value) == "table" then
 				relations.apply(world, entry, entity, scratch.named, value, scratch.warned)
 			end
 			continue
 		end
+
 		if value == nil then
 			local initial = entry.initial
 			if with_initials and initial.kind == "value" then
@@ -168,6 +212,7 @@ local function set_stored(
 			end
 			continue
 		end
+
 		local ok, runtime = pcall(codec.runtime_form, entry, value)
 		if ok then
 			world:set(entity, entry.id, runtime)
@@ -216,13 +261,20 @@ local function create_migration_context(
 		if schema.by_key[stored_key] then
 			error(messages.errors.legacy_is_saveable(key, stored_key), 0)
 		end
+
+		if rankings.is_reserved(stored_key) then
+			error(messages.errors.legacy_reserved(key, stored_key), 0)
+		end
+
 		local id = legacy_ids[stored_key]
 		if id then
 			return id
 		end
+
 		if data[stored_key] == nil then
 			error(messages.errors.legacy_missing(key, stored_key), 0)
 		end
+
 		for _, kind in schema.kinds do
 			if kind.key == stored_key and next(children.stored_children(data, kind).named) ~= nil then
 				error(messages.errors.legacy_is_children(key, stored_key), 0)
@@ -277,6 +329,7 @@ local function run(
 			op.at = index
 		end
 	end
+
 	local migrated = ops.replay({ truth = data, stamps = {} }, scratch.ops).truth
 	local index = scratch.children
 	for _, slot in scratch.touched do
@@ -297,6 +350,7 @@ local function run(
 			else nil
 		migrated[slot.key] = if next(group) ~= nil then group else nil
 	end
+
 	return migrated
 end
 

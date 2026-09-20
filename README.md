@@ -69,7 +69,7 @@ schema freezes there.
 | field | default | meaning |
 |---|---|---|
 | `pull_interval` | 15 | seconds between writes while something is unwritten, so also how long an unawaited single-key batch stays pending; under 6 (the DataStore write cooldown) warns |
-| `idle_interval` | 60, never under `pull_interval` | seconds between reads while clean; `math.huge` turns them off |
+| `idle_interval` | 60, never under `pull_interval` unless that is `math.huge` | seconds between reads while clean; `math.huge` turns them off |
 | `retry_attempts`, `retry_base` | 5, 1 | storage retries and their base delay, doubling |
 | `commit_store`, `commit_timeout` | `"miumiu_commits"`, 300 | the store and window multi-key batches commit through |
 | `data_store_service` | `DataStoreService` | swap in a mock for tests |
@@ -218,9 +218,10 @@ values the batch still holds, fires `refused`, and warns when nothing hooked or 
 it in the same frame. `batch:await()` yields until the group is in every record and
 returns the outcome, `{ kind = "landed" }` or `{ kind = "refused", message = ... }`,
 never throwing. The handle also has `get_outcome()` (the same record, `pending` until
-then), `is_settled()`, `get_keys()` (the stored keys it touched) and `get_result()`,
+then), `is_settled()`, `get_keys()` (the keys it touched, each as `{ collection, key }`,
+since two collections can use one key string), `get_result()`,
 what the function returned, there as soon as
-`batch` returns. Hooks and the rollback run on the thread that wrote or refused the
+`batch` returns, and `silence()`, which accepts a refusal without the warning. Hooks and the rollback run on the thread that wrote or refused the
 batch: an `await`, a `sync`, `wipe`, `close`, the pull loop, the unlink's final write, or
 a multi-key batch's commit thread between frames; a `sync` or `wipe` called from a system
 sees them mid-system. After
@@ -415,6 +416,64 @@ A lazy write still counts as unwritten, so the session writes on its next interv
 unlink, unclaim and `close` write pending lazy values too, and a pull never sets a
 pending value back. Inside `batch` a lazy write is recorded
 like any other; `delta` throws on it, since a value read at write time has no delta.
+
+## Leaderboards
+
+An ordered store ranks one root field in an `OrderedDataStore`, kept current by the
+sessions that write the record. Declare it on an entity of its own, scoped to the
+collection like a saveable; its `jecs.Name` is the store's name:
+
+```luau
+local coins_this_week = jecs.component() :: jecs.Entity<number>
+jecs.meta(coins_this_week, miumiu.saveable, "coins_this_week")
+jecs.meta(coins_this_week, jecs.pair(miumiu.field_of, player_data))
+jecs.meta(coins_this_week, coins_this_week, 0)
+
+local weekly_coins = jecs.tag()
+jecs.meta(weekly_coins, jecs.Name, "weekly_coins")
+jecs.meta(weekly_coins, jecs.pair(miumiu.field_of, player_data))
+jecs.meta(weekly_coins, miumiu.ordered, {
+	component = coins_this_week,
+	period = { length = 7 * 86400, epoch = 345600 },
+	period_threshold = 10,
+	on_period_change = function(world, entity, value, place, period)
+		world:set(entity, money, world:get(entity, money) + 1000 * (11 - place))
+	end,
+})
+```
+
+Every write of `coins_this_week` that changes its score pushes it with the record's
+next write (`map` turns a non-number field into the integer to rank by; the default
+floors a number). With `period` the store is per period, `weekly_coins_2831`: a new
+period starts on an empty store, the previous one stays readable, and the field resets
+to its initial when a record first pulls in the new period. `on_period_change` runs
+once per key and finished period, for the players who placed within `period_threshold`,
+with the field's value for that period and their rank, inside a batch that claims the
+change, so the reward it writes lands with the claim or not at all. The claim is taken by
+a write, so exactly one server runs it however many hold the key, and a player who missed
+three periods gets one call per period they placed in, in order. Omit `period` for an
+all-time ranking.
+
+`reset = false` gives a periodic store that does not clear its field: each period gets
+its own ranking, but a record entering one keeps the value it had, so the board shows
+where everyone stands rather than what they earned that period. A monthly board of a
+lifetime total is that, and since it resets nothing it may share its field with the
+all-time board. A field that a resetting store owns feeds no other ordered store, and
+the schema build says so.
+
+```luau
+local weekly = miumiu.get_ordered(world, weekly_coins)
+local top = weekly:get_top(100)
+local period = weekly:get_period()
+local last_week = weekly:get_top(10, { period = period.index - 1 })
+print(period.finish - os.time(), "seconds until the reset")
+```
+
+`get_top` yields and costs one `GetSortedAsync` per hundred entries; `get_score(key)`
+reads one key; `get_period()` costs nothing. Read the top on your own schedule, once a
+minute is plenty. Every ordered write lands on the ordered store's own budget, and
+`wipe` removes the key from the ordered stores of the collection too, from the period
+its own record names.
 
 ## Other players
 
@@ -703,10 +762,13 @@ the repository is a complete fixture built that way.
 
 ## Warnings
 
-`miumiu.set_warn(fn)` routes every warning the library emits (guard rejections on stored
-values, failed writes that are being retried, a final write refused by a newer server or
-given up by `close` and the changes it lost, a write on an entity that does not hold the
-saveable, a pair on an unnamed or ambiguously named target, two entities sharing a
-`jecs.Name`, a stored name nobody carries). A warning about a shape the game keeps
+`miumiu.set_warn(fn)` routes every warning the library emits, for example guard
+rejections on stored values, failed writes that are being retried, a final write refused
+by a newer server or given up by `close` and the changes it lost, a write on an entity
+that does not hold the saveable, a pair on an unnamed or ambiguously named target, two
+entities sharing a `jecs.Name`, a stored name nobody carries, a child group the record
+holds as an array, a snapshot that threw, and, for ordered stores, a `map` or `period`
+function that failed, a push or a ranking read being retried, an `on_period_change` that
+threw and a key that could not be unranked. A warning about a shape the game keeps
 producing fires once per world and subject, so a per-frame loop cannot flood the log.
 The default is `warn`.

@@ -2,7 +2,9 @@ local types = require("./types")
 
 type DataStore = types.DataStore
 type DataStoreGetOptions = types.DataStoreGetOptions
+type DataStorePages = types.DataStorePages
 type DataStoreService = types.DataStoreService
+type OrderedDataStore = types.OrderedDataStore
 type RetryConfig = types.RetryConfig
 type UpdateResult<T> = types.UpdateResult<T>
 
@@ -20,6 +22,7 @@ local function get_fresh_options(): DataStoreGetOptions
 		options.UseCache = false
 		fresh_options = options :: any
 	end
+
 	return fresh_options :: DataStoreGetOptions
 end
 
@@ -88,7 +91,47 @@ local function update_async<T>(
 	if transform_error ~= nil then
 		error(transform_error, 0)
 	end
+
 	return result
+end
+
+local function open_ordered(service: DataStoreService, name: string): OrderedDataStore
+	return service:GetOrderedDataStore(name)
+end
+
+local function get_ordered(store: OrderedDataStore, key: string, retry_config: RetryConfig): any
+	return retry(retry_config, function()
+		return (store:GetAsync(key))
+	end)
+end
+
+local function set_ordered(store: OrderedDataStore, key: string, value: number, retry_config: RetryConfig)
+	retry(retry_config, function()
+		store:SetAsync(key, value)
+	end)
+end
+
+local function remove_ordered(store: OrderedDataStore, key: string, retry_config: RetryConfig)
+	retry(retry_config, function()
+		store:RemoveAsync(key)
+	end)
+end
+
+local function get_sorted(
+	store: OrderedDataStore,
+	ascending: boolean,
+	page_size: number,
+	retry_config: RetryConfig
+): DataStorePages
+	return retry(retry_config, function()
+		return (store:GetSortedAsync(ascending, page_size))
+	end)
+end
+
+local function next_page(pages: DataStorePages, retry_config: RetryConfig)
+	retry(retry_config, function()
+		pages:AdvanceToNextPageAsync()
+	end)
 end
 
 return table.freeze({
@@ -98,4 +141,10 @@ return table.freeze({
 	get_async = get_async,
 	set_async = set_async,
 	update_async = update_async,
+	open_ordered = open_ordered,
+	get_ordered = get_ordered,
+	set_ordered = set_ordered,
+	remove_ordered = remove_ordered,
+	get_sorted = get_sorted,
+	next_page = next_page,
 })

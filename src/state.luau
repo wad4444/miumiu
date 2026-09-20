@@ -19,6 +19,7 @@ local function get(world: World): WorldState
 	if existing then
 		return existing
 	end
+
 	local created: WorldState = {
 		collections = {},
 		schema = nil,
@@ -40,7 +41,10 @@ local function get(world: World): WorldState
 		links = {},
 		link_states = {},
 		orphans = {},
+		pending_loads = {},
+		load_waiters = {},
 		events = {},
+		ordered = {},
 	}
 	states[world] = created
 	return created
@@ -82,10 +86,12 @@ local function removing_targets(world_state: WorldState, entity: Entity, key: st
 	if removing == nil then
 		return {}
 	end
+
 	local existing = removing[key]
 	if existing and existing.kind == "targets" then
 		return existing.targets
 	end
+
 	local targets: { [Entity]: boolean } = {}
 	removing[key] = { kind = "targets", targets = targets }
 	return targets
@@ -96,6 +102,7 @@ local function is_applying(world_state: WorldState, entity: Entity, id: Entity<a
 	if applying == nil or applying.entity ~= entity then
 		return false
 	end
+
 	return applying.kind == "entity" or applying.id == id
 end
 
@@ -104,6 +111,7 @@ local function entity_state(world_state: WorldState, entity: Entity): EntityStat
 	if existing then
 		return existing
 	end
+
 	local created: EntityState =
 		{ shadow = {}, supplied = {}, lazy = {}, baseline = {}, removing = {}, dropped = false }
 	world_state.entities[entity] = created
@@ -123,6 +131,7 @@ local function read_values(context: Context, entity: Entity, entries: { SchemaEn
 			values[entry.key] = world:get(entity, entry.id)
 		end
 	end
+
 	return values
 end
 
@@ -137,6 +146,7 @@ local function link_states_of(world_state: WorldState, collection: Entity): { [s
 		by_key = {}
 		world_state.link_states[collection] = by_key
 	end
+
 	return by_key
 end
 
@@ -144,6 +154,7 @@ local function open_session(link_state: LinkState?): SessionInternal?
 	if link_state == nil or link_state.phase.kind ~= "loaded" or not link_state.phase.session:is_open() then
 		return nil
 	end
+
 	return link_state.phase.session
 end
 

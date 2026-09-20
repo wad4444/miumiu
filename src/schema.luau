@@ -3,6 +3,7 @@ local ids = require("./ids")
 local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
+local rankings = require("./rankings")
 local state = require("./state")
 local util = require("./util")
 
@@ -11,9 +12,11 @@ type Entity<T = nil> = types.Entity<T>
 type ChildKind = types.ChildKind
 type ComponentEntry = types.ComponentEntry
 type Fields = types.Fields
+type ForeignImport = types.ForeignImport
 type Holders = types.Holders
 type Initial = types.Initial
 type Named = types.Named
+type OrderedStore = types.OrderedStore
 type Schema = types.Schema
 type SchemaEntry = types.SchemaEntry
 
@@ -30,6 +33,7 @@ local frozen_ids = {
 	ids.child,
 	ids.migrations,
 	ids.from_foreign,
+	ids.ordered,
 }
 
 local function resolve_key(world: World, id: Entity): string
@@ -37,9 +41,15 @@ local function resolve_key(world: World, id: Entity): string
 	if type(key) ~= "string" or #key == 0 then
 		error(messages.errors.saveable_unnamed(util.describe(world, id)), 0)
 	end
+
 	if string.find(key, "/", 1, true) then
 		error(messages.errors.saveable_key_invalid(util.describe(world, id), key), 0)
 	end
+
+	if rankings.is_reserved(key) then
+		error(messages.errors.reserved_key(util.describe(world, id), key), 0)
+	end
+
 	return key
 end
 
@@ -48,6 +58,7 @@ local function resolve_holders(world: World, id: Entity): Holders
 	for _, target in util.targets_of(world, id, ids.field_of) do
 		holders[target] = true
 	end
+
 	return holders
 end
 
@@ -56,12 +67,15 @@ local function resolve_targets(world: World, id: Entity): { [Entity]: boolean }?
 	if config == nil then
 		return nil
 	end
+
 	if type(config) ~= "table" or (config.targets ~= nil and type(config.targets) ~= "table") then
 		error(messages.errors.pairs_targets_invalid(util.describe(world, id)), 0)
 	end
+
 	if config.targets == nil then
 		return nil
 	end
+
 	local targets: { [Entity]: boolean } = {}
 	for _, target in config.targets do
 		if type(target) ~= "number" then
@@ -69,6 +83,7 @@ local function resolve_targets(world: World, id: Entity): { [Entity]: boolean }?
 		end
 		targets[(target :: any) :: Entity] = true
 	end
+
 	return targets
 end
 
@@ -80,6 +95,7 @@ local function create_relation(world: World, id: Entity, key: string, holders: H
 			error(messages.errors.pairs_meta(util.describe(world, id), what), 0)
 		end
 	end
+
 	return {
 		kind = "relation",
 		id = id,
@@ -98,19 +114,24 @@ local function create_entry(world: World, id: Entity, key: string): SchemaEntry
 	if world:has(id, ids.pairs) then
 		return create_relation(world, id, key, holders)
 	end
+
 	if jecs.is_tag(world, id) then
 		if world:has(id, ids.snapshot) then
 			error(messages.errors.snapshot_on_tag(util.describe(world, id)), 0)
 		end
+
 		if world:has(id, ids.lazy) then
 			error(messages.errors.lazy_on_tag(util.describe(world, id)), 0)
 		end
+
 		if world:has(id, ids.guard) then
 			error(messages.errors.guard_on_tag(util.describe(world, id)), 0)
 		end
+
 		if world:has(id, ids.serdes) then
 			error(messages.errors.serdes_on_tag(util.describe(world, id)), 0)
 		end
+
 		return {
 			kind = "tag",
 			id = id,
@@ -119,11 +140,13 @@ local function create_entry(world: World, id: Entity, key: string): SchemaEntry
 			holders = holders,
 		}
 	end
+
 	local described = util.describe(world, id)
 	local guard = world:get(id, ids.guard)
 	if guard ~= nil and type(guard) ~= "function" then
 		error(messages.errors.meta_not_function(described, "guard"), 0)
 	end
+
 	local serdes: any = world:get(id, ids.serdes)
 	if
 		serdes ~= nil
@@ -131,10 +154,12 @@ local function create_entry(world: World, id: Entity, key: string): SchemaEntry
 	then
 		error(messages.errors.serdes_invalid(described), 0)
 	end
+
 	local snapshot = world:get(id, ids.snapshot)
 	if snapshot ~= nil and type(snapshot) ~= "function" then
 		error(messages.errors.meta_not_function(described, "snapshot"), 0)
 	end
+
 	return {
 		kind = "component",
 		id = id,
@@ -155,6 +180,7 @@ local function warn_unguarded(entries: { SchemaEntry })
 			table.insert(keys, entry.key)
 		end
 	end
+
 	if #keys > 0 then
 		logging.warn(messages.warnings.unguarded(keys))
 	end
@@ -167,6 +193,7 @@ local function snapshots_of(entries: { SchemaEntry }): { ComponentEntry }
 			table.insert(snapshots, entry)
 		end
 	end
+
 	return snapshots
 end
 
@@ -177,6 +204,7 @@ local function kinds_of(kinds: { ChildKind }, target: Entity): { ChildKind }
 			table.insert(held, kind)
 		end
 	end
+
 	return held
 end
 
@@ -187,12 +215,13 @@ local function entries_of(entries: { SchemaEntry }, target: Entity): { SchemaEnt
 			table.insert(held, entry)
 		end
 	end
+
 	return held
 end
 
 local function fields_of(entries: { SchemaEntry }, kinds: { ChildKind }, target: Entity): Fields
 	local held = entries_of(entries, target)
-	return { entries = held, snapshots = snapshots_of(held), kinds = kinds_of(kinds, target) }
+	return { entries = held, snapshots = snapshots_of(held), kinds = kinds_of(kinds, target), ordered = {} }
 end
 
 local function create_kind(world: World, tag: Entity, entries: { SchemaEntry }): ChildKind
@@ -202,18 +231,27 @@ local function create_kind(world: World, tag: Entity, entries: { SchemaEntry }):
 	if type(config) ~= "table" then
 		error(messages.errors.child_config_invalid(described, reasons.child_not_table), 0)
 	end
+
 	if type(config.key) ~= "string" or #config.key == 0 or string.find(config.key, "/", 1, true) then
 		error(messages.errors.child_config_invalid(described, reasons.child_key), 0)
 	end
+
+	if rankings.is_reserved(config.key) then
+		error(messages.errors.reserved_key(described, config.key), 0)
+	end
+
 	if config.mode ~= "owned" and config.mode ~= "attached" then
 		error(messages.errors.child_config_invalid(described, reasons.child_mode), 0)
 	end
+
 	if type(config.via) ~= "number" or not world:has(config.via, jecs.Exclusive) then
 		error(messages.errors.child_config_invalid(described, reasons.child_via), 0)
 	end
+
 	if not jecs.is_tag(world, tag) then
 		error(messages.errors.child_config_invalid(described, reasons.child_tag), 0)
 	end
+
 	local held = entries_of(entries, tag)
 	local holders = resolve_holders(world, tag)
 	if config.mode == "owned" then
@@ -228,9 +266,11 @@ local function create_kind(world: World, tag: Entity, entries: { SchemaEntry }):
 			mode = "owned",
 		}
 	end
+
 	if config.id == nil then
 		error(messages.errors.child_config_invalid(described, reasons.child_id), 0)
 	end
+
 	return {
 		tag = tag,
 		via = config.via,
@@ -249,9 +289,11 @@ local function validate_targets(world: World, entries: { SchemaEntry }, kinds: {
 	for _, collection in collections do
 		known[collection] = true
 	end
+
 	for _, kind in kinds do
 		known[kind.tag] = true
 	end
+
 	for _, entry in entries do
 		for target in entry.holders do
 			if not known[target] then
@@ -259,6 +301,7 @@ local function validate_targets(world: World, entries: { SchemaEntry }, kinds: {
 			end
 		end
 	end
+
 	for _, kind in kinds do
 		for target in kind.holders do
 			if not known[target] then
@@ -278,12 +321,14 @@ local function validate_scoped(world: World, entries: { SchemaEntry }, kinds: { 
 			table.insert(saveables, util.describe(world, entry.id))
 		end
 	end
+
 	local tags: { string } = {}
 	for _, kind in kinds do
 		if next(kind.holders) == nil then
 			table.insert(tags, util.describe(world, kind.tag))
 		end
 	end
+
 	if #saveables > 0 or #tags > 0 then
 		error(messages.errors.scope_required(saveables, tags), 0)
 	end
@@ -299,10 +344,12 @@ local function create_schema(world: World): Schema
 		if existing then
 			error(messages.errors.duplicate_key(util.describe(world, existing.id), util.describe(world, id), key), 0)
 		end
+
 		local entry = create_entry(world, id, key)
 		table.insert(entries, entry)
 		by_key[key] = entry
 	end
+
 	table.sort(entries, function(a, b)
 		return a.key < b.key
 	end)
@@ -315,10 +362,12 @@ local function create_schema(world: World): Schema
 		local function reject_clash(other: Entity)
 			error(messages.errors.child_key_clash(util.describe(world, tag), kind.key, util.describe(world, other)), 0)
 		end
+
 		local clash = by_key[kind.key]
 		if clash then
 			reject_clash(clash.id)
 		end
+
 		local other = kinds_by_key[kind.key]
 		if other then
 			reject_clash(other.tag)
@@ -330,8 +379,10 @@ local function create_schema(world: World): Schema
 			siblings = {}
 			kinds_by_relation[kind.via] = siblings
 		end
+
 		table.insert(siblings, kind)
 	end
+
 	table.sort(kinds, function(a, b)
 		return a.key < b.key
 	end)
@@ -339,10 +390,12 @@ local function create_schema(world: World): Schema
 	for _, kind in kinds do
 		kind.kinds = kinds_of(kinds, kind.tag)
 	end
+
 	local collections: { Entity } = {}
 	for collection in world:each(ids.collection) do
 		table.insert(collections, collection)
 	end
+
 	local named: Named = {}
 	local warned = state.get(world).warned
 	for entity in world:each(jecs.Name) do
@@ -358,12 +411,95 @@ local function create_schema(world: World): Schema
 			)
 		end
 	end
+
 	local roots: { [Entity]: Fields } = {}
+	local known: { [Entity]: boolean } = {}
+	local store_names: { [string]: Entity } = {}
+	local imports: { [any]: { [string]: ForeignImport } } = {}
 	for _, collection in collections do
 		roots[collection] = fields_of(entries, kinds, collection)
+		known[collection] = true
+		local store_name = world:get(collection, ids.collection)
+		if type(store_name) == "string" then
+			local owner = store_names[store_name]
+			if owner then
+				error(
+					messages.errors.store_name_clash(
+						util.describe(world, collection),
+						store_name,
+						util.describe(world, owner)
+					),
+					0
+				)
+			end
+			store_names[store_name] = collection
+		end
+
+		local source: any = world:get(collection, ids.from_foreign)
+		if type(source) == "table" and type(source.source) == "table" and type(source.name) == "string" then
+			local first = util.cached(imports, source.source, source.name, function()
+				return { collection = collection, options = source.options }
+			end)
+			if first.options ~= source.options then
+				error(
+					messages.errors.foreign_options_clash(
+						util.describe(world, collection),
+						source.name,
+						util.describe(world, first.collection)
+					),
+					0
+				)
+			end
+		end
 	end
 	validate_targets(world, entries, kinds, collections)
 	validate_scoped(world, entries, kinds)
+
+	local ordered: { [Entity]: OrderedStore } = {}
+	local by_name: { [string]: OrderedStore } = {}
+	local ranked: { [Entity<any>]: OrderedStore } = {}
+	for entity in world:each(ids.ordered) do
+		local store = rankings.create_store(world, entity, entries, known)
+		local described = util.describe(world, entity)
+		local clash = by_name[store.name]
+		for _, other in by_name do
+			if rankings.shares_store(store, other) then
+				clash = other
+			end
+		end
+
+		if clash then
+			error(messages.errors.ordered_name_clash(described, store.name, util.describe(world, clash.entity)), 0)
+		end
+
+		local owner = store_names[store.name]
+		if owner then
+			error(messages.errors.ordered_name_clash(described, store.name, util.describe(world, owner)), 0)
+		end
+
+		local other = ranked[store.entry.id]
+		local resets = store.period ~= nil and store.reset
+		if other and (resets or (other.period ~= nil and other.reset)) then
+			error(
+				messages.errors.ordered_field_shared(
+					described,
+					util.describe(world, store.entry.id),
+					util.describe(world, other.entity)
+				),
+				0
+			)
+		end
+		ranked[store.entry.id] = store
+		by_name[store.name] = store
+		ordered[entity] = store
+		table.insert(roots[store.collection].ordered, store)
+	end
+
+	for _, root in roots do
+		table.sort(root.ordered, function(a, b)
+			return a.name < b.name
+		end)
+	end
 
 	warn_unguarded(entries)
 	return {
@@ -373,6 +509,7 @@ local function create_schema(world: World): Schema
 		kinds_by_relation = kinds_by_relation,
 		roots = roots,
 		named = named,
+		ordered = ordered,
 	}
 end
 
@@ -380,6 +517,7 @@ local function freeze(world: World)
 	local function reject(id: Entity)
 		error(messages.errors.schema_frozen(util.describe(world, id)), 0)
 	end
+
 	for _, id in frozen_ids do
 		world:added(id, reject)
 		world:changed(id, reject)
@@ -393,6 +531,7 @@ local function get(world: World): Schema
 	if cached then
 		return cached
 	end
+
 	local built = create_schema(world)
 	world_state.schema = built
 	freeze(world)

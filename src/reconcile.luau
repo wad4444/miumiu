@@ -45,6 +45,7 @@ local function decode(world: World, entity: Entity, entry: ComponentEntry, value
 		logging.warn(messages.warnings.deserialize_failed(entry.key, util.describe(world, entity), result))
 		return rejected
 	end
+
 	if result == nil then
 		logging.warn(
 			messages.warnings.deserialize_failed(
@@ -55,11 +56,13 @@ local function decode(world: World, entity: Entity, entry: ComponentEntry, value
 		)
 		return rejected
 	end
+
 	local checked = codec.check_guard(entry, result)
 	if checked.kind == "rejected" then
 		logging.warn(messages.warnings.stored_rejected(entry.key, util.describe(world, entity), checked.reason))
 		return rejected
 	end
+
 	return { kind = "ok", value = result }
 end
 
@@ -80,6 +83,7 @@ local function apply_component(
 		supplied[key] = nil
 		return
 	end
+
 	if supplied[key] == value then
 		return
 	end
@@ -89,10 +93,12 @@ local function apply_component(
 	if current == value then
 		return
 	end
+
 	local decoded = decode(world, entity, entry, value)
 	if decoded.kind == "rejected" or ops.deep_equal(current, decoded.value) then
 		return
 	end
+
 	world:set(entity, entry.id, decoded.value)
 end
 
@@ -114,6 +120,7 @@ local function apply_relation(
 		supplied[key] = nil
 		return
 	end
+
 	if type(value) ~= "table" then
 		if supplied[key] ~= value then
 			supplied[key] = value
@@ -125,6 +132,7 @@ local function apply_relation(
 				)
 			)
 		end
+
 		return
 	end
 	supplied[key] = nil
@@ -144,6 +152,7 @@ local function apply(
 		if entity_state.lazy[entry.key] then
 			return
 		end
+
 		local value = known.truth[entry.key]
 		local stamped = strict or known.stamps[entry.key] ~= nil
 		state.with_applying(world_state, entity, entry.id, function()
@@ -165,6 +174,7 @@ local function apply_initials(context: Context, entity: Entity, collection: Enti
 		if initial.kind == "none" or world:has(entity, entry.id) then
 			continue
 		end
+
 		local value = initial.value
 		state.with_applying(world_state, entity, entry.id, function()
 			if entry.kind == "tag" then
@@ -183,12 +193,14 @@ local function with_initials(entries: { SchemaEntry }, data: Data): Data
 		if filled[entry.key] ~= nil or initial.kind == "none" then
 			continue
 		end
+
 		if entry.kind == "tag" then
 			filled[entry.key] = true
 		else
 			filled[entry.key] = codec.stored_form(entry, ops.deep_copy(initial.value))
 		end
 	end
+
 	return filled
 end
 
@@ -299,6 +311,21 @@ local function remove_child(context: Context, child: Entity)
 	world_state.entities[child] = nil
 end
 
+local function refuse_child(context: Context, parent: Entity, child: Entity, kind: ChildKind)
+	logging.warn_once(
+		context.world_state.warned,
+		`child_group_refused:{kind.key}/{child}`,
+		messages.warnings.child_group_refused(
+			util.describe(context.world, child),
+			children.describe_kind(context.world, kind),
+			kind.key
+		)
+	)
+	state.with_applying(context.world_state, child, nil, function()
+		context.world:remove(child, jecs.pair(kind.via, parent))
+	end)
+end
+
 local function supply_children(context: Context, entity: Entity, kinds: { ChildKind }, data: Data, resetting: boolean)
 	local index = context.world_state.children
 	util.run_all(kinds, function(kind)
@@ -310,44 +337,55 @@ local function supply_children(context: Context, entity: Entity, kinds: { ChildK
 				messages.warnings.child_group_array(kind.key)
 			)
 		end
+
 		local present = table.clone(children.children_of(index, entity, kind.key))
+		local guard = util.create_guard()
 		for id, child_data in stored.named do
-			if type(child_data) ~= "table" then
-				logging.warn_once(
-					context.world_state.warned,
-					`child_invalid:{kind.key}/{id}`,
-					messages.warnings.child_invalid(kind.key, id, util.describe(context.world, entity))
-				)
-				continue
-			end
-			local child = present[id]
-			present[id] = nil
-			if child == nil and kind.mode == "attached" then
-				continue
-			end
-			if child == nil then
-				child = spawn_child(context, entity, kind, id)
-			end
-			if context.world_state.links[child] then
-				continue
-			end
-			if state.entity_state(context.world_state, child).tree == child_data then
-				continue
-			end
-			apply_child(context, child, kind, child_data)
-			supply_children(context, child, kind.kinds, child_data, false)
-		end
-		for _, child in present do
-			if kind.mode == "owned" then
-				if not context.world_state.pending_puts[child] then
-					remove_child(context, child)
+			guard.run(function()
+				if type(child_data) ~= "table" then
+					logging.warn_once(
+						context.world_state.warned,
+						`child_invalid:{kind.key}/{id}`,
+						messages.warnings.child_invalid(kind.key, id, util.describe(context.world, entity))
+					)
+					return
 				end
-			elseif resetting or state.entity_state(context.world_state, child).tree ~= nil then
-				table.clear(state.entity_state(context.world_state, child).lazy)
-				apply_child(context, child, kind, nil)
-				supply_children(context, child, kind.kinds, {}, true)
-			end
+				local child = present[id]
+				present[id] = nil
+				if child == nil and kind.mode == "attached" then
+					return
+				end
+				if child == nil then
+					child = spawn_child(context, entity, kind, id)
+				end
+				if context.world_state.links[child] then
+					return
+				end
+				if state.entity_state(context.world_state, child).tree == child_data then
+					return
+				end
+				apply_child(context, child, kind, child_data)
+				supply_children(context, child, kind.kinds, child_data, false)
+			end)
 		end
+
+		for _, child in present do
+			guard.run(function()
+				if stored.skipped then
+					refuse_child(context, entity, child, kind)
+				elseif kind.mode == "owned" then
+					if not context.world_state.pending_puts[child] then
+						remove_child(context, child)
+					end
+				elseif resetting or state.entity_state(context.world_state, child).tree ~= nil then
+					table.clear(state.entity_state(context.world_state, child).lazy)
+					apply_child(context, child, kind, nil)
+					supply_children(context, child, kind.kinds, {}, true)
+				end
+			end)
+		end
+
+		guard.rethrow()
 	end)
 end
 
@@ -378,30 +416,69 @@ local function reconcile(context: Context, entity: Entity, known: State, collect
 	if not context.world:contains(entity) then
 		return
 	end
+
 	local entity_state = state.entity_state(context.world_state, entity)
 	local root = context.schema.roots[collection]
-	local ok, err = pcall(apply, context, entity, root.entries, entity_state, known, false)
+	local guard = util.create_guard()
+	guard.run(function()
+		apply(context, entity, root.entries, entity_state, known, false)
+	end)
 	entity_state.shadow = state.read_values(context, entity, context.schema.entries)
-	if not ok then
-		error(err, 0)
+	if not shallow then
+		guard.run(function()
+			supply_children(context, entity, root.kinds, known.truth, false)
+		end)
 	end
-	if shallow then
-		return
+	guard.rethrow()
+end
+
+local function owed_elsewhere(context: Context, entity: Entity, entry: SchemaEntry, collection: Entity): boolean
+	local links: { [Entity]: string } = context.world_state.links[entity] or {}
+	local owed = false
+	for other in links do
+		if other ~= collection and entry.holders[other] then
+			owed = true
+		end
 	end
-	supply_children(context, entity, root.kinds, known.truth, false)
+
+	return owed
 end
 
 local function wipe_entity(context: Context, entity: Entity, collection: Entity)
 	local root = context.schema.roots[collection]
 	local entity_state = state.entity_state(context.world_state, entity)
+	local wiped: { SchemaEntry } = {}
 	for _, entry in root.entries do
+		if entity_state.lazy[entry.key] and owed_elsewhere(context, entity, entry, collection) then
+			continue
+		end
+
 		entity_state.lazy[entry.key] = nil
+		table.insert(wiped, entry)
 	end
+
 	release_children(context, entity, root.kinds)
-	apply(context, entity, root.entries, entity_state, { truth = {}, stamps = {} }, true)
+	apply(context, entity, wiped, entity_state, { truth = {}, stamps = {} }, true)
 	apply_initials(context, entity, collection)
 	table.clear(entity_state.supplied)
 	entity_state.shadow = state.read_values(context, entity, context.schema.entries)
+end
+
+local function warn_snapshot(context: Context, entity: Entity, entry: ComponentEntry, why: unknown)
+	logging.warn_once(
+		context.world_state.warned,
+		`snapshot_failed:{entry.key}/{entity}`,
+		messages.warnings.snapshot_failed(entry.key, util.describe(context.world, entity), why)
+	)
+end
+
+local function store_snapshot(context: Context, entity: Entity, entry: ComponentEntry, value: any)
+	local world = context.world
+	if value == nil or ops.deep_equal(world:get(entity, entry.id), value) then
+		return
+	end
+
+	world:set(entity, entry.id, value)
 end
 
 local function snapshot_fields(context: Context, entity: Entity, snapshots: { ComponentEntry })
@@ -409,24 +486,33 @@ local function snapshot_fields(context: Context, entity: Entity, snapshots: { Co
 	if not world:contains(entity) then
 		return
 	end
+
+	local guard = util.create_guard()
 	for _, entry in snapshots do
 		local snapshot = entry.snapshot :: Snapshot
-		local ok, value = pcall(util.sync, "snapshot" :: SyncKind, entry.key, snapshot, world, entity)
+		local ok, result = pcall(util.sync, "snapshot" :: SyncKind, entry.key, snapshot, world, entity)
 		if not ok then
-			logging.warn_once(
-				context.world_state.warned,
-				`snapshot_failed:{entry.key}`,
-				messages.warnings.snapshot_failed(entry.key, util.describe(world, entity), value)
-			)
+			warn_snapshot(context, entity, entry, result)
 			continue
 		end
-		if value ~= nil and not ops.deep_equal(world:get(entity, entry.id), value) then
-			world:set(entity, entry.id, value)
+
+		local checked = codec.check_guard(entry, result)
+		if checked.kind ~= "ok" then
+			warn_snapshot(context, entity, entry, checked.reason)
+			continue
 		end
+
+		guard.run(function()
+			store_snapshot(context, entity, entry, result)
+		end)
 	end
+
 	children.each_child(context.world_state.children, entity, function(child, held)
-		snapshot_fields(context, child, held.kind.snapshots)
+		guard.run(function()
+			snapshot_fields(context, child, held.kind.snapshots)
+		end)
 	end)
+	guard.rethrow()
 end
 
 return table.freeze({

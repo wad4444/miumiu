@@ -31,6 +31,7 @@ local function pack(
 		if (except and except[target]) or not is_target(entry, target) then
 			continue
 		end
+
 		local name = world:get(target, jecs.Name)
 		if type(name) ~= "string" then
 			logging.warn_once(
@@ -40,6 +41,7 @@ local function pack(
 			)
 			continue
 		end
+
 		local owner = named[name]
 		if owner ~= target then
 			logging.warn_once(
@@ -53,6 +55,7 @@ local function pack(
 			)
 			continue
 		end
+
 		local pair_value = if entry.tagged then true else world:get(entity, jecs.pair(entry.id, target))
 		if pair_value == nil then
 			continue
@@ -60,6 +63,7 @@ local function pack(
 		packed[name] = pair_value
 		any = true
 	end
+
 	return if any then packed else nil
 end
 
@@ -82,9 +86,11 @@ local function apply(world: World, entry: RelationEntry, entity: Entity, named: 
 			)
 			continue
 		end
+
 		if not is_target(entry, target) then
 			continue
 		end
+
 		local pair = jecs.pair(entry.id, target)
 		if entry.tagged then
 			if not world:has(entity, pair) then
@@ -94,11 +100,13 @@ local function apply(world: World, entry: RelationEntry, entity: Entity, named: 
 			world:set(entity, pair, pair_value)
 		end
 	end
+
 	for _, target in util.targets_of(world, entity, entry.id) do
 		local name = world:get(target, jecs.Name)
 		if not is_target(entry, target) or type(name) ~= "string" or named[name] ~= target or value[name] ~= nil then
 			continue
 		end
+
 		local pair = jecs.pair(entry.id, target)
 		if entry.tagged or world:get(entity, pair) ~= nil then
 			world:remove(entity, pair)

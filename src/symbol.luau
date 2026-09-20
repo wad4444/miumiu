@@ -8,6 +8,7 @@ local function create_symbol(name: string): Symbol
 	meta.__tostring = function()
 		return `Symbol({name})`
 	end
+
 	return symbol
 end
 

@@ -12,6 +12,7 @@ local function is_array(value: { [any]: any }): boolean
 	for _ in value do
 		count += 1
 	end
+
 	return count == #value
 end
 
@@ -23,9 +24,11 @@ local function diff_arrays(key: string, previous: { any }, value: { any }): { Op
 				reject(key, messages.reasons.in_place)
 			end
 		end
+
 		for index = #previous + 1, #value do
 			table.insert(result, { kind = "insert", key = key, value = value[index] })
 		end
+
 		return result
 	end
 
@@ -37,9 +40,11 @@ local function diff_arrays(key: string, previous: { any }, value: { any }): { Op
 			table.insert(result, { kind = "erase", key = key, value = element })
 		end
 	end
+
 	if cursor ~= #value + 1 then
 		reject(key, messages.reasons.in_place)
 	end
+
 	return result
 end
 
@@ -50,18 +55,24 @@ local function diff_dictionaries(key: string, previous: { [string]: any }, value
 		if type(field) ~= "string" then
 			reject(key, messages.reasons.string_keys)
 		end
-		if string.find(field, "/", 1, true) then
-			reject(key, messages.reasons.slash_keys)
-		end
+
 		if previous[field] ~= entry then
+			if string.find(field, "/", 1, true) then
+				reject(key, messages.reasons.slash_keys)
+			end
 			table.insert(result, { kind = "put", key = key, path = { field }, value = entry, at = at })
 		end
 	end
+
 	for field in previous do
 		if value[field] == nil then
+			if string.find(field, "/", 1, true) then
+				reject(key, messages.reasons.slash_keys)
+			end
 			table.insert(result, { kind = "drop", key = key, path = { field }, at = at })
 		end
 	end
+
 	return result
 end
 
@@ -74,16 +85,19 @@ local function diff(key: string, previous: any, value: any): { Op }
 		if previous ~= nil and type(previous) ~= "number" then
 			reject(key, messages.reasons.type_changed)
 		end
+
 		local delta = value - (previous or 0)
 		if delta == 0 then
 			return {}
 		end
+
 		return { { kind = "add", key = key, delta = delta } }
 	end
 
 	if type(value) ~= "table" then
 		reject(key, messages.reasons.not_a_table(type(value)))
 	end
+
 	if previous ~= nil and type(previous) ~= "table" then
 		reject(key, messages.reasons.type_changed)
 	end
@@ -96,6 +110,7 @@ local function diff(key: string, previous: any, value: any): { Op }
 	elseif next(value) == nil then
 		value_array = before_array
 	end
+
 	if before_array ~= value_array then
 		reject(key, messages.reasons.mixed)
 	end
@@ -103,6 +118,7 @@ local function diff(key: string, previous: any, value: any): { Op }
 	if value_array then
 		return diff_arrays(key, before, value)
 	end
+
 	return diff_dictionaries(key, before, value)
 end
 

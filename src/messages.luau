@@ -1,3 +1,7 @@
+local types = require("./types")
+
+type BatchKey = types.BatchKey
+
 local function prefixed(message: string): string
 	return `miumiu: {message}`
 end
@@ -27,6 +31,16 @@ local reasons = table.freeze({
 	lazy = "lazy saveables are read at write time and cannot be expressed as a delta",
 	pair = "pairs are stored whole and cannot be expressed as a delta",
 	pair_table = "a stored set of pairs must be a table keyed by target name",
+	ordered_not_table = "the value must be a table",
+	ordered_component = "component must be a component saveable",
+	ordered_period = "period must be a number of seconds, { length, epoch } or a function of now",
+	ordered_map = "map must be a function",
+	ordered_threshold = "period_threshold must be an integer of at least 1",
+	ordered_poll = "poll_interval must be a number of at least 0",
+	ordered_callback = "on_period_change must be a function",
+	ordered_callback_period = "on_period_change needs a period",
+	ordered_reset = "reset must be a boolean",
+	ordered_reset_period = "reset needs a period: a store without one never resets its field",
 })
 
 local errors = table.freeze({
@@ -80,6 +94,11 @@ local errors = table.freeze({
 	foreign_no_options = function(collection: unknown, kind: string)
 		return prefixed(
 			`collection {collection} imports from {kind} but from_foreign.options (the {kind} collection options) is missing`
+		)
+	end,
+	foreign_options_clash = function(collection: unknown, name: string, other: unknown)
+		return prefixed(
+			`collections {collection} and {other} both import "{name}" with different options: the foreign collection is created once, so they must share one options table`
 		)
 	end,
 	foreign_name_clash = function(collection: unknown, name: string)
@@ -161,7 +180,7 @@ local errors = table.freeze({
 	end,
 	yielded = function(what: string, subject: string)
 		return prefixed(
-			`{what} for "{subject}" yielded; batch and delta functions, guards, serdes, snapshots and migrations must not yield`
+			`{what} for "{subject}" yielded; batch and delta functions, guards, serdes, snapshots, migrations, map and period functions must not yield`
 		)
 	end,
 	not_a_delta = function(key: string, reason: string)
@@ -230,6 +249,9 @@ local errors = table.freeze({
 	pairs_targets_invalid = function(id: unknown)
 		return prefixed(`saveable {id}: meta(id, miumiu.pairs, \{ targets = list }) takes a list of entities`)
 	end,
+	config_not_table = function(collection: unknown)
+		return prefixed(`collection {collection}: meta(entity, miumiu.config, config) takes a table`)
+	end,
 	bad_config_field = function(collection: unknown, field: string)
 		return prefixed(`collection {collection}: config has no field "{field}"`)
 	end,
@@ -252,11 +274,82 @@ local errors = table.freeze({
 			`entity {entity} links to collection {collection} without a key: world:set(entity, pair(miumiu.data_link, collection), "key") needs a non-empty string`
 		)
 	end,
+	ordered_config_invalid = function(entity: unknown, why: string)
+		return prefixed(
+			`ordered store {entity} is misconfigured: {why}; meta(entity, miumiu.ordered, config) takes component, period, reset, map, period_threshold, poll_interval and on_period_change`
+		)
+	end,
+	ordered_config_field = function(entity: unknown, field: string)
+		return prefixed(`ordered store {entity}: config has no field "{field}"`)
+	end,
+	ordered_unnamed = function(entity: unknown, limit: number)
+		return prefixed(
+			`ordered store {entity} needs a jecs.Name of at most {limit} characters and without /: the name is the OrderedDataStore's, and a path segment of the record's bookkeeping`
+		)
+	end,
+	ordered_name_long = function(entity: unknown, name: string, limit: number)
+		return prefixed(
+			`ordered store {entity} would use the store name "{name}", which is over the {limit}-character DataStore limit: shorten its jecs.Name or lengthen its period`
+		)
+	end,
+	store_name_clash = function(collection: unknown, name: string, other: unknown)
+		return prefixed(
+			`collections {collection} and {other} both store under "{name}": one DataStore holds one collection`
+		)
+	end,
+	ordered_name_clash = function(entity: unknown, name: string, other: unknown)
+		return prefixed(`ordered store {entity} is named "{name}", which {other} already uses as its store name`)
+	end,
+	ordered_scope = function(entity: unknown)
+		return prefixed(
+			`ordered store {entity} needs exactly one pair(miumiu.field_of, collection) naming the collection it ranks`
+		)
+	end,
+	ordered_field = function(entity: unknown, component: unknown, collection: unknown)
+		return prefixed(
+			`ordered store {entity} ranks {component}, which is not a root field of collection {collection}`
+		)
+	end,
+	ordered_field_shared = function(entity: unknown, component: unknown, other: unknown)
+		return prefixed(
+			`ordered stores {entity} and {other} both rank {component}, which one of them resets every period: a field a periodic store resets feeds no other ordered store`
+		)
+	end,
+	not_ordered = function(entity: unknown)
+		return prefixed(`{entity} is not an ordered store: meta(entity, miumiu.ordered, config) is missing`)
+	end,
+	bad_ordered_service = function(collection: unknown)
+		return prefixed(
+			`collection {collection}: data_store_service must offer GetOrderedDataStore for the collection's ordered stores`
+		)
+	end,
+	reserved_key = function(id: unknown, key: string)
+		return prefixed(`{id} stores under "{key}": keys starting with "miumiu." are reserved`)
+	end,
+	legacy_reserved = function(key: string, stored_key: string)
+		return prefixed(`"{stored_key}" in record "{key}" is the library's own bookkeeping, not a legacy key`)
+	end,
+	bad_period = function(name: string, got: string)
+		return prefixed(
+			`period of ordered store "{name}" returned {got}: it must return \{ index, start, finish } with an integer index`
+		)
+	end,
+	bad_count = function(name: string, count: unknown)
+		return prefixed(`get_top on ordered store "{name}" takes an integer count of at least 1, got {tostring(count)}`)
+	end,
+	no_periods = function(name: string)
+		return prefixed(`ordered store "{name}" has no periods: get_top and get_score take no period for it`)
+	end,
 })
 
 local warnings = table.freeze({
-	batch_refused = function(id: string, keys: { string }, message: string)
-		return prefixed(`batch {id} on "{table.concat(keys, '", "')}" refused and rolled back: {message}`)
+	batch_refused = function(id: string, keys: { BatchKey }, message: string)
+		local named: { string } = {}
+		for _, held in keys do
+			table.insert(named, held.key)
+		end
+
+		return prefixed(`batch {id} on "{table.concat(named, '", "')}" refused and rolled back: {message}`)
 	end,
 	rollback_failed = function(id: string, err: unknown)
 		return prefixed(`rollback of batch {id} threw and may be incomplete: {err}`)
@@ -302,6 +395,12 @@ local warnings = table.freeze({
 		return prefixed(
 			`collection {collection} pulls every {interval}s, under the {cooldown}s DataStore write cooldown per key: back-to-back writes wait for the cooldown`
 		)
+	end,
+	lazy_flush_failed = function(key: string, entity: unknown, err: unknown)
+		return prefixed(`lazy "{key}" of {entity} could not be read at write time and was not written: {err}`)
+	end,
+	prepare_failed = function(key: string, err: unknown)
+		return prefixed(`preparing the write of "{key}" failed; some values may not have reached it: {err}`)
 	end,
 	snapshot_failed = function(key: string, entity: unknown, err: unknown)
 		return prefixed(`snapshot of "{key}" for {entity} failed and was not written: {err}`)
@@ -350,6 +449,11 @@ local warnings = table.freeze({
 			`stored pair under "{key}" names "{name}", which no entity in the world carries as its jecs.Name; {entity} did not get it`
 		)
 	end,
+	child_group_refused = function(entity: unknown, tag: unknown, key: string)
+		return prefixed(
+			`child {entity} of kind {tag} cannot be stored: the record holds an array under "{key}" that no migration turned into children; its pair was removed, rebuild the array through context.legacy("{key}")`
+		)
+	end,
 	child_group_array = function(key: string)
 		return prefixed(
 			`stored children under "{key}" are keyed by numbers, not ids, and were left alone; a migration through context.legacy("{key}") turns them into children`
@@ -358,6 +462,40 @@ local warnings = table.freeze({
 	child_unheld = function(entity: unknown, tag: unknown, parent: unknown)
 		return prefixed(
 			`{entity} of kind {tag} under {parent} is not a child: the parent does not hold that kind; pair(miumiu.field_of, target) declares where it nests`
+		)
+	end,
+	period_failed = function(name: string, err: unknown)
+		return prefixed(`period of ordered store "{name}" failed and the store is skipped until it works again: {err}`)
+	end,
+	map_failed = function(name: string, err: unknown)
+		return prefixed(`map of ordered store "{name}" failed and the key is not ranked: {err}`)
+	end,
+	map_invalid = function(name: string, got: string)
+		return prefixed(
+			`map of ordered store "{name}" returned {got}; a score is a non-negative integer, so the key is not ranked`
+		)
+	end,
+	push_failed = function(key: string, name: string, err: unknown)
+		return prefixed(
+			`score of "{key}" could not be pushed to ordered store "{name}", retrying on the next pull: {err}`
+		)
+	end,
+	push_recovered = function(key: string)
+		return prefixed(`scores of "{key}" push again`)
+	end,
+	top_failed = function(key: string, name: string, err: unknown)
+		return prefixed(
+			`finished ranking of ordered store "{name}" could not be read for "{key}", retrying on the next pull: {err}`
+		)
+	end,
+	period_change_failed = function(key: string, name: string, err: unknown)
+		return prefixed(
+			`on_period_change of ordered store "{name}" for "{key}" threw and was rolled back; it runs again on the next load: {err}`
+		)
+	end,
+	unrank_failed = function(key: string, name: string, err: unknown)
+		return prefixed(
+			`wipe of "{key}" could not remove it from ordered store "{name}"; the entry stays until the next push: {err}`
 		)
 	end,
 })

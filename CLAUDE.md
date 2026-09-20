@@ -25,7 +25,7 @@ src/codec.luau        stored_form / runtime_form (serdes), check_guard and op_fo
 src/ops.luau          op replay (pure), deep_equal/deep_copy, path stamps
 src/delta.luau        diff of two values into delta ops
 src/commit.luau       commit-store cache, fetch, mark, resolve
-src/datastore.luau    the only calls into DataStoreService (GetDataStore/GetAsync/SetAsync/UpdateAsync)
+src/datastore.luau    the only calls into DataStoreService (GetDataStore/GetAsync/SetAsync/UpdateAsync, GetOrderedDataStore and its GetAsync/SetAsync/RemoveAsync/GetSortedAsync/AdvanceToNextPageAsync)
 src/session.luau      one key: journal, watch (a group's landing or loss), merge, pull (read or update), adopt, unload, touch, wipe / wipe_key (cake-style class)
 src/pull_loop.luau    the per-session loop (pull_interval when dirty, idle_interval when clean)
 src/recorder.luau     jecs added/changed/removed listeners feeding a sink (pairs packed per write, jecs.Name index); used by capture and migrations
@@ -40,7 +40,10 @@ src/listeners.luau    data_link listeners → events; install/uninstall
 src/link.luau         link lifecycle: link/unlink/loaded/load_failed/closed/pulled handlers, cleanups, get_session, wipe_key, detach_all, resupply
 src/step.luau         the event loop, get_session, wipe, close, the world-level hook
 src/batch.luau        batch/delta: capture, single-key groups journaled and settled through the session's watch (await flushes them), shared commit in the background, rollback
-src/handle.luau       Batch: the handle batch/delta return (outcome, result and keys via hold/get_result/get_keys, landed/refused hooks, await, which runs the flush installed by flush_with; cake-style class)
+src/handle.luau       Batch: the handle batch/delta return (outcome, result and keys via hold/get_result/get_keys, landed/refused hooks, silence, await, which runs the flush installed by flush_with; cake-style class)
+src/rankings.luau     ordered stores, storage side: declaration discovery and validation (create_store), period math, map to score, the transform-side roll (period reset, push bookkeeping under data["miumiu.ordered"], owed changes), push_one, unrank on wipe, top reads with the finished-period cache, owed resolution (claim_owed, resolve)
+src/ordered.luau      Ordered: the handle get_ordered returns (get_name, get_period, get_top, get_score; cake-style class), is_ordered
+src/resets.luau       runs on_period_change at step for each session's resolved placings, inside a batch that carries the drop of the claim (capture.record_ops)
 src/index.d.ts        the roblox-ts surface
 tests/specs/          TestEZ specs, never inside src
 tests/coverage.luau   block instrumenter used by the runner
@@ -55,6 +58,8 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 - Module-level `local function name(...)`, not methods on a table literal.
 - Modules return `table.freeze({ ... })`; `init.luau` also sets `.default = self`.
 - Factories are `create_x` / `load_x`, predicates `is_x`, accessors `get_x` / `is_x`.
+  The three per-world caches (`collection.get`, `schema.get`, `state.get`) are the one
+  exception: they are bare `get`, read as `collection.get(world, c)` at every call site.
 - Every user-facing string lives in `src/messages.luau` (`errors`, `warnings`, `closures`,
   `reasons`).
   `src/index.d.ts` is the one file that carries doc comments: it is the typed surface
@@ -68,7 +73,8 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 - A `template` table at the bottom holds default values plus the method references;
   `create_x` does `table.clone(template)`, re-creates every mutable sub-table, sets
   `setmetatable(instance, meta)` and returns `instance :: types.X`.
-- `meta` carries only `__tostring` (`Session(key)`, `Mutex(free)`, `Batch(pending)`); no
+- `meta` carries only `__tostring` (`Session(key)`, `Mutex(free)`, `Batch(pending)`,
+  `Ordered(name)`); no
   `__index`.
 - Immutable by-value state (scalars, functions, frozen variant records such as `status`
   and `outcome`) lives in `internal_values`, mutable collections in their own
@@ -95,7 +101,7 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
   uses at the top (`type Session = types.Session`). String requires: `require("./sibling")`;
   `@self/x` from an `init.luau` for its own children, `./x` from an `init.luau` for the
   folder's siblings.
-- Functions that return several values return one record type (`PullResult`,
+- Functions that return several values return one record type (`Pull`,
   `Resolution`), not a tuple. State with phases is a union on `kind`, never optional
   fields (`LinkPhase`, `Event`, `Undo`).
 - `--!` pragmas are allowed. Nothing else is.
@@ -137,7 +143,8 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 - Anything run inside a `removed` hook only reads: no `world:add/set/remove/delete`.
 - Plain `task.spawn` / `task.wait`; `task.defer` only for the load thread (a same-frame
   cancel never reaches storage) and for `handle.refuse`'s unhooked-refusal warning (a
-  `hook(refused)` or `await` in the same frame silences it). Timestamps are `os.time()`.
+  `hook(refused)` or `await` in the same frame silences it); `task.delay` only for the
+  deadline on `link.settle_loads`, where `close` waits for a load it does not control. Timestamps are `os.time()`.
   Never `os.clock()`: benchmarking only, in specs too. The `tick` shim
   MockDataStoreService needs in `tests/run.luau` is the one place it appears.
 - Nothing touches `DataStoreService` at require time; the module must load on the client.
@@ -151,8 +158,10 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
   collection, session, logging, state, ids, util, callbacks) get a unit spec; world behaviour is split by phase into
   `link.spec`, `write.spec`, `unlink.spec` (unlink and `close`), `batch.spec`,
   `migrations.spec` (migrations and foreign import), `children.spec` (child kinds,
-  snapshots, lazy, wipe) and `pairs.spec` (saveable pairs), each ending in a `regressions`
-  block, and those cover capture/reconcile/step/link/migrations/listeners/children/relations.
+  snapshots, lazy, wipe), `pairs.spec` (saveable pairs) and `ordered.spec` (ordered
+  stores: pushes, periods, `on_period_change`, the `Ordered` handle, the `rankings.roll`
+  unit), each ending in a `regressions`
+  block, and those cover capture/reconcile/step/link/migrations/listeners/children/relations/rankings/resets.
   Specs never read `internal_*` fields; `utils.journal`, `utils.session_of` and
   `state.get(world)` cover what the public surface does not; `schema.create_schema`,
   and `collection.resolve_config` are spec seams, exported for the unit specs and unused
@@ -183,7 +192,10 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
   runner instrument `src/` (`tests/coverage.luau` marks every function body and branch
   arm) and fail on any block no spec reaches. A guard that no spec can reach is a guard
   for an invariant that cannot break: delete it, don't exclude it. `src/dependencies/`
-  is the only exclusion. The instrumenter is line-based: it masks strings and comments,
+  is the only exclusion. The gate has a known cost: a guard for an invariant that
+  cannot break becomes a `:: T` cast (`children.child_of(index, entity) :: ChildRecord`,
+  `world_state.capture :: Capture`), so a broken invariant surfaces as an index of nil
+  with no message. That trade is deliberate. The instrumenter is line-based: it masks strings and comments,
   skips single-line functions, one-line `if … then … end` counts as one block after its
   `then`, and the statement after an early-exit guard (`return`/`continue`/`break`/
   `error(` then `end`) is its own block. Expression-level branches (`if … then … else`

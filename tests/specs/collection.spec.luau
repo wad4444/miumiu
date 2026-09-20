@@ -177,17 +177,41 @@ return function()
 		end)
 	end)
 
+	describe("collection.config values", function()
+		it("rejects a config that is not a table", function()
+			local world = jecs.world()
+			local backend = utils.create_backend()
+			local entity = utils.create_collection(world, backend)
+			world:set(entity, miumiu.config, 5 :: any)
+			expect(function()
+				collection.resolve_config(world, entity)
+			end).to.throw("takes a table")
+		end)
+
+		it("takes any idle_interval when the collection never pulls on its own", function()
+			local world = jecs.world()
+			local backend = utils.create_backend()
+			local entity = utils.create_collection(world, backend)
+			world:set(entity, miumiu.config, {
+				data_store_service = backend.service,
+				pull_interval = math.huge,
+				idle_interval = utils.timings.idle_interval,
+			})
+			local config = collection.resolve_config(world, entity)
+			expect(config.idle_interval).to.equal(utils.timings.idle_interval)
+		end)
+	end)
+
 	describe("collection.get", function()
 		it("opens the store once and caches per collection", function()
 			local world = jecs.world()
 			local backend = utils.create_backend()
 			local entity = utils.create_collection(world, backend)
+			local other = utils.create_collection(world, utils.create_backend())
 			local first = collection.get(world, entity)
 			expect(collection.get(world, entity)).to.equal(first)
 			expect(first.config.name).to.equal(backend.name)
 			expect(type(first.store.UpdateAsync)).to.equal("function")
-
-			local other = utils.create_collection(world, utils.create_backend())
 			expect(collection.get(world, other)).never.to.equal(first)
 		end)
 

@@ -133,6 +133,10 @@ batch on a closed world is refused without running its function; a leave with on
 undecided shared group, or lazy marks that died with their entity, closes without a
 request; an empty-diff `delta` lands at once.
 
+A migration that touches many children of one kind writes them back in one pass instead of
+cloning the kind's group once per child, so folding or deleting thousands of children on
+load is linear rather than quadratic.
+
 ## 0.1.0 (2026-09-07)
 
 First release candidate. Lockless sessions on jecs 0.11.

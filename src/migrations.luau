@@ -332,9 +332,14 @@ local function run(
 
 	local migrated = ops.replay({ truth = data, stamps = {} }, scratch.ops).truth
 	local index = scratch.children
+	local groups: { [string]: { [string]: unknown } } = {}
 	for _, slot in scratch.touched do
 		migrated = util.own(data, migrated)
-		local group = if type(migrated[slot.key]) == "table" then table.clone(migrated[slot.key]) else {}
+		local group = groups[slot.key]
+		if group == nil then
+			group = if type(migrated[slot.key]) == "table" then table.clone(migrated[slot.key]) else {}
+			groups[slot.key] = group
+		end
 		local child = children.children_of(index, scratch.entity, slot.key)[slot.id]
 		local held = children.child_of(index, child)
 		group[slot.id] = if held

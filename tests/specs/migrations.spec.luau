@@ -578,5 +578,94 @@ return function()
 			expect(written.data.luck_boosts).to.equal(nil)
 			expect(written.stamps.luck_boosts).to.equal(long_ago)
 		end)
+
+		it("fails a migration whose new attached child takes an id a stored child already holds", function()
+			local t = setup({ pull_interval = never })
+			local k = utils.declare_kinds(t.world, t.player_data)
+			utils.scope(t.world, { t.money }, { k.container })
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(world, entity)
+					local shed = world:entity()
+					world:add(shed, k.container)
+					world:set(shed, k.container_kind, "plot")
+					world:set(shed, t.money, 1)
+					world:add(shed, jecs.pair(k.holds, entity))
+				end,
+			})
+			t.backend:seed("p1", {
+				data = { containers = { plot = { money = 7, extra = true } } },
+				migrations = 0,
+			})
+			local player = utils.link_entity(t, "p1")
+			local err = t.world:get(player, t.data_error)
+			expect((string.find(err, "already holds it under the same parent", 1, true))).to.be.ok()
+			local record = t.backend:dump("p1")
+			expect(record.migrations).to.equal(0)
+			expect(record.data.containers.plot.money).to.equal(7)
+			expect(record.data.containers.plot.extra).to.equal(true)
+		end)
+
+		it("fails a migration whose new owned child takes an id a stored child already holds", function()
+			local t = setup({ pull_interval = never })
+			local k = utils.declare_kinds(t.world, t.player_data)
+			utils.scope(t.world, { t.money }, { k.item })
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(world, entity)
+					local extra = world:entity()
+					world:add(extra, k.item)
+					world:set(extra, miumiu.child_id, "a")
+					world:set(extra, t.money, 2)
+					world:add(extra, jecs.pair(k.owns, entity))
+				end,
+			})
+			t.backend:seed("p1", {
+				data = { inventory = { a = { money = 1 }, b = { money = 3 } } },
+				migrations = 0,
+			})
+			local player = utils.link_entity(t, "p1")
+			local err = t.world:get(player, t.data_error)
+			expect((string.find(err, "already holds it under the same parent", 1, true))).to.be.ok()
+			local record = t.backend:dump("p1")
+			expect(record.migrations).to.equal(0)
+			expect(record.data.inventory.a.money).to.equal(1)
+			expect(record.data.inventory.b.money).to.equal(3)
+		end)
+
+		it("fails a migration that nests a stored child under a second parent through another relation", function()
+			local t = setup({ pull_interval = never })
+			local k = utils.declare_kinds(t.world, t.player_data)
+			local part_of = t.world:entity()
+			t.world:add(part_of, jecs.Exclusive)
+			local part = t.world:entity()
+			t.world:set(part, jecs.Name, "part")
+			t.world:set(part, miumiu.child, { via = part_of, key = "parts", mode = "owned" })
+			utils.scope(t.world, { part }, { k.item })
+			utils.scope(t.world, { t.money }, { k.item, part })
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(world, entity)
+					local moved, host = nil, nil
+					for child in world:each(jecs.pair(k.owns, entity)) do
+						if world:get(child, miumiu.child_id) == "a" then
+							moved = child
+						else
+							host = child
+						end
+					end
+					world:add(moved, part)
+					world:add(moved, jecs.pair(part_of, host))
+				end,
+			})
+			t.backend:seed("p1", {
+				data = { inventory = { a = { money = 1 }, golem = { money = 3 } } },
+				migrations = 0,
+			})
+			local player = utils.link_entity(t, "p1")
+			local err = t.world:get(player, t.data_error)
+			expect((string.find(err, "is already a child of kind", 1, true))).to.be.ok()
+			local record = t.backend:dump("p1")
+			expect(record.migrations).to.equal(0)
+			expect(record.data.inventory.a.money).to.equal(1)
+			expect(record.data.inventory.golem.parts).to.equal(nil)
+		end)
 	end)
 end

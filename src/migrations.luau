@@ -125,6 +125,18 @@ local function index_relation(scratch: MigrationScratch, write: RelationWrite)
 		return
 	end
 
+	local held = children.child_of(index, write.entity)
+	if held then
+		error(
+			messages.errors.child_double_parent(
+				util.describe(world, write.entity),
+				children.describe_kind(world, write.child),
+				children.describe_kind(world, held.kind)
+			),
+			0
+		)
+	end
+
 	local id = children.resolve_id(world, write.entity, write.child)
 	if id == nil and write.child.mode == "attached" then
 		error(
@@ -133,6 +145,18 @@ local function index_relation(scratch: MigrationScratch, write: RelationWrite)
 		)
 	end
 	id = id or children.mint_id(world, write.entity)
+	local taken = children.children_of(index, write.parent, write.child.key)[id]
+	if taken ~= nil then
+		error(
+			messages.errors.child_id_taken(
+				util.describe(world, write.entity),
+				children.describe_kind(world, write.child),
+				id,
+				util.describe(world, taken)
+			),
+			0
+		)
+	end
 	children.record(index, write.entity, write.child, write.parent, id)
 	touch(scratch, write.entity)
 end

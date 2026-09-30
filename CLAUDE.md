@@ -28,7 +28,7 @@ src/commit.luau       commit-store cache, fetch, mark, resolve
 src/datastore.luau    the only calls into DataStoreService (GetDataStore/GetAsync/SetAsync/UpdateAsync, GetOrderedDataStore and its GetAsync/SetAsync/RemoveAsync/GetSortedAsync/AdvanceToNextPageAsync)
 src/session.luau      one key: journal, watch (a group's landing or loss), merge, pull (read or update), adopt, unload, touch, wipe / wipe_key (cake-style class)
 src/pull_loop.luau    the per-session loop (pull_interval when dirty, idle_interval when clean)
-src/recorder.luau     jecs added/changed/removed listeners feeding a sink (pairs packed per write, jecs.Name index); used by capture and migrations
+src/recorder.luau     pepecs added/changed/removed hooks feeding a sink (relations hooked on pair(relation, Wildcard), pairs packed per write, Name index); used by capture and migrations
 src/relations.luau    saveable pairs: pack the dictionary of a relation's pairs, apply one onto an entity
 src/children.luau     child index (entity → parent/kind/id), ancestry paths, kind_of, pack / pack_fields_of, each_child / each_nested, delete_tree (marks deleting), stored_children
 src/capture.luau      world writes → validated ops, batch capture (undos, carried marks), shadows, lazy flush at write time (flush_lazy), child put/drop ops
@@ -50,6 +50,7 @@ tests/coverage.luau   block instrumenter used by the runner
 tests/coverage_check.luau  self-check: instruments fixtures and asserts the marker counts
 tests/run.luau        Lune runner
 tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
+vendor/pepecs/        the pepecs build `@rbxts/pepecs` ships (local/rbxts-pepecs-0.1.0.tgz), mounted as Packages.pepecs in the test place; wally's pepecs 0.1.0 is an older build
 ```
 
 ## Style
@@ -111,8 +112,8 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 ## Types
 
 - `.luaurc` is `nonstrict` (WCS convention). Annotate what matters; casts only when
-  load-bearing. jecs arrives through `dependencies/jecs.luau`, whose return is cast to
-  `typeof(require(script.Parent.Parent.Parent.jecs))` so the sourcemap gives it real
+  load-bearing. pepecs arrives through `dependencies/pepecs.luau`, whose return is cast to
+  `typeof(require(script.Parent.Parent.Parent.pepecs))` so the sourcemap gives it real
   types; `types.luau` redeclares `Entity<T>` structurally. `Symbol<T>` is phantom-typed
   on its name (`PulledHook = Symbol<"pulled">`); the old solver treats generics as
   invariant, so `Symbol` defaults to `any` and `hooks.luau` casts each symbol once.
@@ -123,11 +124,22 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
 
 ## ECS rules
 
-- Ids are preregistered in `src/ids.luau` with `jecs.component()` / `jecs.tag()` and
-  named `miumiu.<name>` through `jecs.Name`. Never create ids in the game world at
-  runtime. Migrations run in a scratch `jecs.world()` that mirrors the schema ids with
-  `world:entity(id)`; legacy keys become components of that scratch world only.
-- World calls use colon methods (`world:set`, `world:get`); roblox-ts emits the same.
+- Ids are preregistered in `src/ids.luau` with `pepecs.component()` / `pepecs.tag()` and
+  named `miumiu.<name>` through `pepecs.Name`. Never create ids in the game world at
+  runtime. Migrations run in a scratch `pepecs.world()` that mirrors the schema ids;
+  pepecs has no `world.entity(id)`, so `migrations.mirror_entity` writes the id into the
+  scratch entity index and runtime components get the `ecs.Component` marker found by
+  name. Legacy keys become components of that scratch world only.
+- World functions are closures: dot calls (`world.set`, `world.get`); roblox-ts emits the
+  same. Query methods stay colon calls.
+- A hook on a bare relation never fires for its pairs: hook `pair(relation, Wildcard)` (or
+  the exact pair). A `removed` hook takes `(entity, id)` and returns nothing (a returned
+  function runs after the removal); `world.deleting(entity)` says whether the entity is
+  being deleted. pepecs removes the pairs that point at a deleted entity before its own
+  components, so a detach asks `claims.is_leaving` about its parent instead of relying on
+  marks the parent's removals leave.
+- `has`, `get`, `add` and `delete` throw on a dead entity (jecs returned false/nil):
+  guard any entity that can have died since it was recorded with `world.alive`.
 - The game world is written only by `step` (through `reconcile` and the queued cleanups),
   `batch`'s rollback, a guard's restore, `capture.reject_unloaded`, the undo of a
   rejected child pair or tag, claim-time supply of an attached child (`claims.attach` →
@@ -140,7 +152,7 @@ tests/typecheck/      roblox-ts usage compiled by `npm run typecheck`
   carried, flagged by `capture.mark_carried` / `mark_carried_children`; and
   `reconcile.repair_fields` for a child a plain write changed since). Listeners read or
   enqueue into `src/state.luau`.
-- Anything run inside a `removed` hook only reads: no `world:add/set/remove/delete`.
+- Anything run inside a `removed` hook only reads: no `world.add/set/remove/delete`.
 - Plain `task.spawn` / `task.wait`; `task.defer` only for the load thread (a same-frame
   cancel never reaches storage) and for `handle.refuse`'s unhooked-refusal warning (a
   `hook(refused)` or `await` in the same frame silences it); `task.delay` only for the

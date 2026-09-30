@@ -2,10 +2,10 @@ local types = require("./types")
 local children = require("./children")
 local codec = require("./codec")
 local ids = require("./ids")
-local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
 local ops = require("./ops")
+local pepecs = require("./dependencies/pepecs")
 local relations = require("./relations")
 local state = require("./state")
 local util = require("./util")
@@ -29,12 +29,12 @@ local rejected: Decoded = table.freeze({ kind = "rejected" })
 
 local function apply_tag(world: World, entity: Entity, entry: TagEntry, value: any, stamped: boolean)
 	if value == true then
-		if not world:has(entity, entry.id) then
-			world:add(entity, entry.id)
+		if not world.has(entity, entry.id) then
+			world.add(entity, entry.id)
 		end
 	elseif value == false or stamped then
-		if world:has(entity, entry.id) then
-			world:remove(entity, entry.id)
+		if world.has(entity, entry.id) then
+			world.remove(entity, entry.id)
 		end
 	end
 end
@@ -77,8 +77,8 @@ local function apply_component(
 	local key = entry.key
 	local supplied = entity_state.supplied
 	if value == nil then
-		if stamped and world:has(entity, entry.id) then
-			world:remove(entity, entry.id)
+		if stamped and world.has(entity, entry.id) then
+			world.remove(entity, entry.id)
 		end
 		supplied[key] = nil
 		return
@@ -89,7 +89,7 @@ local function apply_component(
 	end
 	supplied[key] = value
 
-	local current = world:get(entity, entry.id)
+	local current = world.get(entity, entry.id)
 	if current == value then
 		return
 	end
@@ -99,7 +99,7 @@ local function apply_component(
 		return
 	end
 
-	world:set(entity, entry.id, decoded.value)
+	world.set(entity, entry.id, decoded.value)
 end
 
 local function apply_relation(
@@ -171,16 +171,16 @@ local function apply_initials(context: Context, entity: Entity, collection: Enti
 	local world, world_state = context.world, context.world_state
 	for _, entry in context.schema.roots[collection].entries do
 		local initial = entry.initial
-		if initial.kind == "none" or world:has(entity, entry.id) then
+		if initial.kind == "none" or world.has(entity, entry.id) then
 			continue
 		end
 
 		local value = initial.value
 		state.with_applying(world_state, entity, entry.id, function()
 			if entry.kind == "tag" then
-				world:add(entity, entry.id)
+				world.add(entity, entry.id)
 			else
-				world:set(entity, entry.id, ops.deep_copy(value))
+				world.set(entity, entry.id, ops.deep_copy(value))
 			end
 		end)
 	end
@@ -213,16 +213,16 @@ local function write_entry(context: Context, entity: Entity, entry: SchemaEntry,
 	local world = context.world
 	if entry.kind == "tag" then
 		if value == true then
-			world:add(entity, entry.id)
+			world.add(entity, entry.id)
 		else
-			world:remove(entity, entry.id)
+			world.remove(entity, entry.id)
 		end
 	elseif entry.kind == "relation" then
 		relations.apply(world, entry, entity, context.schema.named, value or {}, context.world_state.warned)
 	elseif value == nil then
-		world:remove(entity, entry.id)
+		world.remove(entity, entry.id)
 	else
-		world:set(entity, entry.id, value)
+		world.set(entity, entry.id, value)
 	end
 end
 
@@ -293,11 +293,11 @@ end
 
 local function spawn_child(context: Context, parent: Entity, kind: ChildKind, id: string): Entity
 	local world, world_state = context.world, context.world_state
-	local child = world:entity()
+	local child = world.entity()
 	state.with_applying(world_state, child, nil, function()
-		world:add(child, kind.tag)
-		world:set(child, ids.child_id, id)
-		world:add(child, jecs.pair(kind.via, parent))
+		world.add(child, kind.tag)
+		world.set(child, ids.child_id, id)
+		world.add(child, pepecs.pair(kind.via, parent))
 	end)
 	children.record(world_state.children, child, kind, parent, id)
 	return child
@@ -322,7 +322,7 @@ local function refuse_child(context: Context, parent: Entity, child: Entity, kin
 		)
 	)
 	state.with_applying(context.world_state, child, nil, function()
-		context.world:remove(child, jecs.pair(kind.via, parent))
+		context.world.remove(child, pepecs.pair(kind.via, parent))
 	end)
 end
 
@@ -413,7 +413,7 @@ local function release_children(context: Context, entity: Entity, kinds: { Child
 end
 
 local function reconcile(context: Context, entity: Entity, known: State, collection: Entity, shallow: boolean)
-	if not context.world:contains(entity) then
+	if not context.world.alive(entity) then
 		return
 	end
 
@@ -445,6 +445,10 @@ local function owed_elsewhere(context: Context, entity: Entity, entry: SchemaEnt
 end
 
 local function wipe_entity(context: Context, entity: Entity, collection: Entity)
+	if not context.world.alive(entity) then
+		return
+	end
+
 	local root = context.schema.roots[collection]
 	local entity_state = state.entity_state(context.world_state, entity)
 	local wiped: { SchemaEntry } = {}
@@ -474,16 +478,16 @@ end
 
 local function store_snapshot(context: Context, entity: Entity, entry: ComponentEntry, value: any)
 	local world = context.world
-	if value == nil or ops.deep_equal(world:get(entity, entry.id), value) then
+	if value == nil or ops.deep_equal(world.get(entity, entry.id), value) then
 		return
 	end
 
-	world:set(entity, entry.id, value)
+	world.set(entity, entry.id, value)
 end
 
 local function snapshot_fields(context: Context, entity: Entity, snapshots: { ComponentEntry })
 	local world = context.world
-	if not world:contains(entity) then
+	if not world.alive(entity) then
 		return
 	end
 

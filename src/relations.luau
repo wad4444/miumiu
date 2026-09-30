@@ -1,8 +1,8 @@
 local types = require("./types")
-local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
 local ops = require("./ops")
+local pepecs = require("./dependencies/pepecs")
 local util = require("./util")
 
 type World = types.World
@@ -32,7 +32,7 @@ local function pack(
 			continue
 		end
 
-		local name = world:get(target, jecs.Name)
+		local name = world.get(target, pepecs.Name)
 		if type(name) ~= "string" then
 			logging.warn_once(
 				warned,
@@ -56,7 +56,7 @@ local function pack(
 			continue
 		end
 
-		local pair_value = if entry.tagged then true else world:get(entity, jecs.pair(entry.id, target))
+		local pair_value = if entry.tagged then true else world.get(entity, pepecs.pair(entry.id, target))
 		if pair_value == nil then
 			continue
 		end
@@ -69,7 +69,7 @@ end
 
 local function prune(world: World, entry: RelationEntry, entity: Entity, targets: { [Entity]: boolean })
 	for target in targets do
-		if not world:has(entity, jecs.pair(entry.id, target)) then
+		if not world.has(entity, pepecs.pair(entry.id, target)) then
 			targets[target] = nil
 		end
 	end
@@ -91,25 +91,25 @@ local function apply(world: World, entry: RelationEntry, entity: Entity, named: 
 			continue
 		end
 
-		local pair = jecs.pair(entry.id, target)
+		local pair = pepecs.pair(entry.id, target)
 		if entry.tagged then
-			if not world:has(entity, pair) then
-				world:add(entity, pair)
+			if not world.has(entity, pair) then
+				world.add(entity, pair)
 			end
-		elseif not ops.deep_equal(world:get(entity, pair), pair_value) then
-			world:set(entity, pair, pair_value)
+		elseif not ops.deep_equal(world.get(entity, pair), pair_value) then
+			world.set(entity, pair, pair_value)
 		end
 	end
 
 	for _, target in util.targets_of(world, entity, entry.id) do
-		local name = world:get(target, jecs.Name)
+		local name = world.get(target, pepecs.Name)
 		if not is_target(entry, target) or type(name) ~= "string" or named[name] ~= target or value[name] ~= nil then
 			continue
 		end
 
-		local pair = jecs.pair(entry.id, target)
-		if entry.tagged or world:get(entity, pair) ~= nil then
-			world:remove(entity, pair)
+		local pair = pepecs.pair(entry.id, target)
+		if entry.tagged or world.get(entity, pair) ~= nil then
+			world.remove(entity, pair)
 		end
 	end
 end

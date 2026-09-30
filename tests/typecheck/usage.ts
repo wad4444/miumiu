@@ -1,4 +1,4 @@
-import { component, type Entity, Exclusive, meta, Name, pair, tag, type World, world as create_world } from "@rbxts/jecs";
+import { component, type Entity, Exclusive, meta, Name, pair, tag, type World, world as create_world } from "@rbxts/pepecs";
 import lapis from "@rbxts/lapis";
 import miumiu, {
 	type ChildConfig,
@@ -146,9 +146,7 @@ export function gift(world: World, user_id: number) {
 }
 
 export function ready(world: World, on_ready: (entity: Entity) => void) {
-	return world.added(miumiu.data_loaded, (entity, id) => {
-		if (id === pair(miumiu.data_loaded, player_data)) on_ready(entity);
-	});
+	return world.added(pair(miumiu.data_loaded, player_data), (entity) => on_ready(entity));
 }
 
 function grant_product(world: World, entity: Entity, product: number): boolean {
@@ -237,9 +235,7 @@ export function failure(world: World, entity: Entity): string | undefined {
 }
 
 export function on_failure(world: World, kick: (entity: Entity, message: string) => void) {
-	return world.added(miumiu.data_error, (entity, id, message) => {
-		if (id === pair(miumiu.data_error, player_data)) kick(entity, message);
-	});
+	return world.added(pair(miumiu.data_error, player_data), (entity, _, message) => kick(entity, message));
 }
 
 export const late_world = create_world();

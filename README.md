@@ -1,6 +1,6 @@
 # miumiu
 
-Persistence for [jecs](https://github.com/Ukendio/jecs) worlds on Roblox, without session
+Persistence for [pepecs](https://github.com/PepeElToro41/pepecs) worlds on Roblox, without session
 locks. A collection is an entity, a save is a relationship, the saved shape of an entity is
 the set of saveable components it carries. Every write to a saveable is an operation; a
 session replays its operations onto the live record and reconciles the merged truth back
@@ -14,7 +14,7 @@ Wally:
 
 ```toml
 [dependencies]
-miumiu = "cheetiedotpy/miumiu@0.2.0"
+miumiu = "cheetiedotpy/miumiu@0.3.0-pepecs.0"
 ```
 
 roblox-ts:
@@ -23,39 +23,39 @@ roblox-ts:
 npm install @rbxts/miumiu
 ```
 
-Both need jecs 0.11.
+Both need pepecs 0.1.
 
 ## Declare
 
 ```luau
-local jecs = require(path.to.jecs)
+local pepecs = require(path.to.pepecs)
 local miumiu = require(path.to.miumiu)
 
-local player_data = jecs.tag()
-jecs.meta(player_data, miumiu.collection, "PlayerData")
-jecs.meta(player_data, miumiu.config, { pull_interval = 15, idle_interval = 60 })
+local player_data = pepecs.tag()
+pepecs.meta(player_data, miumiu.collection, "PlayerData")
+pepecs.meta(player_data, miumiu.config, { pull_interval = 15, idle_interval = 60 })
 
-local money = jecs.component() :: jecs.Entity<number>
-jecs.meta(money, miumiu.saveable, "money")
-jecs.meta(money, jecs.pair(miumiu.field_of, player_data))
-jecs.meta(money, money, 0)
-jecs.meta(money, miumiu.guard, function(value)
+local money = pepecs.component() :: pepecs.Entity<number>
+pepecs.meta(money, miumiu.saveable, "money")
+pepecs.meta(money, pepecs.pair(miumiu.field_of, player_data))
+pepecs.meta(money, money, 0)
+pepecs.meta(money, miumiu.guard, function(value)
 	return type(value) == "number"
 end)
 
-local tutorial_done = jecs.tag()
-jecs.meta(tutorial_done, miumiu.saveable, "tutorial")
-jecs.meta(tutorial_done, jecs.pair(miumiu.field_of, player_data))
+local tutorial_done = pepecs.tag()
+pepecs.meta(tutorial_done, miumiu.saveable, "tutorial")
+pepecs.meta(tutorial_done, pepecs.pair(miumiu.field_of, player_data))
 
-local world = jecs.world()
+local world = pepecs.world()
 ```
 
-Ids come from `jecs.component()` / `jecs.tag()` and are described with `jecs.meta`
-*before* `jecs.world()`: jecs applies that metadata when a world is created and never
+Ids come from `pepecs.component()` / `pepecs.tag()` and are described with `pepecs.meta`
+*before* `pepecs.world()`: pepecs applies that metadata when a world is created and never
 again. Require miumiu before that too, its own ids are named the same way. Ids made with
-`world:component()` after the fact take `world:set(id, miumiu.saveable, "money")`
+`world.component()` after the fact take `world.set(id, miumiu.saveable, "money")`
 instead; every miumiu meta (`config`, `migrations`, `from_foreign`, `snapshot`, ...) may
-be `world:set` the same way, `lazy` and a `field_of` pair `world:add`, `pairs` either,
+be `world.set` the same way, `lazy` and a `field_of` pair `world.add`, `pairs` either,
 any time before the first `step`, `batch`, `delta` or `wipe`. `miumiu.saveable`
 gives a component or tag its stored key, `pair(miumiu.field_of, player_data)` puts it on
 that collection's record; a saveable without a `field_of` pair fails the schema build.
@@ -85,21 +85,21 @@ shipping; the message names the field.
 ## Link
 
 ```luau
-local link = jecs.pair(miumiu.data_link, player_data)
-local entities: { [Player]: jecs.Entity } = {}
+local link = pepecs.pair(miumiu.data_link, player_data)
+local entities: { [Player]: pepecs.Entity } = {}
 
 Players.PlayerAdded:Connect(function(player)
-	local entity = world:entity()
+	local entity = world.entity()
 	entities[player] = entity
-	world:set(entity, link, tostring(player.UserId))
+	world.set(entity, link, tostring(player.UserId))
 end)
 
 Players.PlayerRemoving:Connect(function(player)
 	local entity = entities[player]
 	entities[player] = nil
-	world:remove(entity, link)
+	world.remove(entity, link)
 	miumiu.step(world)
-	world:delete(entity)
+	world.delete(entity)
 end)
 
 RunService.Heartbeat:Connect(function()
@@ -139,13 +139,13 @@ if session then
 		print(closure.kind)
 	end)
 end
-world:remove(entity, link)
+world.remove(entity, link)
 ```
 
 ## Write
 
 ```luau
-world:set(entity, money, 150)
+world.set(entity, money, 150)
 ```
 
 That is a save. It is journaled as an operation and written within `pull_interval`
@@ -190,10 +190,10 @@ should compose with what other servers did go in a delta:
 ```luau
 miumiu.batch(world, function()
 	miumiu.delta(world, function()
-		world:set(buyer, money, world:get(buyer, money) - 100)
-		world:set(seller, money, world:get(seller, money) + 100)
+		world.set(buyer, money, world.get(buyer, money) - 100)
+		world.set(seller, money, world.get(seller, money) + 100)
 	end)
-	world:add(buyer, tutorial_done)
+	world.add(buyer, tutorial_done)
 end)
 ```
 
@@ -205,7 +205,7 @@ background. The returned handle reports it:
 
 ```luau
 local batch = miumiu.batch(world, function()
-	world:set(player, money, 5)
+	world.set(player, money, 5)
 end)
 batch:hook(miumiu.hooks.refused, function(message)
 	warn(message)
@@ -226,7 +226,7 @@ batch: an `await`, a `sync`, `wipe`, `close`, the pull loop, the unlink's final 
 a multi-key batch's commit thread between frames; a `sync` or `wipe` called from a system
 sees them mid-system. After
 the rollback every entity linked to the batch's keys is supplied again from the record,
-so siblings, children and attached trees that saw the group flip back too. Your jecs
+so siblings, children and attached trees that saw the group flip back too. Your pepecs
 listeners fire for every one of those writes, as for any write; only the journal
 ignores them. `miumiu.hook(world, miumiu.hooks.refused, fn(batch, message))` hears
 every refusal on the world after the batch's own hooks, one place to tell a player, and
@@ -243,16 +243,16 @@ inside the function.
 Entities related to the player can be part of the record. Declare the kind on its tag:
 
 ```luau
-local owner_link = jecs.tag()
-jecs.meta(owner_link, jecs.Exclusive)
+local owner_link = pepecs.tag()
+pepecs.meta(owner_link, pepecs.Exclusive)
 
-local tool = jecs.tag()
-jecs.meta(tool, miumiu.child, { via = owner_link, key = "inventory", mode = "owned" })
-jecs.meta(tool, jecs.pair(miumiu.field_of, player_data))
+local tool = pepecs.tag()
+pepecs.meta(tool, miumiu.child, { via = owner_link, key = "inventory", mode = "owned" })
+pepecs.meta(tool, pepecs.pair(miumiu.field_of, player_data))
 
-local part_id = jecs.component() :: jecs.Entity<string>
-jecs.meta(part_id, miumiu.saveable, "part_id")
-jecs.meta(part_id, jecs.pair(miumiu.field_of, tool))
+local part_id = pepecs.component() :: pepecs.Entity<string>
+pepecs.meta(part_id, miumiu.saveable, "part_id")
+pepecs.meta(part_id, pepecs.pair(miumiu.field_of, tool))
 ```
 
 The kind tag is the persistence marker: give it only to entities that belong in the
@@ -261,9 +261,9 @@ own. Any entity with `tool` and `pair(owner_link, player)` is stored under `inve
 by an id the library mints into `miumiu.child_id`, with the saveables that are
 `field_of` the kind. A saveable lives exactly where its `field_of` pairs point, so
 `money` on both the player and its tools is `pair(field_of, player_data)` plus
-`pair(field_of, tool)`. Kinds scope the same way: `jecs.meta(tool,
-jecs.pair(miumiu.field_of, player_data))` puts tools on the player's record and
-`jecs.meta(part, jecs.pair(miumiu.field_of, tool))` nests parts under tools only. A
+`pair(field_of, tool)`. Kinds scope the same way: `pepecs.meta(tool,
+pepecs.pair(miumiu.field_of, player_data))` puts tools on the player's record and
+`pepecs.meta(part, pepecs.pair(miumiu.field_of, tool))` nests parts under tools only. A
 saveable or kind with no pair fails the schema build. The relation must be
 `Exclusive`, and an entity is a child under one relation at a time. Write to it like any
 entity; it lands in the player's record. Remove the pair or delete the entity and it
@@ -283,7 +283,7 @@ the saveables that are `field_of` the kind decide what they store.
 Values that only make sense at write time are snapshots:
 
 ```luau
-jecs.meta(last_seen, miumiu.snapshot, function(world, entity)
+pepecs.meta(last_seen, miumiu.snapshot, function(world, entity)
 	return os.time()
 end)
 ```
@@ -293,20 +293,17 @@ start" to its stored value compounds on every write. Keep the base in a non-save
 component and compute from that. Declared before the world:
 
 ```luau
-jecs.meta(total_playtime, miumiu.snapshot, function(world, entity)
-	return world:get(entity, playtime_base) + os.time() - world:get(entity, session_start)
+pepecs.meta(total_playtime, miumiu.snapshot, function(world, entity)
+	return world.get(entity, playtime_base) + os.time() - world.get(entity, session_start)
 end)
 ```
 
 At runtime, once the record is on the entity:
 
 ```luau
-local loaded = jecs.pair(miumiu.data_loaded, player_data)
-world:added(miumiu.data_loaded, function(entity, id)
-	if id == loaded then
-		world:set(entity, playtime_base, world:get(entity, total_playtime) or 0)
-		world:set(entity, session_start, os.time())
-	end
+world.added(pepecs.pair(miumiu.data_loaded, player_data), function(entity)
+	world.set(entity, playtime_base, world.get(entity, total_playtime) or 0)
+	world.set(entity, session_start, os.time())
 end)
 ```
 
@@ -316,23 +313,23 @@ Pairs on an entity can be saved too. Name the relation and mark it `pairs`, befo
 world like every other declaration:
 
 ```luau
-local has_buff = jecs.tag()
-jecs.meta(has_buff, miumiu.saveable, "buffs")
-jecs.meta(has_buff, jecs.pair(miumiu.field_of, player_data))
-jecs.meta(has_buff, miumiu.pairs)
+local has_buff = pepecs.tag()
+pepecs.meta(has_buff, miumiu.saveable, "buffs")
+pepecs.meta(has_buff, pepecs.pair(miumiu.field_of, player_data))
+pepecs.meta(has_buff, miumiu.pairs)
 
-local fire = jecs.tag()
-jecs.meta(fire, jecs.Name, "fire")
+local fire = pepecs.tag()
+pepecs.meta(fire, pepecs.Name, "fire")
 ```
 
 Then a pair is a save:
 
 ```luau
-world:add(player, jecs.pair(has_buff, fire))
+world.add(player, pepecs.pair(has_buff, fire))
 ```
 
 The record holds `buffs = { fire = true }`: a dictionary keyed by each target's
-`jecs.Name`, `true` for a tag relation or the pair's value for a component one. A
+`pepecs.Name`, `true` for a tag relation or the pair's value for a component one. A
 target's name is a stored key, like a saveable's: keep it unique and never rename it
 once shipped (a renamed target orphans its stored pairs, recoverable through
 `context.stored` in a migration). A target without a name, or whose name another
@@ -343,20 +340,20 @@ snapshot, lazy or `delta`. Scope the relation with `field_of` like any saveable.
 A component relation stores the pair's value. A timed buff:
 
 ```luau
-local buff = jecs.component() :: jecs.Entity<{ multiplier: number, expires_at: number }>
-jecs.meta(buff, miumiu.saveable, "buffs")
-jecs.meta(buff, jecs.pair(miumiu.field_of, player_data))
-jecs.meta(buff, miumiu.pairs, { targets = { oil_buff, cell_buff } })
+local buff = pepecs.component() :: pepecs.Entity<{ multiplier: number, expires_at: number }>
+pepecs.meta(buff, miumiu.saveable, "buffs")
+pepecs.meta(buff, pepecs.pair(miumiu.field_of, player_data))
+pepecs.meta(buff, miumiu.pairs, { targets = { oil_buff, cell_buff } })
 ```
 
 Applying one, and the expiry loop:
 
 ```luau
-world:set(golem, jecs.pair(buff, oil_buff), { multiplier = 2, expires_at = os.time() + 300 })
+world.set(golem, pepecs.pair(buff, oil_buff), { multiplier = 2, expires_at = os.time() + 300 })
 
-for golem, applied in world:query(jecs.pair(buff, oil_buff)) do
+for golem, applied in world.query(pepecs.pair(buff, oil_buff)) do
 	if applied.expires_at <= os.time() then
-		world:remove(golem, jecs.pair(buff, oil_buff))
+		world.remove(golem, pepecs.pair(buff, oil_buff))
 	end
 end
 ```
@@ -365,7 +362,7 @@ end
 server-side effect. Each removal journals the whole dictionary again, and a buff that
 expired while the record sat in storage is supplied at load and removed by the next
 tick, one write. A buff with more state than a value (a source item, a stack count that
-changes) is better as an owned child with `destroyed_at`; its `world:delete` is the
+changes) is better as an owned child with `destroyed_at`; its `world.delete` is the
 `drop`.
 
 ## Moving items between records
@@ -374,28 +371,28 @@ Re-parenting a child (a gift between two online players, a part moving from a to
 a golem) is a `drop` on one record and a `put` on the other. Wrap it in `batch` so both
 land or neither; two different keys go through the commit store. When the new parent
 sits on a different relation, remove the old pair and kind tag before adding the new
-ones: an entity is a child under one relation at a time and the second `world:add`
+ones: an entity is a child under one relation at a time and the second `world.add`
 throws.
 
 ```luau
 miumiu.batch(world, function()
-	world:remove(part, jecs.pair(owner_link, player))
-	world:remove(part, tool)
-	world:add(part, part_kind)
-	world:add(part, jecs.pair(part_link, golem))
+	world.remove(part, pepecs.pair(owner_link, player))
+	world.remove(part, tool)
+	world.add(part, part_kind)
+	world.add(part, pepecs.pair(part_link, golem))
 end)
 ```
 
-A gift between two online players is one `world:add` (the `Exclusive` relation drops the
+A gift between two online players is one `world.add` (the `Exclusive` relation drops the
 old pair) over two keys. The record is the batch's to undo; bookkeeping outside the
 record (a hotbar slot, an equipped flag) is yours to put back in the `refused` hook:
 
 ```luau
 local batch = miumiu.batch(world, function()
-	world:add(tool, jecs.pair(owner_link, receiver))
+	world.add(tool, pepecs.pair(owner_link, receiver))
 end)
 batch:hook(miumiu.hooks.refused, function(message)
-	world:set(tool, hotbar_slot, previous_slot)
+	world.set(tool, hotbar_slot, previous_slot)
 	notify(giver, message)
 end)
 ```
@@ -407,9 +404,9 @@ Mark it lazy: writes land on the entity as usual, and the library reads the valu
 per write cycle.
 
 ```luau
-jecs.meta(battery, miumiu.saveable, "battery")
-jecs.meta(battery, jecs.pair(miumiu.field_of, player_data))
-jecs.meta(battery, miumiu.lazy)
+pepecs.meta(battery, miumiu.saveable, "battery")
+pepecs.meta(battery, pepecs.pair(miumiu.field_of, player_data))
+pepecs.meta(battery, miumiu.lazy)
 ```
 
 A lazy write still counts as unwritten, so the session writes on its next interval;
@@ -421,23 +418,23 @@ like any other; `delta` throws on it, since a value read at write time has no de
 
 An ordered store ranks one root field in an `OrderedDataStore`, kept current by the
 sessions that write the record. Declare it on an entity of its own, scoped to the
-collection like a saveable; its `jecs.Name` is the store's name:
+collection like a saveable; its `pepecs.Name` is the store's name:
 
 ```luau
-local coins_this_week = jecs.component() :: jecs.Entity<number>
-jecs.meta(coins_this_week, miumiu.saveable, "coins_this_week")
-jecs.meta(coins_this_week, jecs.pair(miumiu.field_of, player_data))
-jecs.meta(coins_this_week, coins_this_week, 0)
+local coins_this_week = pepecs.component() :: pepecs.Entity<number>
+pepecs.meta(coins_this_week, miumiu.saveable, "coins_this_week")
+pepecs.meta(coins_this_week, pepecs.pair(miumiu.field_of, player_data))
+pepecs.meta(coins_this_week, coins_this_week, 0)
 
-local weekly_coins = jecs.tag()
-jecs.meta(weekly_coins, jecs.Name, "weekly_coins")
-jecs.meta(weekly_coins, jecs.pair(miumiu.field_of, player_data))
-jecs.meta(weekly_coins, miumiu.ordered, {
+local weekly_coins = pepecs.tag()
+pepecs.meta(weekly_coins, pepecs.Name, "weekly_coins")
+pepecs.meta(weekly_coins, pepecs.pair(miumiu.field_of, player_data))
+pepecs.meta(weekly_coins, miumiu.ordered, {
 	component = coins_this_week,
 	period = { length = 7 * 86400, epoch = 345600 },
 	period_threshold = 10,
 	on_period_change = function(world, entity, value, place, period)
-		world:set(entity, money, world:get(entity, money) + 1000 * (11 - place))
+		world.set(entity, money, world.get(entity, money) + 1000 * (11 - place))
 	end,
 })
 ```
@@ -481,27 +478,27 @@ There is no separate API for a player who is offline or on another server. Any k
 be linked from anywhere, so a gift is a link, a write, an unlink:
 
 ```luau
-local loaded = jecs.pair(miumiu.data_loaded, player_data)
-local shallow = jecs.pair(miumiu.data_shallow, player_data)
-local pending_gifts: { [jecs.Entity]: number } = {}
+local loaded = pepecs.pair(miumiu.data_loaded, player_data)
+local shallow = pepecs.pair(miumiu.data_shallow, player_data)
+local pending_gifts: { [pepecs.Entity]: number } = {}
 
-world:added(miumiu.data_loaded, function(entity, id)
+world.added(loaded, function(entity)
 	local amount = pending_gifts[entity]
-	if id ~= loaded or amount == nil then
+	if amount == nil then
 		return
 	end
 	pending_gifts[entity] = nil
 	miumiu.delta(world, function()
-		world:set(entity, money, world:get(entity, money) + amount)
+		world.set(entity, money, world.get(entity, money) + amount)
 	end)
-	world:remove(entity, link)
+	world.remove(entity, link)
 end)
 
 local function gift(user_id: number, amount: number)
-	local target = world:entity()
+	local target = world.entity()
 	pending_gifts[target] = amount
-	world:add(target, shallow)
-	world:set(target, link, tostring(user_id))
+	world.add(target, shallow)
+	world.set(target, link, tostring(user_id))
 end
 ```
 
@@ -512,11 +509,12 @@ again at unlink; adding the pair after the load changes nothing. With
 `idle_interval = math.huge` the other server never sees the gift until its own next
 write.
 
-jecs hooks are keyed by the relation, so listen on `miumiu.data_loaded` and compare `id`
-with the pair; `world:added(pair(...))` does not fire.
+A pepecs hook on a relation hears only the pairs it names: hook the pair itself, as
+above, or `pair(miumiu.data_loaded, pepecs.Wildcard)` to hear every collection; a hook on
+bare `miumiu.data_loaded` never fires.
 
 `delta` journals `add money amount`, which composes with what the player's own server
-writes as long as that server also writes money through `delta`. A plain `world:set`
+writes as long as that server also writes money through `delta`. A plain `world.set`
 there replaces the whole value and would overwrite a gift that landed in the same
 window, so write shared currencies through `delta` everywhere. The hook runs inside
 `step`, which is fine: `delta` does not yield, and the unlink's final write carries the
@@ -526,8 +524,8 @@ one of them elsewhere, is a `batch` over two linked entities:
 ```luau
 miumiu.batch(world, function()
 	miumiu.delta(world, function()
-		world:set(sender, money, world:get(sender, money) - amount)
-		world:set(receiver, money, world:get(receiver, money) + amount)
+		world.set(sender, money, world.get(sender, money) - amount)
+		world.set(receiver, money, world.get(receiver, money) + amount)
 	end)
 end)
 ```
@@ -550,7 +548,7 @@ local function process_receipt(receipt): Enum.ProductPurchaseDecision
 	if not entity or not miumiu.get_session(world, player_data, tostring(receipt.PlayerId)) then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
-	if world:get(entity, processed_receipts)[receipt.PurchaseId] then
+	if world.get(entity, processed_receipts)[receipt.PurchaseId] then
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
 	if not can_grant(entity, receipt.ProductId) then
@@ -559,9 +557,9 @@ local function process_receipt(receipt): Enum.ProductPurchaseDecision
 	local outcome = miumiu.batch(world, function()
 		grant(entity, receipt.ProductId)
 		miumiu.delta(world, function()
-			local processed = table.clone(world:get(entity, processed_receipts))
+			local processed = table.clone(world.get(entity, processed_receipts))
 			processed[receipt.PurchaseId] = os.time()
-			world:set(entity, processed_receipts, processed)
+			world.set(entity, processed_receipts, processed)
 		end)
 	end):await()
 	if outcome.kind == "refused" then
@@ -581,10 +579,10 @@ do not run and a stored value arrives as-is:
 ```luau
 function(world, entity)
 	local processed = {}
-	for _, id in world:get(entity, processed_receipts) or {} do
+	for _, id in world.get(entity, processed_receipts) or {} do
 		processed[id] = os.time()
 	end
-	world:set(entity, processed_receipts, processed)
+	world.set(entity, processed_receipts, processed)
 end
 ```
 
@@ -612,7 +610,7 @@ entities are already detached); a receipt that arrives after that sees `refused`
 
 A newer server can take a key this server holds (a rolling deploy): the entity loses
 `data_loaded`, gets `pair(data_error, c)` and its writes stop saving. Hook
-`world:added(miumiu.data_error, ...)` and kick the player with the message. The same
+`world.added(pepecs.pair(miumiu.data_error, player_data), ...)` and kick the player with the message. The same
 pair also carries a load failure; there, remove and re-set the link to retry.
 
 ## Wipe
@@ -631,11 +629,11 @@ outside (`RemoveAsync`) is adopted as empty on the next read.
 ## Migrate
 
 ```luau
-jecs.meta(player_data, miumiu.migrations, {
+pepecs.meta(player_data, miumiu.migrations, {
 	function(world, entity, context)
 		local old = context.legacy("luck_boosts")
-		world:set(entity, boosts, convert(world:get(entity, old)))
-		world:remove(entity, old)
+		world.set(entity, boosts, convert(world.get(entity, old)))
+		world.remove(entity, old)
 	end,
 })
 ```
@@ -644,7 +642,7 @@ Append-only. Each migration runs once per key, in a scratch world, on a template
 `context.stored` is the record as it was read, a frozen deep copy, for the shapes
 `legacy` cannot express.
 
-Importing from lapis: `jecs.meta(player_data, miumiu.from_foreign, { type = "lapis",
+Importing from lapis: `pepecs.meta(player_data, miumiu.from_foreign, { type = "lapis",
 name = "OldStore", source = lapis, options = lapis_options })`. The foreign store's name
 must differ from the collection's own, so the miumiu collection gets a new store and
 reads each key from the old one once. Rolling out: lapis `read` bypasses its session
@@ -661,13 +659,13 @@ per kind key when none does):
 ```luau
 function(world, entity, context)
 	local old = context.legacy("inventory")
-	for _, item in world:get(entity, old) do
-		local tool = world:entity()
-		world:add(tool, tool_kind)
-		world:set(tool, part_id, item.part_id)
-		world:add(tool, jecs.pair(owner_link, entity))
+	for _, item in world.get(entity, old) do
+		local tool = world.entity()
+		world.add(tool, tool_kind)
+		world.set(tool, part_id, item.part_id)
+		world.add(tool, pepecs.pair(owner_link, entity))
 	end
-	world:remove(entity, old)
+	world.remove(entity, old)
 end
 ```
 
@@ -677,18 +675,18 @@ tool entity owning part entities, and the tool's own fields move onto it:
 ```luau
 function(world, entity, context)
 	for _, item in context.stored.inventory do
-		local tool = world:entity()
-		world:add(tool, tool_kind)
-		world:set(tool, part_id, item.part_id)
-		world:add(tool, jecs.pair(owner_link, entity))
+		local tool = world.entity()
+		world.add(tool, tool_kind)
+		world.set(tool, part_id, item.part_id)
+		world.add(tool, pepecs.pair(owner_link, entity))
 		for _, stored_part in item.parts or {} do
-			local part = world:entity()
-			world:add(part, part_kind)
-			world:set(part, part_id, stored_part.kind)
-			world:add(part, jecs.pair(part_link, tool))
+			local part = world.entity()
+			world.add(part, part_kind)
+			world.set(part, part_id, stored_part.kind)
+			world.add(part, pepecs.pair(part_link, tool))
 		end
 	end
-	world:remove(entity, context.legacy("inventory"))
+	world.remove(entity, context.legacy("inventory"))
 end
 ```
 
@@ -701,16 +699,16 @@ warning until a migration reshapes it; attached ids are strings in the record:
 ```luau
 function(world, entity, context)
 	for id, stored in context.stored.containers or {} do
-		local plot = world:entity()
-		world:add(plot, container)
-		world:set(plot, container_id, id)
-		world:add(plot, jecs.pair(holds, entity))
+		local plot = world.entity()
+		world.add(plot, container)
+		world.set(plot, container_id, id)
+		world.add(plot, pepecs.pair(holds, entity))
 		for index, rarity in stored.zones or {} do
-			local zone = world:entity()
-			world:add(zone, zone_kind)
-			world:set(zone, zone_index, tonumber(index))
-			world:set(zone, crystal_rarity, rarity)
-			world:add(zone, jecs.pair(container_link, plot))
+			local zone = world.entity()
+			world.add(zone, zone_kind)
+			world.set(zone, zone_index, tonumber(index))
+			world.set(zone, crystal_rarity, rarity)
+			world.add(zone, pepecs.pair(container_link, plot))
 		end
 	end
 end
@@ -719,7 +717,7 @@ end
 ## roblox-ts
 
 ```ts
-import { component, meta, pair, tag, world as create_world } from "@rbxts/jecs";
+import { component, meta, pair, tag, world as create_world } from "@rbxts/pepecs";
 import miumiu from "@rbxts/miumiu";
 
 const player_data = tag();
@@ -766,7 +764,7 @@ the repository is a complete fixture built that way.
 rejections on stored values, failed writes that are being retried, a final write refused
 by a newer server or given up by `close` and the changes it lost, a write on an entity
 that does not hold the saveable, a pair on an unnamed or ambiguously named target, two
-entities sharing a `jecs.Name`, a stored name nobody carries, a child group the record
+entities sharing a `pepecs.Name`, a stored name nobody carries, a child group the record
 holds as an array, a snapshot that threw, and, for ordered stores, a `map` or `period`
 function that failed, a push or a ranking read being retried, an `on_period_change` that
 threw and a key that could not be unranked. A warning about a shape the game keeps

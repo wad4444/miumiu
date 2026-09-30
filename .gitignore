@@ -7,3 +7,4 @@
 *.rbxlx
 /node_modules
 *.tgz
+!local/*.tgz

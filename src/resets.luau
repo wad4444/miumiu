@@ -2,9 +2,9 @@ local types = require("./types")
 local batch = require("./batch")
 local capture = require("./capture")
 local ids = require("./ids")
-local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
+local pepecs = require("./dependencies/pepecs")
 local rankings = require("./rankings")
 local state = require("./state")
 
@@ -16,9 +16,10 @@ type Placing = types.Placing
 type SessionInternal = types.SessionInternal
 
 local function receiver_of(context: Context, link_state: LinkState): Entity?
-	local shallow = jecs.pair(ids.data_shallow, link_state.collection)
+	local shallow = pepecs.pair(ids.data_shallow, link_state.collection)
+	local world = context.world
 	for entity in link_state.entities do
-		if not context.world:has(entity, shallow) then
+		if world.alive(entity) and not world.has(entity, shallow) then
 			return entity
 		end
 	end

@@ -7,12 +7,12 @@ local contexts = require("./contexts")
 local handle = require("./handle")
 local hooks = require("./hooks")
 local ids = require("./ids")
-local jecs = require("./dependencies/jecs")
 local link = require("./link")
 local listeners = require("./listeners")
 local logging = require("./logging")
 local messages = require("./messages")
 local ops = require("./ops")
+local pepecs = require("./dependencies/pepecs")
 local reconcile = require("./reconcile")
 local relations = require("./relations")
 local state = require("./state")
@@ -36,7 +36,7 @@ type Undo = types.Undo
 local function is_still_ours(context: Context, undo: Undo): boolean
 	local world = context.world
 	if undo.kind == "component" then
-		return world:get(undo.entity, undo.entry.id) == undo.value
+		return world.get(undo.entity, undo.entry.id) == undo.value
 	end
 
 	if undo.kind == "relation" then
@@ -53,7 +53,7 @@ local function is_still_ours(context: Context, undo: Undo): boolean
 		return false
 	end
 
-	return world:has(undo.entity, undo.id) ~= undo.present
+	return world.has(undo.entity, undo.id) ~= undo.present
 end
 
 local function is_carried(undo: Undo): boolean
@@ -69,22 +69,22 @@ local function undo_one(context: Context, undo: Undo, carried: boolean)
 	if undo.kind == "pair" then
 		local kind = undo.child
 		if undo.present then
-			if not world:contains(undo.parent) then
+			if not world.alive(undo.parent) then
 				return
 			end
 			local id_component = if kind.mode == "owned" then ids.child_id else kind.id
-			if undo.stored_id ~= nil and not world:has(undo.entity, id_component) then
-				world:set(undo.entity, id_component, undo.stored_id)
+			if undo.stored_id ~= nil and not world.has(undo.entity, id_component) then
+				world.set(undo.entity, id_component, undo.stored_id)
 			end
-			world:add(undo.entity, kind.tag)
-			world:add(undo.entity, jecs.pair(kind.via, undo.parent))
+			world.add(undo.entity, kind.tag)
+			world.add(undo.entity, pepecs.pair(kind.via, undo.parent))
 			if kind.mode == "attached" then
 				claims.supply_claimed(context, undo.entity, kind)
 			end
 			return
 		end
 
-		world:remove(undo.entity, undo.id)
+		world.remove(undo.entity, undo.id)
 		if kind.mode == "attached" then
 			reconcile.reset_child(context, undo.entity, kind)
 		end
@@ -94,9 +94,9 @@ local function undo_one(context: Context, undo: Undo, carried: boolean)
 
 	if undo.kind == "mark" then
 		if undo.present then
-			world:add(undo.entity, undo.id)
+			world.add(undo.entity, undo.id)
 		else
-			world:remove(undo.entity, undo.id)
+			world.remove(undo.entity, undo.id)
 		end
 
 		return
@@ -119,9 +119,9 @@ local function undo_one(context: Context, undo: Undo, carried: boolean)
 
 	if undo.kind == "tag" then
 		if undo.present then
-			world:add(undo.entity, undo.id)
+			world.add(undo.entity, undo.id)
 		else
-			world:remove(undo.entity, undo.id)
+			world.remove(undo.entity, undo.id)
 		end
 
 		return
@@ -166,7 +166,7 @@ local function undo_all(context: Context, captured: Capture, touched: Touched)
 	local first_error: any = nil
 	for index = #captured.undo, 1, -1 do
 		local undo = captured.undo[index]
-		if not world:contains(undo.entity) then
+		if not world.alive(undo.entity) then
 			continue
 		end
 

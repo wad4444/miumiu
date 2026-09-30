@@ -1,13 +1,13 @@
 {
 	"name": "@rbxts/miumiu",
-	"version": "0.2.0",
-	"description": "ECS-first data store for jecs: collections are entities, saves are relationships, saveable components are the schema",
+	"version": "0.3.0-pepecs.0",
+	"description": "ECS-first data store for pepecs: collections are entities, saves are relationships, saveable components are the schema",
 	"main": "src/init.luau",
 	"types": "src/index.d.ts",
 	"scripts": {
 		"typecheck": "tsc --noEmit --skipLibCheck"
 	},
-	"keywords": ["roblox", "roblox-ts", "datastore", "ecs", "jecs"],
+	"keywords": ["roblox", "roblox-ts", "datastore", "ecs", "pepecs"],
 	"author": "wad4444",
 	"license": "MIT",
 	"files": ["CHANGELOG.md", "DESIGN.md", "src", "default.project.json", "!src/**/*.spec.luau"],
@@ -19,12 +19,12 @@
 		"access": "public"
 	},
 	"peerDependencies": {
-		"@rbxts/jecs": "^0.11.0"
+		"@rbxts/pepecs": "^0.1.0"
 	},
 	"devDependencies": {
 		"@rbxts/compiler-types": "^3.0.0-types.0",
-		"@rbxts/jecs": "^0.11.0",
 		"@rbxts/lapis": "^0.3.8",
+		"@rbxts/pepecs": "file:local/rbxts-pepecs-0.1.0.tgz",
 		"@rbxts/types": "^1.0.911",
 		"typescript": "^5.5.3"
 	}

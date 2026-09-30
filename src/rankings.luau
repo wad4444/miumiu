@@ -2,10 +2,10 @@ local types = require("./types")
 local codec = require("./codec")
 local datastore = require("./datastore")
 local ids = require("./ids")
-local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
 local ops = require("./ops")
+local pepecs = require("./dependencies/pepecs")
 local util = require("./util")
 
 type World = types.World
@@ -186,7 +186,7 @@ local function create_store(
 ): OrderedStore
 	local described = util.describe(world, entity)
 	local reasons = messages.reasons
-	local config: any = world:get(entity, ids.ordered)
+	local config: any = world.get(entity, ids.ordered)
 	if type(config) ~= "table" then
 		error(messages.errors.ordered_config_invalid(described, reasons.ordered_not_table), 0)
 	end
@@ -197,7 +197,7 @@ local function create_store(
 		end
 	end
 
-	local name = world:get(entity, jecs.Name)
+	local name = world.get(entity, pepecs.Name)
 	if type(name) ~= "string" or #name == 0 or #name > name_limit or string.find(name, "/", 1, true) then
 		error(messages.errors.ordered_unnamed(described, name_limit), 0)
 	end

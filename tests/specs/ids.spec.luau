@@ -1,8 +1,8 @@
 return function()
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-	local jecs = require(ReplicatedStorage.Packages.jecs)
 	local miumiu = require(ReplicatedStorage.Packages.miumiu)
+	local pepecs = require(ReplicatedStorage.Packages.pepecs)
 
 	local components = {
 		"collection",
@@ -20,8 +20,8 @@ return function()
 	}
 	local tags = { "field_of", "lazy", "data_loading", "data_loaded", "data_shallow" }
 
-	local player_data = jecs.tag()
-	jecs.meta(player_data, miumiu.config, { pull_interval = 15 })
+	local player_data = pepecs.tag()
+	pepecs.meta(player_data, miumiu.config, { pull_interval = 15 })
 
 	local function id_of(name: string): any
 		return miumiu[name]
@@ -41,28 +41,28 @@ return function()
 		end)
 
 		it("preregister into a new world", function()
-			local world = jecs.world()
+			local world = pepecs.world()
 			for _, name in components do
-				expect(world:has(id_of(name), jecs.Component)).to.equal(true)
+				expect(world.is_component(id_of(name))).to.equal(true)
 			end
 			for _, name in tags do
-				expect(jecs.is_tag(world, id_of(name))).to.equal(true)
+				expect(world.is_tag(id_of(name))).to.equal(true)
 			end
 		end)
 
 		it("carry a namespaced name", function()
-			local world = jecs.world()
+			local world = pepecs.world()
 			for _, name in components do
-				expect(world:get(id_of(name), jecs.Name)).to.equal(`miumiu.{name}`)
+				expect(world.get(id_of(name), pepecs.Name)).to.equal(`miumiu.{name}`)
 			end
 			for _, name in tags do
-				expect(world:get(id_of(name), jecs.Name)).to.equal(`miumiu.{name}`)
+				expect(world.get(id_of(name), pepecs.Name)).to.equal(`miumiu.{name}`)
 			end
 		end)
 
 		it("carry meta declared before the world existed", function()
-			local world = jecs.world()
-			expect(world:get(player_data, miumiu.config).pull_interval).to.equal(15)
+			local world = pepecs.world()
+			expect(world.get(player_data, miumiu.config).pull_interval).to.equal(15)
 		end)
 
 		it("name their hook symbols", function()

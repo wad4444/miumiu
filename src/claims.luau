@@ -2,10 +2,10 @@ local types = require("./types")
 local capture = require("./capture")
 local children = require("./children")
 local ids = require("./ids")
-local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
 local ops = require("./ops")
+local pepecs = require("./dependencies/pepecs")
 local reconcile = require("./reconcile")
 local recorder = require("./recorder")
 local state = require("./state")
@@ -84,7 +84,7 @@ end
 
 local function is_shallow_root(context: Context, root: Entity, kind: ChildKind): boolean
 	for collection in context.world_state.links[root] do
-		if kind.holders[collection] and context.world:has(root, jecs.pair(ids.data_shallow, collection)) then
+		if kind.holders[collection] and context.world.has(root, pepecs.pair(ids.data_shallow, collection)) then
 			return true
 		end
 	end
@@ -137,10 +137,10 @@ end
 
 local function stored_id_of(context: Context, entity: Entity, kind: ChildKind): any
 	if kind.mode == "owned" then
-		return context.world:get(entity, ids.child_id)
+		return context.world.get(entity, ids.child_id)
 	end
 
-	return context.world:get(entity, kind.id)
+	return context.world.get(entity, kind.id)
 end
 
 local function mark_dropped(context: Context, entity: Entity)
@@ -162,13 +162,34 @@ local function is_unlinking_root(context: Context, root: Entity): boolean
 	local unlinking = false
 	local links: { [Entity]: string } = context.world_state.links[root] or {}
 	for collection in links do
-		if context.world:has(root, jecs.pair(ids.data_link, collection)) then
+		if context.world.has(root, pepecs.pair(ids.data_link, collection)) then
 			return false
 		end
 		unlinking = true
 	end
 
 	return unlinking
+end
+
+local function is_leaving(context: Context, parent: Entity): boolean
+	local world = context.world
+	if context.world_state.deleting[parent] then
+		return true
+	end
+
+	if not world.deleting(parent) then
+		return false
+	end
+
+	if
+		world.has(parent, pepecs.pair(ids.data_link, pepecs.Wildcard))
+		or world.has(parent, pepecs.pair(ids.data_loaded, pepecs.Wildcard))
+	then
+		return true
+	end
+
+	local kind = children.kind_of(world, context.schema.kinds, parent)
+	return kind ~= nil and world.target(parent, kind.via, 0) ~= nil
 end
 
 local function is_holder_phase(context: Context, ancestry: Ancestry, phase: string): boolean
@@ -241,7 +262,7 @@ end
 local function on_detached(context: Context, write: RelationWrite)
 	local world_state = context.world_state
 	local index = world_state.children
-	local pair = jecs.pair(write.child.via, write.parent)
+	local pair = pepecs.pair(write.child.via, write.parent)
 	local previous = children.child_of(index, write.entity)
 	if previous and (previous.kind ~= write.child or previous.parent ~= write.parent) then
 		return
@@ -253,7 +274,8 @@ local function on_detached(context: Context, write: RelationWrite)
 		capture.flush_lazy(context, write.entity, write.child.entries)
 	end
 
-	if ancestry and world_state.pending_puts[write.entity] and world_state.deleting[write.parent] then
+	local leaving = is_leaving(context, write.parent)
+	if ancestry and world_state.pending_puts[write.entity] and leaving then
 		stash_put(context, ancestry, capture.child_put(context, ancestry))
 	end
 
@@ -269,7 +291,6 @@ local function on_detached(context: Context, write: RelationWrite)
 		return
 	end
 
-	local leaving = world_state.deleting[write.parent]
 	if write.child.mode == "attached" then
 		local held = (previous ~= nil and leaving)
 			or (ancestry ~= nil and #capture.ancestry_sessions(context, ancestry) > 0)
@@ -319,7 +340,7 @@ end
 local function validate_kind(context: Context, write: RelationWrite)
 	local world, world_state = context.world, context.world_state
 	for _, other in context.schema.kinds_by_relation[write.child.via] do
-		if other ~= write.child and world:has(write.entity, other.tag) then
+		if other ~= write.child and world.has(write.entity, other.tag) then
 			capture.undo_trigger(context, write)
 			error(
 				messages.errors.child_kinds_ambiguous(
@@ -349,7 +370,7 @@ end
 local function on_attached(context: Context, write: RelationWrite)
 	local world_state = context.world_state
 	local index = world_state.children
-	local pair = jecs.pair(write.child.via, write.parent)
+	local pair = pepecs.pair(write.child.via, write.parent)
 	local applying = state.is_applying(world_state, write.entity, pair)
 
 	validate_kind(context, write)
@@ -465,8 +486,8 @@ local function collect_existing(context: Context): { ExistingChild }
 	local world = context.world
 	local found: { ExistingChild } = {}
 	for _, kind in context.schema.kinds do
-		for entity in world:each(kind.tag) do
-			local parent = world:target(entity, kind.via, 0)
+		for entity in world.each(kind.tag) do
+			local parent = world.target(entity, kind.via, 0)
 			if parent then
 				table.insert(found, { kind = kind, entity = entity, parent = parent })
 			end

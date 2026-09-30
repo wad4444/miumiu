@@ -1,6 +1,6 @@
 local types = require("./types")
-local jecs = require("./dependencies/jecs")
 local messages = require("./messages")
+local pepecs = require("./dependencies/pepecs")
 
 type World = types.World
 type Entity<T = nil> = types.Entity<T>
@@ -8,7 +8,7 @@ type ErrorGuard = types.ErrorGuard
 type SyncKind = types.SyncKind
 
 local function describe(world: World, entity: Entity): string
-	local name = world:get(entity, jecs.Name)
+	local name = if world.alive(entity) then world.get(entity, pepecs.Name) else nil
 	return if name then `"{name}"` else tostring(entity)
 end
 
@@ -16,7 +16,7 @@ local function targets_of(world: World, entity: Entity, relation: Entity<any>): 
 	local targets: { Entity } = {}
 	local index = 0
 	while true do
-		local target = world:target(entity, relation, index)
+		local target = world.target(entity, relation, index)
 		if target == nil then
 			return targets
 		end

@@ -100,21 +100,21 @@ end
 
 local function resolve_config(world: World, collection: Entity): ResolvedCollectionConfig
 	local described = util.describe(world, collection)
-	if not world:has(collection, ids.collection) then
+	if not world.alive(collection) or not world.has(collection, ids.collection) then
 		error(messages.errors.not_a_collection(described), 0)
 	end
 
-	local name = world:get(collection, ids.collection)
+	local name = world.get(collection, ids.collection)
 	if type(name) ~= "string" or #name == 0 then
 		error(messages.errors.collection_unnamed(described), 0)
 	end
 
-	local given: CollectionConfig = world:get(collection, ids.config) or {}
+	local given: CollectionConfig = world.get(collection, ids.config) or {}
 	if type(given) ~= "table" then
 		error(messages.errors.config_not_table(described), 0)
 	end
 
-	local source: ForeignSource? = world:get(collection, ids.from_foreign)
+	local source: ForeignSource? = world.get(collection, ids.from_foreign)
 	if source then
 		validate_foreign(described, name, source)
 	end
@@ -129,7 +129,7 @@ local function resolve_config(world: World, collection: Entity): ResolvedCollect
 		retry_base = given.retry_base or defaults.retry_base,
 		commit_store = given.commit_store or defaults.commit_store,
 		commit_timeout = given.commit_timeout or defaults.commit_timeout,
-		migrations = table.freeze(table.clone(world:get(collection, ids.migrations) or {})),
+		migrations = table.freeze(table.clone(world.get(collection, ids.migrations) or {})),
 		foreign = source,
 		user_ids = given.user_ids,
 	}

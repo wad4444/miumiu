@@ -2,8 +2,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local types = require(ReplicatedStorage.Packages.miumiu.types)
 local datastore = require(ReplicatedStorage.Packages.miumiu.datastore)
-local jecs = require(ReplicatedStorage.Packages.jecs)
 local miumiu = require(ReplicatedStorage.Packages.miumiu)
+local pepecs = require(ReplicatedStorage.Packages.pepecs)
 local session = require(ReplicatedStorage.Packages.miumiu.session)
 local state = require(ReplicatedStorage.Packages.miumiu.state)
 
@@ -434,10 +434,10 @@ end
 
 local function create_collection(world: World, backend: Backend, overrides: Overrides?): Entity
 	local config = create_config(backend, overrides)
-	local collection = world:entity()
-	world:set(collection, jecs.Name, backend.name)
-	world:set(collection, miumiu.collection, backend.name)
-	world:set(collection, miumiu.config, {
+	local collection = world.entity()
+	world.set(collection, pepecs.Name, backend.name)
+	world.set(collection, miumiu.collection, backend.name)
+	world.set(collection, miumiu.config, {
 		data_store_service = config.data_store_service,
 		pull_interval = config.pull_interval,
 		idle_interval = config.idle_interval,
@@ -453,7 +453,7 @@ end
 local function scope(world: World, ids: { Entity<any> }, targets: { Entity })
 	for _, id in ids do
 		for _, target in targets do
-			world:add(id, jecs.pair(miumiu.field_of, target))
+			world.add(id, pepecs.pair(miumiu.field_of, target))
 		end
 	end
 end
@@ -465,12 +465,12 @@ local function declare_saveable(
 	targets: { Entity },
 	name: string?
 ): Entity<any>
-	local id = if kind == "component" then world:component() else world:entity()
-	world:set(id, jecs.Name, name or key or "unnamed")
+	local id = if kind == "component" then world.component() else world.entity()
+	world.set(id, pepecs.Name, name or key or "unnamed")
 	if key then
-		world:set(id, miumiu.saveable, key)
+		world.set(id, miumiu.saveable, key)
 	else
-		world:add(id, miumiu.saveable)
+		world.add(id, miumiu.saveable)
 	end
 	scope(world, { id }, targets)
 	return id
@@ -485,17 +485,17 @@ export type Kinds = {
 }
 
 local function declare_kinds(world: World, root: Entity): Kinds
-	local owns = world:entity()
-	world:add(owns, jecs.Exclusive)
-	local item = world:entity()
-	world:set(item, jecs.Name, "item")
-	world:set(item, miumiu.child, { via = owns, key = "inventory", mode = "owned" })
-	local holds = world:entity()
-	world:add(holds, jecs.Exclusive)
-	local container_kind = world:component()
-	local container = world:entity()
-	world:set(container, jecs.Name, "container")
-	world:set(container, miumiu.child, { via = holds, key = "containers", mode = "attached", id = container_kind })
+	local owns = world.entity()
+	world.add(owns, pepecs.Exclusive)
+	local item = world.entity()
+	world.set(item, pepecs.Name, "item")
+	world.set(item, miumiu.child, { via = owns, key = "inventory", mode = "owned" })
+	local holds = world.entity()
+	world.add(holds, pepecs.Exclusive)
+	local container_kind = world.component()
+	local container = world.entity()
+	world.set(container, pepecs.Name, "container")
+	world.set(container, miumiu.child, { via = holds, key = "containers", mode = "attached", id = container_kind })
 	scope(world, { item, container }, { root })
 	return { owns = owns, item = item, holds = holds, container = container, container_kind = container_kind }
 end
@@ -507,15 +507,15 @@ export type Relations = {
 }
 
 local function declare_relations(world: World, targets: { Entity }): Relations
-	local has_buff = world:entity()
-	world:set(has_buff, jecs.Name, "has_buff")
-	world:set(has_buff, miumiu.saveable, "buffs")
-	world:add(has_buff, miumiu.pairs)
+	local has_buff = world.entity()
+	world.set(has_buff, pepecs.Name, "has_buff")
+	world.set(has_buff, miumiu.saveable, "buffs")
+	world.add(has_buff, miumiu.pairs)
 	scope(world, { has_buff }, targets)
-	local fire = world:entity()
-	world:set(fire, jecs.Name, "fire")
-	local ice = world:entity()
-	world:set(ice, jecs.Name, "ice")
+	local fire = world.entity()
+	world.set(fire, pepecs.Name, "fire")
+	local ice = world.entity()
+	world.set(ice, pepecs.Name, "ice")
 	return { has_buff = has_buff, fire = fire, ice = ice }
 end
 
@@ -524,22 +524,22 @@ local function anything(): boolean
 end
 
 local function declare_ordered(world: World, collection: Entity, name: string, config: OrderedConfig): Entity
-	local entity = world:entity()
-	world:set(entity, jecs.Name, name)
-	world:add(entity, jecs.pair(miumiu.field_of, collection))
-	world:set(entity, miumiu.ordered, config)
+	local entity = world.entity()
+	world.set(entity, pepecs.Name, name)
+	world.add(entity, pepecs.pair(miumiu.field_of, collection))
+	world.set(entity, miumiu.ordered, config)
 	return entity
 end
 
 local function create_fixture(overrides: Overrides?): Fixture
 	local backend = create_backend()
-	local world = jecs.world()
+	local world = pepecs.world()
 	table.insert(live_worlds, world)
 	local player_data = create_collection(world, backend, overrides)
 	local money = declare_saveable(world, "component", "money", { player_data })
-	world:set(money, miumiu.guard, anything)
+	world.set(money, miumiu.guard, anything)
 	local items = declare_saveable(world, "component", "items", { player_data })
-	world:set(items, miumiu.guard, anything)
+	world.set(items, miumiu.guard, anything)
 	local tutorial = declare_saveable(world, "tag", "tutorial", { player_data })
 	return {
 		backend = backend,
@@ -548,10 +548,10 @@ local function create_fixture(overrides: Overrides?): Fixture
 		items = items,
 		tutorial = tutorial,
 		player_data = player_data,
-		link = jecs.pair(miumiu.data_link, player_data),
-		loading = jecs.pair(miumiu.data_loading, player_data),
-		loaded = jecs.pair(miumiu.data_loaded, player_data),
-		data_error = jecs.pair(miumiu.data_error, player_data),
+		link = pepecs.pair(miumiu.data_link, player_data),
+		loading = pepecs.pair(miumiu.data_loading, player_data),
+		loaded = pepecs.pair(miumiu.data_loaded, player_data),
+		data_error = pepecs.pair(miumiu.data_error, player_data),
 	}
 end
 
@@ -652,33 +652,33 @@ local function settle(fixture: Fixture, entity: Entity): boolean
 	miumiu.step(fixture.world)
 	return wait_until(function()
 		miumiu.step(fixture.world)
-		return fixture.world:has(entity, fixture.loaded) or fixture.world:has(entity, fixture.data_error)
+		return fixture.world.has(entity, fixture.loaded) or fixture.world.has(entity, fixture.data_error)
 	end)
 end
 
 local function give(fixture: Fixture, kinds: Kinds, owner: Entity, money: number): Entity
-	local entity = fixture.world:entity()
-	fixture.world:add(entity, kinds.item)
-	fixture.world:set(entity, fixture.money, money)
-	fixture.world:add(entity, jecs.pair(kinds.owns, owner))
+	local entity = fixture.world.entity()
+	fixture.world.add(entity, kinds.item)
+	fixture.world.set(entity, fixture.money, money)
+	fixture.world.add(entity, pepecs.pair(kinds.owns, owner))
 	return entity
 end
 
 local function make_container(fixture: Fixture, kinds: Kinds, id: any): Entity
-	local container = fixture.world:entity()
-	fixture.world:add(container, kinds.container)
-	fixture.world:set(container, kinds.container_kind, id)
+	local container = fixture.world.entity()
+	fixture.world.add(container, kinds.container)
+	fixture.world.set(container, kinds.container_kind, id)
 	return container
 end
 
 local function id_of(fixture: Fixture, entity: Entity): string
-	return fixture.world:get(entity, miumiu.child_id)
+	return fixture.world.get(entity, miumiu.child_id)
 end
 
 local function items_of(fixture: Fixture, kinds: Kinds, owner: Entity): { [string]: Entity }
 	local found = {}
-	for entity in fixture.world:each(jecs.pair(kinds.owns, owner)) do
-		if fixture.world:has(entity, kinds.item) then
+	for entity in fixture.world.each(pepecs.pair(kinds.owns, owner)) do
+		if fixture.world.has(entity, kinds.item) then
 			found[id_of(fixture, entity)] = entity
 		end
 	end
@@ -694,14 +694,14 @@ local function count(dictionary: { [any]: any }): number
 end
 
 local function link_entity(fixture: Fixture, key: string, values: { [string]: any }?): Entity
-	local entity = fixture.world:entity()
-	fixture.world:set(entity, fixture.link, key)
+	local entity = fixture.world.entity()
+	fixture.world.set(entity, fixture.link, key)
 	settle(fixture, entity)
 	local saveables: { [string]: Entity<any> } =
 		{ money = fixture.money, items = fixture.items, tutorial = fixture.tutorial }
 	local given: { [string]: any } = values or {}
 	for name, value in given do
-		fixture.world:set(entity, saveables[name], value)
+		fixture.world.set(entity, saveables[name], value)
 	end
 	if next(given) ~= nil then
 		session_of(fixture, key):sync()

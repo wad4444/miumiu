@@ -103,10 +103,10 @@ end
 
 local function resolve_id(world: World, entity: Entity, kind: ChildKind): string?
 	if kind.mode ~= "attached" then
-		return world:get(entity, ids.child_id)
+		return world.get(entity, ids.child_id)
 	end
 
-	local value = world:get(entity, kind.id)
+	local value = world.get(entity, kind.id)
 	if value == nil then
 		return nil
 	end
@@ -128,7 +128,7 @@ end
 
 local function mint_id(world: World, entity: Entity): string
 	local id = util.create_guid()
-	world:set(entity, ids.child_id, id)
+	world.set(entity, ids.child_id, id)
 	return id
 end
 
@@ -179,7 +179,7 @@ local function removing_field(
 		return false
 	end
 
-	if world:has(entity, entry.id) then
+	if world.has(entity, entry.id) then
 		return true
 	end
 	removing[entry.key] = nil
@@ -218,7 +218,7 @@ local function pack_fields(
 	local removing: { [string]: Removal } = if entity_state then entity_state.removing else {}
 	for _, entry in entries do
 		if entry.kind == "tag" then
-			if world:has(entity, entry.id) and not removing_field(world, removing, entity, entry) then
+			if world.has(entity, entry.id) and not removing_field(world, removing, entity, entry) then
 				packed[entry.key] = true
 			elseif entry.initial.kind == "value" then
 				packed[entry.key] = false
@@ -227,7 +227,7 @@ local function pack_fields(
 			local except = removing_targets(world, removing, entity, entry)
 			packed[entry.key] = relations.pack(world, entry, entity, except, named, warned)
 		else
-			local value = if removing_field(world, removing, entity, entry) then nil else world:get(entity, entry.id)
+			local value = if removing_field(world, removing, entity, entry) then nil else world.get(entity, entry.id)
 			if value ~= nil then
 				packed[entry.key] = codec.stored_form(entry, value)
 			end
@@ -275,7 +275,7 @@ end
 
 local function kind_of(world: World, kinds: { ChildKind }, entity: Entity): ChildKind?
 	for _, kind in kinds do
-		if world:has(entity, kind.tag) then
+		if world.has(entity, kind.tag) then
 			return kind
 		end
 	end
@@ -301,9 +301,9 @@ local function delete_tree(world: World, index: ChildIndex, entity: Entity, dele
 	end
 	forget(index, entity)
 	forget_parent(index, entity)
-	if world:contains(entity) then
+	if world.alive(entity) then
 		deleting[entity] = true
-		world:delete(entity)
+		world.delete(entity)
 	end
 end
 

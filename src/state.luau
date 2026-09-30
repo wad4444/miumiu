@@ -123,12 +123,12 @@ local function read_values(context: Context, entity: Entity, entries: { SchemaEn
 	local values: Data = {}
 	for _, entry in entries do
 		if entry.kind == "tag" then
-			values[entry.key] = world:has(entity, entry.id)
+			values[entry.key] = world.has(entity, entry.id)
 		elseif entry.kind == "relation" then
 			values[entry.key] =
 				relations.pack(world, entry, entity, nil, context.schema.named, context.world_state.warned)
 		else
-			values[entry.key] = world:get(entity, entry.id)
+			values[entry.key] = world.get(entity, entry.id)
 		end
 	end
 

@@ -1,8 +1,8 @@
 local types = require("./types")
 local ids = require("./ids")
-local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
+local pepecs = require("./dependencies/pepecs")
 local rankings = require("./rankings")
 local state = require("./state")
 local util = require("./util")
@@ -24,7 +24,7 @@ local frozen_ids = {
 	ids.collection,
 	ids.config,
 	ids.saveable,
-	ids.field_of,
+	pepecs.pair(ids.field_of, pepecs.Wildcard),
 	ids.guard,
 	ids.serdes,
 	ids.snapshot,
@@ -37,7 +37,7 @@ local frozen_ids = {
 }
 
 local function resolve_key(world: World, id: Entity): string
-	local key = world:get(id, ids.saveable)
+	local key = world.get(id, ids.saveable)
 	if type(key) ~= "string" or #key == 0 then
 		error(messages.errors.saveable_unnamed(util.describe(world, id)), 0)
 	end
@@ -63,7 +63,7 @@ local function resolve_holders(world: World, id: Entity): Holders
 end
 
 local function resolve_targets(world: World, id: Entity): { [Entity]: boolean }?
-	local config: any = world:get(id, ids.pairs)
+	local config: any = world.get(id, ids.pairs)
 	if config == nil then
 		return nil
 	end
@@ -91,7 +91,7 @@ local function create_relation(world: World, id: Entity, key: string, holders: H
 	for meta, what in
 		{ [ids.guard] = "guard", [ids.serdes] = "serdes", [ids.snapshot] = "snapshot", [ids.lazy] = "lazy" }
 	do
-		if world:has(id, meta) then
+		if world.has(id, meta) then
 			error(messages.errors.pairs_meta(util.describe(world, id), what), 0)
 		end
 	end
@@ -101,34 +101,34 @@ local function create_relation(world: World, id: Entity, key: string, holders: H
 		id = id,
 		key = key,
 		initial = { kind = "none" },
-		tagged = jecs.is_tag(world, id),
+		tagged = world.is_tag(id),
 		targets = resolve_targets(world, id),
 		holders = holders,
 	}
 end
 
 local function create_entry(world: World, id: Entity, key: string): SchemaEntry
-	local has_initial = world:has(id, id)
-	local initial: Initial = if has_initial then { kind = "value", value = world:get(id, id) } else { kind = "none" }
+	local has_initial = world.has(id, id)
+	local initial: Initial = if has_initial then { kind = "value", value = world.get(id, id) } else { kind = "none" }
 	local holders = resolve_holders(world, id)
-	if world:has(id, ids.pairs) then
+	if world.has(id, ids.pairs) then
 		return create_relation(world, id, key, holders)
 	end
 
-	if jecs.is_tag(world, id) then
-		if world:has(id, ids.snapshot) then
+	if world.is_tag(id) then
+		if world.has(id, ids.snapshot) then
 			error(messages.errors.snapshot_on_tag(util.describe(world, id)), 0)
 		end
 
-		if world:has(id, ids.lazy) then
+		if world.has(id, ids.lazy) then
 			error(messages.errors.lazy_on_tag(util.describe(world, id)), 0)
 		end
 
-		if world:has(id, ids.guard) then
+		if world.has(id, ids.guard) then
 			error(messages.errors.guard_on_tag(util.describe(world, id)), 0)
 		end
 
-		if world:has(id, ids.serdes) then
+		if world.has(id, ids.serdes) then
 			error(messages.errors.serdes_on_tag(util.describe(world, id)), 0)
 		end
 
@@ -142,12 +142,12 @@ local function create_entry(world: World, id: Entity, key: string): SchemaEntry
 	end
 
 	local described = util.describe(world, id)
-	local guard = world:get(id, ids.guard)
+	local guard = world.get(id, ids.guard)
 	if guard ~= nil and type(guard) ~= "function" then
 		error(messages.errors.meta_not_function(described, "guard"), 0)
 	end
 
-	local serdes: any = world:get(id, ids.serdes)
+	local serdes: any = world.get(id, ids.serdes)
 	if
 		serdes ~= nil
 		and (type(serdes) ~= "table" or type(serdes.serialize) ~= "function" or type(serdes.deserialize) ~= "function")
@@ -155,7 +155,7 @@ local function create_entry(world: World, id: Entity, key: string): SchemaEntry
 		error(messages.errors.serdes_invalid(described), 0)
 	end
 
-	local snapshot = world:get(id, ids.snapshot)
+	local snapshot = world.get(id, ids.snapshot)
 	if snapshot ~= nil and type(snapshot) ~= "function" then
 		error(messages.errors.meta_not_function(described, "snapshot"), 0)
 	end
@@ -168,7 +168,7 @@ local function create_entry(world: World, id: Entity, key: string): SchemaEntry
 		guard = guard,
 		serdes = serdes,
 		snapshot = snapshot,
-		lazy = world:has(id, ids.lazy),
+		lazy = world.has(id, ids.lazy),
 		holders = holders,
 	}
 end
@@ -227,7 +227,7 @@ end
 local function create_kind(world: World, tag: Entity, entries: { SchemaEntry }): ChildKind
 	local described = util.describe(world, tag)
 	local reasons = messages.reasons
-	local config: any = world:get(tag, ids.child)
+	local config: any = world.get(tag, ids.child)
 	if type(config) ~= "table" then
 		error(messages.errors.child_config_invalid(described, reasons.child_not_table), 0)
 	end
@@ -244,11 +244,11 @@ local function create_kind(world: World, tag: Entity, entries: { SchemaEntry }):
 		error(messages.errors.child_config_invalid(described, reasons.child_mode), 0)
 	end
 
-	if type(config.via) ~= "number" or not world:has(config.via, jecs.Exclusive) then
+	if type(config.via) ~= "number" or not world.alive(config.via) or not world.has(config.via, pepecs.Exclusive) then
 		error(messages.errors.child_config_invalid(described, reasons.child_via), 0)
 	end
 
-	if not jecs.is_tag(world, tag) then
+	if not world.is_tag(tag) then
 		error(messages.errors.child_config_invalid(described, reasons.child_tag), 0)
 	end
 
@@ -338,7 +338,7 @@ local function create_schema(world: World): Schema
 	local entries: { SchemaEntry } = {}
 	local by_key: { [string]: SchemaEntry } = {}
 
-	for id in world:each(ids.saveable) do
+	for id in world.each(ids.saveable) do
 		local key = resolve_key(world, id)
 		local existing = by_key[key]
 		if existing then
@@ -357,7 +357,7 @@ local function create_schema(world: World): Schema
 	local kinds: { ChildKind } = {}
 	local kinds_by_relation: { [Entity]: { ChildKind } } = {}
 	local kinds_by_key: { [string]: ChildKind } = {}
-	for tag in world:each(ids.child) do
+	for tag in world.each(ids.child) do
 		local kind = create_kind(world, tag, entries)
 		local function reject_clash(other: Entity)
 			error(messages.errors.child_key_clash(util.describe(world, tag), kind.key, util.describe(world, other)), 0)
@@ -392,14 +392,13 @@ local function create_schema(world: World): Schema
 	end
 
 	local collections: { Entity } = {}
-	for collection in world:each(ids.collection) do
+	for collection in world.each(ids.collection) do
 		table.insert(collections, collection)
 	end
 
 	local named: Named = {}
 	local warned = state.get(world).warned
-	for entity in world:each(jecs.Name) do
-		local name = world:get(entity, jecs.Name)
+	for entity, name in world.query(pepecs.Name) do
 		local owner = named[name]
 		if owner == nil then
 			named[name] = entity
@@ -419,7 +418,7 @@ local function create_schema(world: World): Schema
 	for _, collection in collections do
 		roots[collection] = fields_of(entries, kinds, collection)
 		known[collection] = true
-		local store_name = world:get(collection, ids.collection)
+		local store_name = world.get(collection, ids.collection)
 		if type(store_name) == "string" then
 			local owner = store_names[store_name]
 			if owner then
@@ -435,7 +434,7 @@ local function create_schema(world: World): Schema
 			store_names[store_name] = collection
 		end
 
-		local source: any = world:get(collection, ids.from_foreign)
+		local source: any = world.get(collection, ids.from_foreign)
 		if type(source) == "table" and type(source.source) == "table" and type(source.name) == "string" then
 			local first = util.cached(imports, source.source, source.name, function()
 				return { collection = collection, options = source.options }
@@ -458,7 +457,7 @@ local function create_schema(world: World): Schema
 	local ordered: { [Entity]: OrderedStore } = {}
 	local by_name: { [string]: OrderedStore } = {}
 	local ranked: { [Entity<any>]: OrderedStore } = {}
-	for entity in world:each(ids.ordered) do
+	for entity in world.each(ids.ordered) do
 		local store = rankings.create_store(world, entity, entries, known)
 		local described = util.describe(world, entity)
 		local clash = by_name[store.name]
@@ -519,9 +518,9 @@ local function freeze(world: World)
 	end
 
 	for _, id in frozen_ids do
-		world:added(id, reject)
-		world:changed(id, reject)
-		world:removed(id, reject)
+		world.added(id, reject)
+		world.changed(id, reject)
+		world.removed(id, reject)
 	end
 end
 

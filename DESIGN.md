@@ -1,6 +1,6 @@
 # miumiu
 
-Persistence for jecs worlds, lockless. A collection is an entity, a save is a relationship,
+Persistence for pepecs worlds, lockless. A collection is an entity, a save is a relationship,
 the saved shape of an entity is the set of saveable components it carries. Every write to a
 saveable is an operation; a session replays its operations onto the live record on every
 pull and reconciles the merged truth back onto the entity. Any server may edit any key at
@@ -10,30 +10,30 @@ any time; everything converges.
 
 | entity | declared with | meaning |
 |---|---|---|
-| collection | `jecs.meta(c, miumiu.collection, "store name")` | one named DataStore; `meta(c, miumiu.config, { ... })` for the rest |
-| saveable | `jecs.meta(id, miumiu.saveable, "key")` | a component or tag stored under `key`; the key is the stored identity and never follows a rename |
-| field | `jecs.meta(id, pair(miumiu.field_of, c or kind))` | where a saveable lives; every saveable and kind needs at least one |
-| linked entity | `world:set(e, pair(miumiu.data_link, c), key)` | one stored key; pulls while linked, whether it is "your" player, another server's, or nobody's |
-| ordered store | `jecs.meta(o, miumiu.ordered, { component = field, ... })` plus `pair(field_of, c)`, named by `jecs.Name` | an `OrderedDataStore` ranking one root field of `c`, one store per period, optionally resetting the field, with `on_period_change` for the keys that placed; or all-time (Ordered) |
+| collection | `pepecs.meta(c, miumiu.collection, "store name")` | one named DataStore; `meta(c, miumiu.config, { ... })` for the rest |
+| saveable | `pepecs.meta(id, miumiu.saveable, "key")` | a component or tag stored under `key`; the key is the stored identity and never follows a rename |
+| field | `pepecs.meta(id, pair(miumiu.field_of, c or kind))` | where a saveable lives; every saveable and kind needs at least one |
+| linked entity | `world.set(e, pair(miumiu.data_link, c), key)` | one stored key; pulls while linked, whether it is "your" player, another server's, or nobody's |
+| ordered store | `pepecs.meta(o, miumiu.ordered, { component = field, ... })` plus `pair(field_of, c)`, named by `pepecs.Name` | an `OrderedDataStore` ranking one root field of `c`, one store per period, optionally resetting the field, with `on_period_change` for the keys that placed; or all-time (Ordered) |
 
 There is one kind of link, plus `pair(miumiu.data_shallow, c)` on the entity to load
 only the root's own fields. Gifting to an offline player is: link (shallow), write,
 unlink.
 
-A saveable's initial value is the component set on itself: `jecs.meta(money, money, 0)`;
-for a tag, `jecs.meta(tag, tag)` means "present at first". At link, every saveable the
+A saveable's initial value is the component set on itself: `pepecs.meta(money, money, 0)`;
+for a tag, `pepecs.meta(tag, tag)` means "present at first". At link, every saveable the
 entity lacks gets a deep copy of its initial before the load; stored values then
 override. Initials are never journaled, so a record holds only what changed. Like
 `saveable`, an initial is read when the schema is built and frozen with it.
 
-`jecs.meta(money, miumiu.guard, t.number)` guards a component. A write whose new value
-fails the guard throws at the `world:set`, after restoring the value the entity had
+`pepecs.meta(money, miumiu.guard, t.number)` guards a component. A write whose new value
+fails the guard throws at the `world.set`, after restoring the value the entity had
 (inside `batch` or `delta` that also rolls the batch back). A stored value that fails the
 guard is skipped on supply with one warning; the entity keeps what it had. Tags have no
 guard. Guards freeze with the schema too. Building the schema warns once, listing every
 component saveable without a guard.
 
-`jecs.meta(codes, miumiu.serdes, { serialize = fn, deserialize = fn })` for a component
+`pepecs.meta(codes, miumiu.serdes, { serialize = fn, deserialize = fn })` for a component
 whose runtime value cannot go into a DataStore (sets, maps with non-string keys,
 userdata). Ops carry the serialized form; supply deserializes (a throwing `deserialize`
 skips the key with a warning); guards see the runtime value on both sides. Inside
@@ -48,23 +48,23 @@ An entity's record can hold other entities. A child kind is declared on the tag 
 marks the kind, naming the relation that points at the parent:
 
 ```luau
-jecs.meta(tool, miumiu.child, { via = owner_link, key = "inventory", mode = "owned" })
-jecs.meta(part, miumiu.child, { via = part_link, key = "parts", mode = "owned" })
-jecs.meta(plot, miumiu.child, { via = owner_link, key = "containers", mode = "attached", id = plot_kind })
+pepecs.meta(tool, miumiu.child, { via = owner_link, key = "inventory", mode = "owned" })
+pepecs.meta(part, miumiu.child, { via = part_link, key = "parts", mode = "owned" })
+pepecs.meta(plot, miumiu.child, { via = owner_link, key = "containers", mode = "attached", id = plot_kind })
 
-jecs.meta(tool, jecs.pair(miumiu.field_of, player_data))
-jecs.meta(plot, jecs.pair(miumiu.field_of, player_data))
-jecs.meta(durability, jecs.pair(miumiu.field_of, tool))
-jecs.meta(part_id, jecs.pair(miumiu.field_of, tool))
-jecs.meta(part_id, jecs.pair(miumiu.field_of, part))
-jecs.meta(zones, jecs.pair(miumiu.field_of, plot))
-jecs.meta(part, jecs.pair(miumiu.field_of, tool))            -- parts nest under tools only
+pepecs.meta(tool, pepecs.pair(miumiu.field_of, player_data))
+pepecs.meta(plot, pepecs.pair(miumiu.field_of, player_data))
+pepecs.meta(durability, pepecs.pair(miumiu.field_of, tool))
+pepecs.meta(part_id, pepecs.pair(miumiu.field_of, tool))
+pepecs.meta(part_id, pepecs.pair(miumiu.field_of, part))
+pepecs.meta(zones, pepecs.pair(miumiu.field_of, plot))
+pepecs.meta(part, pepecs.pair(miumiu.field_of, tool))            -- parts nest under tools only
 ```
 
 A child is an entity carrying the kind's tag and `pair(via, parent)`. `via` must be marked
-`jecs.Exclusive`, so an entity has one parent per relation and a re-parent is a removal
+`pepecs.Exclusive`, so an entity has one parent per relation and a re-parent is a removal
 followed by an addition. An entity is a child under one relation at a time, and carries
-one kind tag per relation; both are errors at the `world:add`. Its stored form is the
+one kind tag per relation; both are errors at the `world.add`. Its stored form is the
 saveables that are `field_of` the kind plus its own children, so kinds nest to any depth
 and a tool does not carry the player's forty fields. `field_of` is a relation from a
 saveable to a collection entity or a kind tag: a saveable is a field of exactly the
@@ -79,7 +79,7 @@ kind tag are not saved. A write of a saveable on an entity that does not hold it
 kind-only field on the root, a root-only field on a child, a field of another
 collection) journals nothing, inside `batch` as well, and warns once per saveable and
 holder; a child pair added under a parent that does not hold the kind is not a child at
-all (no id, no index, no journal). A kind error at the `world:add` (a second kinded
+all (no id, no index, no journal). A kind error at the `world.add` (a second kinded
 relation, two kind tags on one relation, a missing or bad attached id) takes the pair or
 tag back before throwing, so the entity is never half a child. An entity may link two
 collections only if their root kinds do not overlap, since each record would otherwise
@@ -130,14 +130,19 @@ Two modes, decided by who owns the entity:
   own owned tree the same way, and every entity the library deletes is marked as
   deleting for that step so an attached child hanging off it is reset rather than left
   with supplied values; queued cleanups run until none are left, so the reset lands in
-  the same `step`. Owned children found under a parent when it loads and
+  the same `step`. pepecs tears a deleted entity down from the outside in: the pairs
+  that point at it come off before its own components, so a child's detach reads
+  whether its parent is leaving from the parent's components, still in place: a parent
+  being deleted leaves when it carries a `data_link` or `data_loaded` pair or is a
+  claimed child (a kind tag with its pair); any other deleted parent leaves its children
+  alive and unclaimed. Owned children found under a parent when it loads and
   absent from the record are deleted: the record is the truth for owned entities. Two
   roots linked to one key each mirror that record's owned children, so one stored child
   is spawned once per root; a drop from either copy drops the entry and the other copy
   goes on the next supply, and a root that unlinks takes only its own copies with it.
 - `attached`: the entity outlives the record (a plot claimed for a session). Its id is
   the value of the `id` component (a string or a number), authored by the game before
-  the pair is added, and missing means an error at the `world:add`. The values the
+  the pair is added, and missing means an error at the `world.add`. The values the
   entity carries when its own pair is added are its baseline (claiming records the baseline
   of the whole attached subtree beneath it, so a nested attached entity resets to what
   it carried when its top claimed, not when its own pair was added; an owned child's
@@ -157,7 +162,7 @@ Two modes, decided by who owns the entity:
 
 Every write inside a child, and every child pair added or removed, journals one
 `put <key>.<path>` of the nearest child (its whole stored form) or one `drop`, on every
-session of the linked ancestor. jecs fires `removed` before the component leaves the
+session of the linked ancestor. pepecs fires `removed` before the component leaves the
 entity, so the put for a removal packs the child without the removed tag, component or
 pair (the write carries what to leave out); nothing else re-packs during a removal.
 Consecutive puts of the same child collapse into one unwritten group (so do consecutive
@@ -189,7 +194,7 @@ shapes `legacy` cannot express (an array under a kind's key); it is read-only.
 
 ## Snapshots
 
-`jecs.meta(last_seen, miumiu.snapshot, function(world, entity) return os.time() end)`
+`pepecs.meta(last_seen, miumiu.snapshot, function(world, entity) return os.time() end)`
 makes a saveable the library evaluates itself: right before every write of a session
 that has something to write (interval pull, `sync`, a batch's `await`, a multi-key
 batch's commit, the final write on unlink or `close`), the function runs for each linked
@@ -204,7 +209,7 @@ is declared every leave evaluates it, and writes when the value changed.
 
 ## Lazy
 
-`jecs.meta(battery, miumiu.lazy)` marks a component saveable the library reads at write
+`pepecs.meta(battery, miumiu.lazy)` marks a component saveable the library reads at write
 time instead of journaling per write: a write updates the entity, marks the session
 dirty and remembers the key; when `writing` fires, before any callback the game
 connected, the session packs each remembered key once (a whole-child put under a kind).
@@ -220,9 +225,9 @@ is read later. Tags cannot be lazy.
 
 ## Pairs
 
-`jecs.meta(relation, miumiu.saveable, "buffs")` plus `jecs.meta(relation, miumiu.pairs)`
+`pepecs.meta(relation, miumiu.saveable, "buffs")` plus `pepecs.meta(relation, miumiu.pairs)`
 makes the pairs `pair(relation, target)` on an entity a saveable: a dictionary keyed by
-the target's `jecs.Name`, `true` per pair for a tag relation, the pair's value for a
+the target's `pepecs.Name`, `true` per pair for a tag relation, the pair's value for a
 component one (a component pair without a value is neither stored nor removed). A
 write of any pair journals a `set` of the whole dictionary (a put of the child under a
 kind); removing the last pair journals a `remove`. Supply adds the pairs the record
@@ -230,7 +235,7 @@ names, sets their values, and removes the present pairs whose name the record la
 stamped `nil` removes them all. `meta(relation, miumiu.pairs, { targets = list })`
 restricts the saveable to those targets: other pairs on the relation are neither
 stored nor touched by a supply. The schema keeps a name index seeded from every named
-entity at build time and kept current by hooks on `jecs.Name` (a rename drops the old
+entity at build time and kept current by hooks on `pepecs.Name` (a rename drops the old
 name), so a target named after the first `step` resolves; a migration's scratch world
 works on a copy of it. A target's name is a stored key. The first entity to carry a
 name owns it in the index; a second one named the same (warned once per name, at build
@@ -251,10 +256,10 @@ declared on an entity of its own and scoped to a collection with `field_of`, lik
 saveable:
 
 ```luau
-local weekly_coins = jecs.tag()
-jecs.meta(weekly_coins, jecs.Name, "weekly_coins")
-jecs.meta(weekly_coins, jecs.pair(miumiu.field_of, player_data))
-jecs.meta(weekly_coins, miumiu.ordered, {
+local weekly_coins = pepecs.tag()
+pepecs.meta(weekly_coins, pepecs.Name, "weekly_coins")
+pepecs.meta(weekly_coins, pepecs.pair(miumiu.field_of, player_data))
+pepecs.meta(weekly_coins, miumiu.ordered, {
 	component = coins_this_week,
 	period = { length = 7 * 86400, epoch = 345600 },
 	map = function(stored) return stored end,
@@ -274,7 +279,7 @@ jecs.meta(weekly_coins, miumiu.ordered, {
 | `period_threshold` | how many ranks `on_period_change` reaches; a key below them is never called; default 10 |
 | `poll_interval` | seconds after a period's end before its ranking is read for `on_period_change`; default 60. A change whose holder never delivered it is taken over after `commit_timeout` |
 
-Its entity's `jecs.Name`, required, is the `OrderedDataStore` name: unique among the
+Its entity's `pepecs.Name`, required, is the `OrderedDataStore` name: unique among the
 world's ordered stores, different from every collection's store, and not another store's
 name followed by a period index (a store named `weekly_3` would share a DataStore with
 period 3 of a store named `weekly`), and at most 40
@@ -439,17 +444,17 @@ changes the score the next push carries. A `data_store_service` without
 ## Migrations
 
 ```luau
-jecs.meta(player_data, miumiu.migrations, {
+pepecs.meta(player_data, miumiu.migrations, {
 	function(world, entity, context)
 		local luck_boosts = context.legacy("luck_boosts")
-		world:set(entity, boosts, convert(world:get(entity, luck_boosts)))
-		world:remove(entity, luck_boosts)
+		world.set(entity, boosts, convert(world.get(entity, luck_boosts)))
+		world.remove(entity, luck_boosts)
 	end,
 })
 ```
 
 Ordered, append-only. The record stores how many have been applied. A load that finds
-fewer applied than declared runs the missing ones, in order, in a scratch `jecs.world()`
+fewer applied than declared runs the missing ones, in order, in a scratch `pepecs.world()`
 that mirrors the schema's ids: a template entity gets the initials, then the stored truth
 on top; the callbacks mutate it; every change is recorded as an op by the same recorder
 the game world uses and replayed onto the stored data. Only keys the callbacks touched
@@ -467,7 +472,7 @@ world is never touched.
 ## Importing from another library
 
 ```luau
-jecs.meta(player_data, miumiu.from_foreign, {
+pepecs.meta(player_data, miumiu.from_foreign, {
 	type = "lapis",
 	name = "PlayerData",
 	source = lapis,
@@ -500,12 +505,12 @@ loaded fresh with one read.
 { kind = "drop", key = "inventory", path = { "3f2a9c1e", "parts", "9b1d" }, at = 1700000100 }
 ```
 
-Captured by `world:added` / `world:changed` / `world:removed` listeners on every saveable
+Captured by `world.added` / `world.changed` / `world.removed` listeners on every saveable
 id, installed per world by the first `step`, `batch` or `delta`. A write on an entity that is not `data_loaded` is
 not journaled. Reconciliation writes (below) are not journaled either.
 
-- Outside `delta`: components map `world:set` → `set`, `world:remove` → `remove`; tags map
-  `world:add` → `set true`, `world:remove` → `set false`. `at = os.time()`.
+- Outside `delta`: components map `world.set` → `set`, `world.remove` → `remove`; tags map
+  `world.add` → `set true`, `world.remove` → `set false`. `at = os.time()`.
 - Inside `miumiu.delta(world, fn)` a `set` is diffed against the previous value:
 
 | previous → value | ops |
@@ -541,7 +546,7 @@ so a stale copy from a server the player already left cannot overwrite a newer w
 put of a parent path stamps it, and a later put under it must beat that stamp too: a
 parent put is a write of the whole subtree. Delta ops (`add`, `insert`, `erase`, `init`)
 compose with each other, in any order, from any server. A `set` does not compose with
-anything: it replaces the whole value, so a plain `world:set(player, money, x)` on the
+anything: it replaces the whole value, so a plain `world.set(player, money, x)` on the
 player's own server overwrites a gift another server added with `delta` in the same
 window. Keys that several servers may touch (currencies, inventories) should be written
 through `delta` everywhere.
@@ -576,10 +581,10 @@ at 50 characters, so a `game.JobId` prefix would not fit.
 ```luau
 miumiu.batch(world, function()
 	miumiu.delta(world, function()
-		world:set(buyer, money, world:get(buyer, money) - 100)
-		world:set(seller, money, world:get(seller, money) + 100)
+		world.set(buyer, money, world.get(buyer, money) - 100)
+		world.set(seller, money, world.get(seller, money) + 100)
 	end)
-	world:set(buyer, inventory, with_item(world:get(buyer, inventory), item))
+	world.set(buyer, inventory, with_item(world.get(buyer, inventory), item))
 end)
 ```
 
@@ -589,7 +594,7 @@ end)
   compared by value, tables by reference, pairs by their packed dictionary): a key the
   world wrote again meanwhile keeps that newer value (it journaled on its own). An undo
   a later journaled op carried is restored with a journaled corrective write; the rest
-  restore silently. jecs listeners carry no old value, so the
+  restore silently. pepecs hooks carry no old value, so the
   library keeps a per-entity shadow of the last values it supplied or captured; rollback
   and `delta` diffs read `previous` from it.
 - A write inside `batch` or `delta` to an entity that is not `data_loaded` throws and rolls
@@ -803,22 +808,22 @@ Commit keys are never deleted; the status cache is per server.
 ## Lifecycle
 
 ```
-world:set(e, pair(data_link, c), key)
+world.set(e, pair(data_link, c), key)
   step: add pair(data_loading, c); spawn first pull
         ok  -> reconcile truth onto e, remove data_loading, add pair(data_loaded, c)
         err -> set pair(data_error, c) = message
-world:set(e, saveable, v)              -> op in the open group (or its own)
+world.set(e, saveable, v)              -> op in the open group (or its own)
 every pull_interval / idle_interval    -> pull (rebase unwritten groups, reconcile)
 miumiu.batch(world, fn)                -> journal the group, return a Batch; one key: it rides
                                           the next write, await writes now; several keys: pull
                                           each in the background and commit
-world:remove(e, pair(data_link, c))    -> step: snapshots, remove data_loaded, delete the
+world.remove(e, pair(data_link, c))    -> step: snapshots, remove data_loaded, delete the
                                           owned children of e and reset the attached ones,
                                           final pull; the link stays "unloading" until that
                                           write lands, then the session ends; nothing
                                           unwritten -> the session closes at once without
                                           a request
-world:set(e, pair(data_link, c), key)  -> while "unloading": the same session is taken
+world.set(e, pair(data_link, c), key)  -> while "unloading": the same session is taken
                                           back, still holding its unwritten ops; the
                                           in-flight final write finishes as an ordinary
                                           pull and the entity is loaded immediately
@@ -898,8 +903,8 @@ An entity linked to several collections journals a saveable write into each coll
 that holds the saveable (`field_of`), so a saveable that is a field of both roots lands
 in both records; a remote change one collection supplies is not journaled into the
 other, so scope a saveable to one collection unless both records may drift apart.
-`world:clear(entity)` removes
-every component with the ordinary `removed` hook, so unlike `world:delete` it journals a
+`world.clear(entity)` removes
+every component with the ordinary `removed` hook, so unlike `world.delete` it journals a
 `remove` per saveable of the root; its children carry their own pairs and stay in the
 record.
 
@@ -982,7 +987,7 @@ Rules:
 
 ## Config
 
-`jecs.meta(c, miumiu.config, { ... })`, every field optional:
+`pepecs.meta(c, miumiu.config, { ... })`, every field optional:
 
 | field | default |
 |---|---|
@@ -1023,15 +1028,16 @@ nobody awaits, can sit unwritten;
   rollback run on its commit thread between frames.
 - Call `miumiu.close(world)` from `game:BindToClose`. Budget it under the 30 s the
   callback has.
-- Link on join, unlink on leave: `world:remove(e, link)`, a `step`, then delete the
+- Link on join, unlink on leave: `world.remove(e, link)`, a `step`, then delete the
   entity and unclaim what it held. Deleting the entity first is not a save and deletes
   its owned children on the next `step`; the record keeps them. Unclaiming an attached
   entity resets it on the next `step`.
 - Gate reads and writes on `pair(data_loaded, c)`:
   initials are on the entity before the load, stored values arrive with `data_loaded`.
-  `world:added(miumiu.data_loaded, fn)` with `id == pair(miumiu.data_loaded, c)` is the
-  ECS-shaped "player is ready"; jecs keys hooks by the relation, so a hook on the pair
-  itself never fires. Do not yield in that hook; spawn the work.
+  `world.added(pair(miumiu.data_loaded, c), fn)` is the ECS-shaped "player is ready";
+  a pepecs hook on a relation hears only the pairs it names, so hook the pair itself (or
+  `pair(miumiu.data_loaded, Wildcard)` for every collection), never bare `data_loaded`.
+  Do not yield in that hook; spawn the work.
 - `get_session` is nil while a leave's final write is in flight; the entity has no
   `data_loaded` then and its writes are not saved. A relink in that window takes the
   session back, so `closed` does not fire for it.

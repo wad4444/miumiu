@@ -4,10 +4,10 @@ local children = require("./children")
 local collection = require("./collection")
 local hooks = require("./hooks")
 local ids = require("./ids")
-local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
 local migrations = require("./migrations")
+local pepecs = require("./dependencies/pepecs")
 local reconcile = require("./reconcile")
 local session = require("./session")
 local state = require("./state")
@@ -29,23 +29,23 @@ type WorldState = types.WorldState
 
 local function toggle(world: World, entity: Entity, id: Entity, on: boolean)
 	if on then
-		world:add(entity, id)
+		world.add(entity, id)
 	else
-		world:remove(entity, id)
+		world.remove(entity, id)
 	end
 end
 
 local function mark(context: Context, entity: Entity, collection_entity: Entity, status: LinkStatus, err: string?)
 	local world = context.world
-	if not world:contains(entity) then
+	if not world.alive(entity) then
 		return
 	end
-	toggle(world, entity, jecs.pair(ids.data_loading, collection_entity), status == "loading")
-	toggle(world, entity, jecs.pair(ids.data_loaded, collection_entity), status == "loaded")
+	toggle(world, entity, pepecs.pair(ids.data_loading, collection_entity), status == "loading")
+	toggle(world, entity, pepecs.pair(ids.data_loaded, collection_entity), status == "loaded")
 	if err then
-		world:set(entity, jecs.pair(ids.data_error, collection_entity), err)
+		world.set(entity, pepecs.pair(ids.data_error, collection_entity), err)
 	else
-		world:remove(entity, jecs.pair(ids.data_error, collection_entity))
+		world.remove(entity, pepecs.pair(ids.data_error, collection_entity))
 	end
 end
 
@@ -58,7 +58,8 @@ local function get_session(world_state: WorldState, collection_entity: Entity, k
 end
 
 local function is_shallow(context: Context, entity: Entity, collection_entity: Entity): boolean
-	return context.world:has(entity, jecs.pair(ids.data_shallow, collection_entity))
+	local world = context.world
+	return world.alive(entity) and world.has(entity, pepecs.pair(ids.data_shallow, collection_entity))
 end
 
 local function entities_of(link_state: LinkState): { Entity }
@@ -338,7 +339,7 @@ local function overlapping_link(context: Context, entity: Entity, collection_ent
 
 	local kinds = root.kinds
 	for other in links do
-		if other == collection_entity or not context.world:has(entity, jecs.pair(ids.data_link, other)) then
+		if other == collection_entity or not context.world.has(entity, pepecs.pair(ids.data_link, other)) then
 			continue
 		end
 
@@ -361,7 +362,7 @@ end
 
 local function on_link(context: Context, entity: Entity, collection_entity: Entity, key: string)
 	local world = context.world
-	if not world:contains(entity) then
+	if not world.alive(entity) then
 		return
 	end
 
@@ -497,7 +498,7 @@ local function resolve_drops(context: Context, root: Entity)
 		return
 	end
 	world_state.pending_drops[root] = nil
-	local alive = context.world:contains(root)
+	local alive = context.world.alive(root)
 	local linked = alive and world_state.links[root] ~= nil
 	for _, drop in drops do
 		if linked and #capture.ancestry_sessions(context, drop.ancestry) > 0 then
@@ -510,7 +511,7 @@ end
 
 local function is_relinking(context: Context, entity: Entity, collection_entity: Entity, key: string): boolean
 	local world = context.world
-	return world:contains(entity) and world:get(entity, jecs.pair(ids.data_link, collection_entity)) == key
+	return world.alive(entity) and world.get(entity, pepecs.pair(ids.data_link, collection_entity)) == key
 end
 
 local function on_unlink(context: Context, entity: Entity, collection_entity: Entity)
@@ -538,7 +539,7 @@ local function on_unlink(context: Context, entity: Entity, collection_entity: En
 			reconcile.refresh_shadows(context, entity, held.kind)
 		end
 
-		if not context.world:contains(entity) then
+		if not context.world.alive(entity) then
 			children.forget_parent(context.world_state.children, entity)
 		end
 		link_state.entities[entity] = nil
@@ -645,7 +646,7 @@ local function on_closed(context: Context, link_state: LinkState, closed: Sessio
 end
 
 local function run_cleanup(context: Context, cleanup: Cleanup)
-	if not context.world:contains(cleanup.entity) then
+	if not context.world.alive(cleanup.entity) then
 		return
 	end
 

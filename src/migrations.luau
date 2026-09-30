@@ -2,10 +2,10 @@ local types = require("./types")
 local children = require("./children")
 local codec = require("./codec")
 local ids = require("./ids")
-local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
 local ops = require("./ops")
+local pepecs = require("./dependencies/pepecs")
 local rankings = require("./rankings")
 local recorder = require("./recorder")
 local relations = require("./relations")
@@ -27,47 +27,62 @@ type SchemaEntry = types.SchemaEntry
 type SyncKind = types.SyncKind
 type Warned = types.Warned
 
-local function mirror_component(scratch: World, id: Entity<any>)
-	if not scratch:has(id, jecs.Component) then
-		scratch:add(id, jecs.Component)
+local function component_marker(scratch: World): Entity
+	local marker: Entity? = nil
+	for entity in scratch.each(pepecs.Name) do
+		if scratch.get(entity, pepecs.Name) == "ecs.Component" then
+			marker = entity
+		end
+	end
+
+	return marker :: Entity
+end
+
+local function mirror_entity(scratch: World, id: Entity<any>)
+	if scratch.alive(id) then
+		return
+	end
+
+	local internal = scratch.internal
+	local record = internal.get_entity_record(id)
+	while record == nil do
+		internal.get_new_entity_id()
+		record = internal.get_entity_record(id)
+	end
+	internal.entity_index.dense[record.dense] = id
+end
+
+local function mirror_component(scratch: World, marker: Entity, id: Entity<any>)
+	if not scratch.is_component(id) then
+		scratch.add(id, marker)
 	end
 end
 
-local function mirror_ids(scratch: World, schema: Schema)
+local function mirror_ids(scratch: World, marker: Entity, schema: Schema)
 	for _, entry in schema.entries do
-		if not scratch:contains(entry.id) then
-			scratch:entity(entry.id)
-		end
-
+		mirror_entity(scratch, entry.id)
 		if entry.kind == "component" or (entry.kind == "relation" and not entry.tagged) then
-			mirror_component(scratch, entry.id)
+			mirror_component(scratch, marker, entry.id)
 		end
 	end
 
 	for name, target in schema.named do
-		if not scratch:contains(target) then
-			scratch:entity(target)
-		end
-
-		scratch:set(target, jecs.Name, name)
+		mirror_entity(scratch, target)
+		scratch.set(target, pepecs.Name, name)
 	end
 
 	for _, kind in schema.kinds do
-		for _, id in { kind.tag, kind.via } do
-			if not scratch:contains(id) then
-				scratch:entity(id)
-			end
-		end
-
-		if not scratch:has(kind.via, jecs.Exclusive) then
-			scratch:add(kind.via, jecs.Exclusive)
+		mirror_entity(scratch, kind.tag)
+		mirror_entity(scratch, kind.via)
+		if not scratch.has(kind.via, pepecs.Exclusive) then
+			scratch.add(kind.via, pepecs.Exclusive)
 		end
 
 		if kind.mode == "attached" then
-			mirror_component(scratch, kind.id)
+			mirror_component(scratch, marker, kind.id)
 		end
 	end
-	mirror_component(scratch, ids.child_id)
+	mirror_component(scratch, marker, ids.child_id)
 end
 
 local function touch(scratch: MigrationScratch, entity: Entity)
@@ -162,8 +177,9 @@ local function index_relation(scratch: MigrationScratch, write: RelationWrite)
 end
 
 local function create_scratch(schema: Schema, root: Fields, warned: Warned): MigrationScratch
-	local world = jecs.world()
-	mirror_ids(world, schema)
+	local world = pepecs.world()
+	local marker = component_marker(world)
+	mirror_ids(world, marker, schema)
 	local held: { [SchemaEntry]: boolean } = {}
 	for _, entry in root.entries do
 		held[entry] = true
@@ -172,7 +188,8 @@ local function create_scratch(schema: Schema, root: Fields, warned: Warned): Mig
 	local scratch: MigrationScratch
 	scratch = {
 		world = world,
-		entity = world:entity(),
+		component_marker = marker,
+		entity = world.entity(),
 		kinds = root.kinds,
 		children = { by_entity = {}, by_parent = {} },
 		named = table.clone(schema.named),
@@ -217,7 +234,7 @@ local function set_stored(
 		local value = data[entry.key]
 		if entry.kind == "tag" then
 			if value == true or (value == nil and with_initials and entry.initial.kind == "value") then
-				world:add(entity, entry.id)
+				world.add(entity, entry.id)
 			end
 			continue
 		end
@@ -232,14 +249,14 @@ local function set_stored(
 		if value == nil then
 			local initial = entry.initial
 			if with_initials and initial.kind == "value" then
-				world:set(entity, entry.id, ops.deep_copy(initial.value))
+				world.set(entity, entry.id, ops.deep_copy(initial.value))
 			end
 			continue
 		end
 
 		local ok, runtime = pcall(codec.runtime_form, entry, value)
 		if ok then
-			world:set(entity, entry.id, runtime)
+			world.set(entity, entry.id, runtime)
 		else
 			logging.warn(messages.warnings.migration_deserialize_failed(entry.key, key, runtime))
 		end
@@ -253,15 +270,15 @@ local function spawn_tree(scratch: MigrationScratch, kinds: { ChildKind }, key: 
 			if type(child_data) ~= "table" then
 				continue
 			end
-			local child = world:entity()
-			world:add(child, kind.tag)
+			local child = world.entity()
+			world.add(child, kind.tag)
 			if kind.mode == "attached" then
-				world:set(child, kind.id, id)
+				world.set(child, kind.id, id)
 			else
-				world:set(child, ids.child_id, id)
+				world.set(child, ids.child_id, id)
 			end
 			set_stored(scratch, child, kind.entries, key, child_data, kind.mode == "owned")
-			world:add(child, jecs.pair(kind.via, parent))
+			world.add(child, pepecs.pair(kind.via, parent))
 			spawn_tree(scratch, kind.kinds, key, child, child_data)
 		end
 	end
@@ -304,9 +321,9 @@ local function create_migration_context(
 				error(messages.errors.legacy_is_children(key, stored_key), 0)
 			end
 		end
-		id = world:entity()
-		world:add(id, jecs.Component)
-		world:set(id, jecs.Name, `miumiu.legacy.{stored_key}`)
+		id = world.entity()
+		world.add(id, scratch.component_marker)
+		world.set(id, pepecs.Name, `miumiu.legacy.{stored_key}`)
 		legacy_ids[stored_key] = id
 		recorder.watch(world, {
 			kind = "component",
@@ -316,7 +333,7 @@ local function create_migration_context(
 			holders = {},
 		}, scratch.named, scratch.sink)
 		scratch.recording = false
-		world:set(entity, id, data[stored_key])
+		world.set(entity, id, data[stored_key])
 		scratch.recording = true
 		return id
 	end

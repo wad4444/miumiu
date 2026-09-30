@@ -1,5 +1,5 @@
 local types = require("./types")
-local jecs = require("./dependencies/jecs")
+local pepecs = require("./dependencies/pepecs")
 
 type Entity<T = nil> = types.Entity<T>
 type ChildConfig = types.ChildConfig
@@ -13,31 +13,31 @@ type Serdes = types.Serdes
 type Snapshot = types.Snapshot
 
 local function named<T>(id: Entity<T>, name: string): Entity<T>
-	jecs.meta(id, jecs.Name, name)
+	pepecs.meta(id, pepecs.Name, name)
 	return id
 end
 
 local ids = {
-	collection = named(jecs.component() :: Entity<string>, "miumiu.collection"),
-	config = named(jecs.component() :: Entity<CollectionConfig>, "miumiu.config"),
-	migrations = named(jecs.component() :: Entity<{ Migration }>, "miumiu.migrations"),
-	from_foreign = named(jecs.component() :: Entity<ForeignSource>, "miumiu.from_foreign"),
-	saveable = named(jecs.component() :: Entity<string>, "miumiu.saveable"),
-	field_of = named(jecs.tag(), "miumiu.field_of"),
-	guard = named(jecs.component() :: Entity<Guard>, "miumiu.guard"),
-	serdes = named(jecs.component() :: Entity<Serdes>, "miumiu.serdes"),
-	snapshot = named(jecs.component() :: Entity<Snapshot>, "miumiu.snapshot"),
-	lazy = named(jecs.tag(), "miumiu.lazy"),
-	pairs = named(jecs.component() :: Entity<PairsConfig>, "miumiu.pairs"),
-	child = named(jecs.component() :: Entity<ChildConfig>, "miumiu.child"),
-	child_id = named(jecs.component() :: Entity<string>, "miumiu.child_id"),
-	ordered = named(jecs.component() :: Entity<OrderedConfig>, "miumiu.ordered"),
+	collection = named(pepecs.component() :: Entity<string>, "miumiu.collection"),
+	config = named(pepecs.component() :: Entity<CollectionConfig>, "miumiu.config"),
+	migrations = named(pepecs.component() :: Entity<{ Migration }>, "miumiu.migrations"),
+	from_foreign = named(pepecs.component() :: Entity<ForeignSource>, "miumiu.from_foreign"),
+	saveable = named(pepecs.component() :: Entity<string>, "miumiu.saveable"),
+	field_of = named(pepecs.tag(), "miumiu.field_of"),
+	guard = named(pepecs.component() :: Entity<Guard>, "miumiu.guard"),
+	serdes = named(pepecs.component() :: Entity<Serdes>, "miumiu.serdes"),
+	snapshot = named(pepecs.component() :: Entity<Snapshot>, "miumiu.snapshot"),
+	lazy = named(pepecs.tag(), "miumiu.lazy"),
+	pairs = named(pepecs.component() :: Entity<PairsConfig>, "miumiu.pairs"),
+	child = named(pepecs.component() :: Entity<ChildConfig>, "miumiu.child"),
+	child_id = named(pepecs.component() :: Entity<string>, "miumiu.child_id"),
+	ordered = named(pepecs.component() :: Entity<OrderedConfig>, "miumiu.ordered"),
 
-	data_link = named(jecs.component() :: Entity<string>, "miumiu.data_link"),
-	data_shallow = named(jecs.tag(), "miumiu.data_shallow"),
-	data_loading = named(jecs.tag(), "miumiu.data_loading"),
-	data_loaded = named(jecs.tag(), "miumiu.data_loaded"),
-	data_error = named(jecs.component() :: Entity<string>, "miumiu.data_error"),
+	data_link = named(pepecs.component() :: Entity<string>, "miumiu.data_link"),
+	data_shallow = named(pepecs.tag(), "miumiu.data_shallow"),
+	data_loading = named(pepecs.tag(), "miumiu.data_loading"),
+	data_loaded = named(pepecs.tag(), "miumiu.data_loaded"),
+	data_error = named(pepecs.component() :: Entity<string>, "miumiu.data_error"),
 }
 
 return table.freeze(ids)

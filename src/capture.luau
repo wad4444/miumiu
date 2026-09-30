@@ -414,7 +414,7 @@ end
 
 local function undo_trigger(context: Context, write: RelationWrite)
 	state.with_applying(context.world_state, write.entity, nil, function()
-		context.world:remove(write.entity, write.trigger)
+		context.world.remove(write.entity, write.trigger)
 	end)
 end
 
@@ -426,7 +426,7 @@ local function reject_unloaded(context: Context, write: Write)
 
 	if write.kind == "component" and write.change == "added" then
 		state.with_applying(context.world_state, write.entity, write.entry.id, function()
-			world:remove(write.entity, write.entry.id)
+			world.remove(write.entity, write.entry.id)
 		end)
 	elseif write.kind == "relation" and write.change == "added" then
 		undo_trigger(context, write)
@@ -505,7 +505,7 @@ end
 
 local function flush_lazy(context: Context, entity: Entity, entries: { SchemaEntry })
 	local world = context.world
-	if not world:contains(entity) then
+	if not world.alive(entity) then
 		return
 	end
 
@@ -515,7 +515,7 @@ local function flush_lazy(context: Context, entity: Entity, entries: { SchemaEnt
 			continue
 		end
 		entity_state.lazy[entry.key] = nil
-		local value = world:get(entity, entry.id)
+		local value = world.get(entity, entry.id)
 		local ok, err = pcall(journal_component, context, {
 			kind = "component",
 			entity = entity,

@@ -25,7 +25,7 @@ local reasons = table.freeze({
 	child_not_table = "the value must be a table",
 	child_key = "key must be a non-empty string without /",
 	child_mode = `mode must be "owned" or "attached"`,
-	child_via = "via must be a relation id marked jecs.Exclusive",
+	child_via = "via must be a relation id marked pepecs.Exclusive",
 	child_id = "an attached kind needs an id component",
 	child_tag = "the kind must be declared on a tag",
 	lazy = "lazy saveables are read at write time and cannot be expressed as a delta",
@@ -271,7 +271,7 @@ local errors = table.freeze({
 	end,
 	link_key_invalid = function(entity: unknown, collection: unknown)
 		return prefixed(
-			`entity {entity} links to collection {collection} without a key: world:set(entity, pair(miumiu.data_link, collection), "key") needs a non-empty string`
+			`entity {entity} links to collection {collection} without a key: world.set(entity, pair(miumiu.data_link, collection), "key") needs a non-empty string`
 		)
 	end,
 	ordered_config_invalid = function(entity: unknown, why: string)
@@ -284,12 +284,12 @@ local errors = table.freeze({
 	end,
 	ordered_unnamed = function(entity: unknown, limit: number)
 		return prefixed(
-			`ordered store {entity} needs a jecs.Name of at most {limit} characters and without /: the name is the OrderedDataStore's, and a path segment of the record's bookkeeping`
+			`ordered store {entity} needs a pepecs.Name of at most {limit} characters and without /: the name is the OrderedDataStore's, and a path segment of the record's bookkeeping`
 		)
 	end,
 	ordered_name_long = function(entity: unknown, name: string, limit: number)
 		return prefixed(
-			`ordered store {entity} would use the store name "{name}", which is over the {limit}-character DataStore limit: shorten its jecs.Name or lengthen its period`
+			`ordered store {entity} would use the store name "{name}", which is over the {limit}-character DataStore limit: shorten its pepecs.Name or lengthen its period`
 		)
 	end,
 	store_name_clash = function(collection: unknown, name: string, other: unknown)
@@ -436,17 +436,17 @@ local warnings = table.freeze({
 	end,
 	name_shared = function(name: string, first: unknown, second: unknown)
 		return prefixed(
-			`entities {first} and {second} both carry the jecs.Name "{name}"; pairs to the one that lost the name are not stored`
+			`entities {first} and {second} both carry the pepecs.Name "{name}"; pairs to the one that lost the name are not stored`
 		)
 	end,
 	pair_target_unnamed = function(key: string, entity: unknown, target: string)
 		return prefixed(
-			`pair under "{key}" on {entity} points at entity {target}, which has no jecs.Name, and was left out of the record`
+			`pair under "{key}" on {entity} points at entity {target}, which has no pepecs.Name, and was left out of the record`
 		)
 	end,
 	pair_target_unknown = function(key: string, name: string, entity: unknown)
 		return prefixed(
-			`stored pair under "{key}" names "{name}", which no entity in the world carries as its jecs.Name; {entity} did not get it`
+			`stored pair under "{key}" names "{name}", which no entity in the world carries as its pepecs.Name; {entity} did not get it`
 		)
 	end,
 	child_group_refused = function(entity: unknown, tag: unknown, key: string)

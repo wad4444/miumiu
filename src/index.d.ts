@@ -1,4 +1,4 @@
-import type { Entity, Tag, World } from "@rbxts/jecs";
+import type { Entity, Tag, World } from "@rbxts/pepecs";
 
 declare namespace miumiu {
 	/** Stored shape of one key: saveable key → stored form of its value. */
@@ -302,7 +302,7 @@ declare namespace miumiu {
 	export const snapshot: Entity<Snapshot<any>>;
 	/** `meta(component, miumiu.lazy)`: a saveable written often (every frame) that the library reads at write time instead of journaling per write. Writes update the entity as usual; the value is packed once per write cycle. Components only. */
 	export const lazy: Tag;
-	/** `meta(relation, miumiu.saveable, "key")` plus `meta(relation, miumiu.pairs)` (or `meta(relation, miumiu.pairs, { targets: [...] })` to store only those targets): the pairs `pair(relation, target)` on an entity are stored under `key` as a dictionary keyed by each target's `jecs.Name` (`true` for a tag relation, the pair value for a component one; a component pair without a value is not stored). A target's name is a stored key: keep it unique and stable. A target without a name or with a name another entity also carries is left out with a warning, a stored name no entity carries is skipped with a warning. Stored whole: no guard, serdes, snapshot, lazy or delta. */
+	/** `meta(relation, miumiu.saveable, "key")` plus `meta(relation, miumiu.pairs)` (or `meta(relation, miumiu.pairs, { targets: [...] })` to store only those targets): the pairs `pair(relation, target)` on an entity are stored under `key` as a dictionary keyed by each target's `Name` (`true` for a tag relation, the pair value for a component one; a component pair without a value is not stored). A target's name is a stored key: keep it unique and stable. A target without a name or with a name another entity also carries is left out with a warning, a stored name no entity carries is skipped with a warning. Stored whole: no guard, serdes, snapshot, lazy or delta. */
 	export const pairs: Entity<PairsConfig>;
 	/** Declares a child kind on its tag; see `ChildConfig`. */
 	export const child: Entity<ChildConfig>;

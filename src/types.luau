@@ -1,6 +1,6 @@
-local jecs = require("./dependencies/jecs")
+local pepecs = require("./dependencies/pepecs")
 
-export type World = typeof(jecs.world())
+export type World = typeof(pepecs.world())
 export type Entity<T = nil> = { __T: T }
 
 export type Callback = (...any) -> ...any
@@ -744,6 +744,7 @@ export type Context = {
 
 export type MigrationScratch = {
 	world: World,
+	component_marker: Entity,
 	entity: Entity,
 	kinds: { ChildKind },
 	sink: RecorderSink,

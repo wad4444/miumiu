@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.0-pepecs.0
+
+Runs on pepecs 0.1.0 instead of jecs 0.11: `@rbxts/pepecs` is the peer dependency and
+`pepeeltoro41/pepecs@0.1.0` the wally one. pepecs world functions are closures, so the
+library and every example call them with a dot (`world.set`); the public surface and
+the stored format are unchanged.
+
+A pepecs hook on a bare relation fires for that id only, never for its pairs. Hook
+`pair(miumiu.data_loaded, c)` (or `pair(miumiu.data_loaded, Wildcard)` for every
+collection) where a jecs game hooked `miumiu.data_loaded` and compared the id; the same
+holds for `data_link`, `data_error` and saveable relations. The library's own listeners
+hook `pair(relation, Wildcard)` and read `world.deleting` where jecs passed a third
+argument.
+
+pepecs tears a deleted entity down from the outside in, the pairs that point at it
+before its own components, and throws where jecs answered `has`, `get`, `add` or
+`delete` on a dead entity with false, nil or nothing. A detach now reads whether its
+parent is leaving from the parent's components, and the paths that can meet an entity
+deleted before the `step` that unlinks it (a pull or load supplying its key, `wipe`,
+`on_period_change`, a deleted collection or `via`, a warning naming it) check that it
+is alive, so deleting a linked root, a claimed child or an unlinked holder behaves as
+it did. One difference: `on_period_change` skips an entity another key's change deleted
+in the same `step` instead of running on it, and leaves that key's change owed.
+
+pepecs has no `world:entity(id)` and no exported `Component` marker, so a migration's
+scratch world writes the schema's ids into its entity index and marks runtime
+components with the `ecs.Component` entity it finds by name. The schema's name index
+is seeded oldest archetype first, the order jecs gave it, so the first entity to carry
+a name still owns it.
+
 ## 0.2.0 (unreleased)
 
 Ordered stores: `meta(entity, miumiu.ordered, { component, period?, reset?, map?,

@@ -1,8 +1,8 @@
 local types = require("./types")
 local children = require("./children")
-local jecs = require("./dependencies/jecs")
 local logging = require("./logging")
 local messages = require("./messages")
+local pepecs = require("./dependencies/pepecs")
 local relations = require("./relations")
 local state = require("./state")
 local util = require("./util")
@@ -44,17 +44,18 @@ local function watch_pairs(world: World, entry: RelationEntry, named: Named, sin
 		emit(entity, nil, false)
 	end
 
+	local any_pair = pepecs.pair(entry.id, pepecs.Wildcard)
 	return {
-		world:added(entry.id, settled),
-		world:changed(entry.id, settled),
-		world:removed(entry.id, function(entity, id, deleted)
-			if deleted then
+		world.added(any_pair, settled),
+		world.changed(any_pair, settled),
+		world.removed(any_pair, function(entity, id)
+			if world.deleting(entity) then
 				forget_entity(world, entity)
 				emit(entity, nil, true)
 				return
 			end
 			local targets = state.removing_targets(state.get(world), entity, entry.key)
-			targets[jecs.pair_second(world, id)] = true
+			targets[world.pair_second(id)] = true
 			relations.prune(world, entry, entity, targets)
 			emit(entity, targets, false)
 		end),
@@ -103,14 +104,14 @@ local function watch_names(world: World, named: Named): { () -> () }
 		learn(entity, name)
 	end
 
-	for entity in world:each(jecs.Name) do
-		learn(entity, world:get(entity, jecs.Name))
+	for entity in world.each(pepecs.Name) do
+		learn(entity, world.get(entity, pepecs.Name))
 	end
 
 	return {
-		world:added(jecs.Name, remember),
-		world:changed(jecs.Name, remember),
-		world:removed(jecs.Name, function(entity)
+		world.added(pepecs.Name, remember),
+		world.changed(pepecs.Name, remember),
+		world.removed(pepecs.Name, function(entity)
 			forget(entity)
 		end),
 	}
@@ -136,9 +137,10 @@ local function watch(world: World, entry: SchemaEntry, named: Named, sink: Recor
 	end
 
 	return {
-		world:added(entry.id, emit("added")),
-		world:changed(entry.id, emit("changed")),
-		world:removed(entry.id, function(entity, _, deleted)
+		world.added(entry.id, emit("added")),
+		world.changed(entry.id, emit("changed")),
+		world.removed(entry.id, function(entity)
+			local deleted = world.deleting(entity)
 			if deleted then
 				forget_entity(world, entity)
 			else
@@ -150,39 +152,40 @@ local function watch(world: World, entry: SchemaEntry, named: Named, sink: Recor
 				entry = entry,
 				change = "removed",
 				value = nil,
-				deleted = deleted == true,
+				deleted = deleted,
 			})
 		end),
 	}
 end
 
 local function watch_relation(world: World, relation: Entity, kinds: { ChildKind }, sink: RecorderSink): { () -> () }
+	local any_pair = pepecs.pair(relation, pepecs.Wildcard)
 	return {
-		world:added(relation, function(entity, id)
+		world.added(any_pair, function(entity, id)
 			local kind = children.kind_of(world, kinds, entity)
 			if kind then
 				sink({
 					kind = "relation",
 					entity = entity,
 					child = kind,
-					parent = jecs.pair_second(world, id),
+					parent = world.pair_second(id),
 					trigger = id,
 					change = "added",
 					deleted = false,
 				})
 			end
 		end),
-		world:removed(relation, function(entity, id, deleted)
+		world.removed(any_pair, function(entity, id)
 			local kind = children.kind_of(world, kinds, entity)
 			if kind then
 				sink({
 					kind = "relation",
 					entity = entity,
 					child = kind,
-					parent = jecs.pair_second(world, id),
+					parent = world.pair_second(id),
 					trigger = id,
 					change = "removed",
-					deleted = deleted == true,
+					deleted = world.deleting(entity),
 				})
 			end
 		end),
@@ -190,7 +193,7 @@ local function watch_relation(world: World, relation: Entity, kinds: { ChildKind
 end
 
 local function emit_kind(world: World, kind: ChildKind, entity: Entity, change: "added" | "removed", sink: RecorderSink)
-	local parent = world:target(entity, kind.via, 0)
+	local parent = world.target(entity, kind.via, 0)
 	if parent then
 		sink({
 			kind = "relation",
@@ -208,11 +211,11 @@ end
 
 local function watch_kind(world: World, kind: ChildKind, sink: RecorderSink): { () -> () }
 	return {
-		world:added(kind.tag, function(entity)
+		world.added(kind.tag, function(entity)
 			emit_kind(world, kind, entity, "added", sink)
 		end),
-		world:removed(kind.tag, function(entity, _, deleted)
-			if not deleted then
+		world.removed(kind.tag, function(entity)
+			if not world.deleting(entity) then
 				emit_kind(world, kind, entity, "removed", sink)
 			end
 		end),

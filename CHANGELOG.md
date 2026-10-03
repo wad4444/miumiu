@@ -36,6 +36,18 @@ key in one frame keep the owned child entities, since that link never lapsed. Tw
 collections importing one foreign collection with different options are rejected at the
 schema build rather than silently sharing the first one's.
 
+A migration indexes child pairs the way a claim does. A stored child moved under a new
+parent before that parent is paired is no longer dropped from the record, a pair the
+migration added and removed on another relation no longer takes the child's slot with
+it, and two kind tags on one relation, a second kinded pair on a child, or a new child
+under a stored array now fail the migration with the record untouched instead of storing
+the wrong thing. A nested group keyed by numbers rides along unchanged in every put of
+the child that holds it, from the game or from a migration, instead of being erased by
+the first write to that child. A world importing a foreign collection that another world
+already created with other options fails that load instead of reading with the first
+world's options, and a collection importing with no options fails on its own instead of
+failing the schema build of a world where another collection imports the same name.
+
 A lazy value that cannot be read at write time no longer takes the entity's other lazy
 values, its children's, or the whole final write with it: each key is flushed on its own
 and a failure warns by name. A snapshot whose value a guard rejects no longer stops the

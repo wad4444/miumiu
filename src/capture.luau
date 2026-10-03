@@ -4,6 +4,7 @@ local codec = require("./codec")
 local delta = require("./delta")
 local logging = require("./logging")
 local messages = require("./messages")
+local ops = require("./ops")
 local reconcile = require("./reconcile")
 local state = require("./state")
 local util = require("./util")
@@ -188,19 +189,26 @@ local function child_put(context: Context, ancestry: Ancestry): Op
 	local index = world_state.children
 	local entity = children.lookup_entity(index, ancestry.root, ancestry.path)
 	local held = children.child_of(index, entity) :: ChildRecord
+	local value = children.pack(
+		context.world,
+		world_state.entities,
+		index,
+		entity,
+		held.kind,
+		context.schema.named,
+		world_state.warned
+	)
+	local sessions = ancestry_sessions(context, ancestry)
+	if sessions[1] then
+		local stored = ops.resolve(sessions[1]:get_truth(), split.key, split.path, #split.path)
+		children.carry_legacy_groups(value, stored, held.kind)
+	end
+
 	return {
 		kind = "put",
 		key = split.key,
 		path = split.path,
-		value = children.pack(
-			context.world,
-			world_state.entities,
-			index,
-			entity,
-			held.kind,
-			context.schema.named,
-			world_state.warned
-		),
+		value = value,
 		at = os.time(),
 	}
 end

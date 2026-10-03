@@ -273,6 +273,25 @@ local function pack(
 	return packed
 end
 
+local function carry_legacy_groups(packed: Data, stored: any, kind: ChildKind)
+	if type(stored) ~= "table" then
+		return
+	end
+
+	local nested_kinds: { ChildKind } = kind.kinds
+	for _, nested in nested_kinds do
+		local group = stored[nested.key]
+		local current = packed[nested.key]
+		if current ~= nil then
+			for id, child in current do
+				carry_legacy_groups(child, if type(group) == "table" then group[id] else nil, nested)
+			end
+		elseif type(group) == "table" and group[1] ~= nil then
+			packed[nested.key] = group
+		end
+	end
+end
+
 local function kind_of(world: World, kinds: { ChildKind }, entity: Entity): ChildKind?
 	for _, kind in kinds do
 		if world:has(entity, kind.tag) then
@@ -340,6 +359,7 @@ return table.freeze({
 	ancestry = ancestry,
 	lookup_entity = lookup_entity,
 	pack = pack,
+	carry_legacy_groups = carry_legacy_groups,
 	pack_fields_of = pack_fields_of,
 	describe_kind = describe_kind,
 	kind_of = kind_of,

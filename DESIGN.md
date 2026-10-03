@@ -149,8 +149,9 @@ Two modes, decided by who owns the entity:
   place for the first put to store; its own children are supplied the same way. Stored
   child ids are strings; a group
   keyed by numbers (an imported array) is left alone until a migration rebuilds it
-  through `context.legacy`, with one warning per world and kind key when no migration
-  did. Removing the pair journals nothing and the
+  (through `context.legacy` at the top level, from `context.stored` when it is nested
+  under a child), with one warning per world and kind key when no migration did; a
+  nested one rides along unchanged in every put of the child that holds it. Removing the pair journals nothing and the
   record keeps the state; on the next `step` the entity returns to its baseline (unless
   something claimed it again in the meantime). The root unlinking resets it the same
   way. Deleting it journals nothing either.
@@ -184,7 +185,12 @@ shape of a gift link to another player's key.
 
 Migrations see children as entities of the scratch world, keyed the same way; a
 migration that touches a child rewrites that top-level child's subtree from the scratch
-world and leaves the others as stored. `context.stored` is the record as read, for the
+world and leaves the others as stored. The scratch world indexes a child pair the way a
+claim does in the game world: a parent not yet paired holds what its kind tag holds, a
+pair removed on a relation the child is not indexed under leaves its slot alone, and two
+kind tags on one relation, a second kinded pair on a child, an id the parent already
+holds, or a new child under a stored array fail the migration and leave the record
+untouched. `context.stored` is the record as read, for the
 shapes `legacy` cannot express (an array under a kind's key); it is read-only.
 
 ## Snapshots
@@ -483,7 +489,10 @@ migration runs on it (`context.legacy` reaches the old keys), and the load itsel
 the miumiu record. Once that record exists the foreign store is never read again for
 that key. The foreign store is never written. Its name must differ from the collection's
 own store name: lapis reads through its own DataStoreService, so on the real service a
-shared name would have lapis reading miumiu's record. Adapters live in
+shared name would have lapis reading miumiu's record. Lapis creates a collection once
+per server, so every import of one foreign collection shares one options table: two
+collections of a world that disagree fail its schema build, and a world that disagrees
+with one built earlier fails its loads of that collection. Adapters live in
 `src/foreign/<type>.luau`; `lapis` is the only one. A key with no foreign document is
 loaded fresh with one read.
 

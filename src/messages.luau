@@ -101,6 +101,11 @@ local errors = table.freeze({
 			`collections {collection} and {other} both import "{name}" with different options: the foreign collection is created once, so they must share one options table`
 		)
 	end,
+	foreign_options_reused = function(name: string)
+		return prefixed(
+			`foreign collection "{name}" was already created with different options by another world: it is created once per server, so every import of it must share one options table`
+		)
+	end,
 	foreign_name_clash = function(collection: unknown, name: string)
 		return prefixed(
 			`collection {collection} imports from "{name}", which is its own store; the foreign store must be a different DataStore`

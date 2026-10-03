@@ -436,7 +436,8 @@ local function create_schema(world: World): Schema
 		end
 
 		local source: any = world:get(collection, ids.from_foreign)
-		if type(source) == "table" and type(source.source) == "table" and type(source.name) == "string" then
+		local importing = type(source) == "table" and type(source.source) == "table" and type(source.name) == "string"
+		if importing and source.options ~= nil then
 			local first = util.cached(imports, source.source, source.name, function()
 				return { collection = collection, options = source.options }
 			end)

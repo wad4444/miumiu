@@ -97,12 +97,18 @@ local function holds_kind(scratch: MigrationScratch, kind: ChildKind, parent: En
 	end
 
 	local held = children.child_of(scratch.children, parent)
-	return held ~= nil and kind.holders[held.kind.tag] == true
+	local parent_kind = if held then held.kind else children.kind_of(scratch.world, scratch.schema.kinds, parent)
+	return parent_kind == nil or kind.holders[parent_kind.tag] == true
 end
 
 local function index_relation(scratch: MigrationScratch, write: RelationWrite)
 	local world, index = scratch.world, scratch.children
+	local held = children.child_of(index, write.entity)
 	if write.change == "removed" then
+		if held and (held.kind ~= write.child or held.parent ~= write.parent) then
+			return
+		end
+
 		touch(scratch, write.entity)
 		children.forget(index, write.entity)
 		if write.deleted then
@@ -110,6 +116,30 @@ local function index_relation(scratch: MigrationScratch, write: RelationWrite)
 		end
 
 		return
+	end
+
+	for _, other in scratch.schema.kinds_by_relation[write.child.via] do
+		if other ~= write.child and world:has(write.entity, other.tag) then
+			error(
+				messages.errors.child_kinds_ambiguous(
+					util.describe(world, write.entity),
+					children.describe_kind(world, write.child),
+					children.describe_kind(world, other)
+				),
+				0
+			)
+		end
+	end
+
+	if held then
+		error(
+			messages.errors.child_double_parent(
+				util.describe(world, write.entity),
+				children.describe_kind(world, write.child),
+				children.describe_kind(world, held.kind)
+			),
+			0
+		)
 	end
 
 	if not holds_kind(scratch, write.child, write.parent) then
@@ -123,18 +153,6 @@ local function index_relation(scratch: MigrationScratch, write: RelationWrite)
 			)
 		)
 		return
-	end
-
-	local held = children.child_of(index, write.entity)
-	if held then
-		error(
-			messages.errors.child_double_parent(
-				util.describe(world, write.entity),
-				children.describe_kind(world, write.child),
-				children.describe_kind(world, held.kind)
-			),
-			0
-		)
 	end
 
 	local id = children.resolve_id(world, write.entity, write.child)
@@ -173,6 +191,7 @@ local function create_scratch(schema: Schema, root: Fields, warned: Warned): Mig
 	scratch = {
 		world = world,
 		entity = world:entity(),
+		schema = schema,
 		kinds = root.kinds,
 		children = { by_entity = {}, by_parent = {} },
 		named = table.clone(schema.named),
@@ -366,8 +385,19 @@ local function run(
 		end
 		local child = children.children_of(index, scratch.entity, slot.key)[slot.id]
 		local held = children.child_of(index, child)
-		group[slot.id] = if held
-			then children.pack(
+		if held then
+			if group[1] ~= nil then
+				error(
+					messages.errors.child_group_legacy(
+						util.describe(scratch.world, child),
+						children.describe_kind(scratch.world, held.kind),
+						slot.key
+					),
+					0
+				)
+			end
+
+			local packed = children.pack(
 				scratch.world,
 				state.get(scratch.world).entities,
 				index,
@@ -376,7 +406,11 @@ local function run(
 				scratch.named,
 				scratch.warned
 			)
-			else nil
+			children.carry_legacy_groups(packed, ops.resolve(data, slot.key, { slot.id }, 1), held.kind)
+			group[slot.id] = packed
+		else
+			group[slot.id] = nil
+		end
 		migrated[slot.key] = if next(group) ~= nil then group else nil
 	end
 

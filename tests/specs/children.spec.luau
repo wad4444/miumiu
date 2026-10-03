@@ -3864,5 +3864,170 @@ return function()
 			local record = t.backend:dump("p1")
 			expect(record == nil or record.data.inventory == nil).to.equal(true)
 		end)
+
+		it("keeps a stored part a migration moves under a new item before pairing that item", function()
+			local t, k = setup()
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(world, entity)
+					local bolt = nil
+					for found in world:each(k.part) do
+						bolt = found
+					end
+					local fresh = world:entity()
+					world:add(fresh, k.item)
+					world:set(fresh, t.money, 2)
+					world:add(bolt, jecs.pair(k.part_of, fresh))
+					world:add(fresh, jecs.pair(k.owns, entity))
+				end,
+			})
+			t.backend:seed("p1", {
+				data = { inventory = { a = { money = 1, parts = { bolt = { money = 7 } } } } },
+				migrations = 0,
+			})
+			local player = utils.link_entity(t, "p1")
+			expect(t.world:has(player, t.data_error)).to.equal(false)
+			local inventory = t.backend:dump("p1").data.inventory
+			expect(inventory.a.parts).to.equal(nil)
+			local moved = nil
+			for id, stored in inventory do
+				if id ~= "a" then
+					moved = stored
+				end
+			end
+			expect(moved).to.be.ok()
+			expect(moved.parts ~= nil and moved.parts.bolt ~= nil and moved.parts.bolt.money == 7).to.equal(true)
+		end)
+
+		it("keeps a nested legacy array when the game writes its parent child", function()
+			local t, k = setup()
+			t.backend:seed("p1", {
+				data = { inventory = { a = { money = 1, parts = { { money = 3 } } } } },
+			})
+			local player = utils.link_entity(t, "p1")
+			local items = utils.items_of(t, k, player)
+			expect(items.a).to.be.ok()
+			t.world:set(items.a, t.money, 2)
+			utils.session_of(t, "p1"):sync()
+			local stored = t.backend:dump("p1").data.inventory.a
+			expect(stored.money).to.equal(2)
+			expect(stored.parts ~= nil and stored.parts[1] ~= nil and stored.parts[1].money == 3).to.equal(true)
+		end)
+
+		it("keeps a nested legacy array when a migration changes its parent child", function()
+			local t, k = setup()
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(world, entity)
+					for item in world:each(jecs.pair(k.owns, entity)) do
+						world:set(item, t.money, 2)
+					end
+				end,
+			})
+			t.backend:seed("p1", {
+				data = { inventory = { a = { money = 1, parts = { { money = 3 } } } } },
+				migrations = 0,
+			})
+			local player = utils.link_entity(t, "p1")
+			expect(t.world:has(player, t.data_error)).to.equal(false)
+			local record = t.backend:dump("p1")
+			expect(record.migrations).to.equal(1)
+			local stored = record.data.inventory.a
+			expect(stored.money).to.equal(2)
+			expect(stored.parts ~= nil and stored.parts[1] ~= nil and stored.parts[1].money == 3).to.equal(true)
+		end)
+
+		it("keeps a migration's new child whose earlier stray pair on another relation it removed", function()
+			local t, k = setup()
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(world, entity)
+					local fresh = world:entity()
+					world:add(fresh, k.item)
+					world:add(fresh, k.part)
+					world:set(fresh, t.money, 4)
+					world:add(fresh, jecs.pair(k.part_of, entity))
+					world:add(fresh, jecs.pair(k.owns, entity))
+					world:remove(fresh, jecs.pair(k.part_of, entity))
+					world:remove(fresh, k.part)
+				end,
+			})
+			t.backend:seed("p1", { data = { inventory = { a = { money = 1 } } }, migrations = 0 })
+			local player = utils.link_entity(t, "p1")
+			expect(t.world:has(player, t.data_error)).to.equal(false)
+			local inventory = t.backend:dump("p1").data.inventory
+			local fresh_money = nil
+			for id, stored in inventory do
+				if id ~= "a" then
+					fresh_money = stored.money
+				end
+			end
+			expect(utils.count(inventory)).to.equal(2)
+			expect(fresh_money).to.equal(4)
+		end)
+
+		it("fails a migration that pairs a stored child under a second relation its parent does not hold", function()
+			local t, k = setup()
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(world, entity)
+					local found = {}
+					for item in world:each(jecs.pair(k.owns, entity)) do
+						table.insert(found, item)
+					end
+					for _, item in found do
+						world:add(item, k.part)
+						world:add(item, jecs.pair(k.part_of, entity))
+						world:remove(item, jecs.pair(k.part_of, entity))
+						world:remove(item, k.part)
+					end
+				end,
+			})
+			t.backend:seed("p1", { data = { inventory = { a = { money = 1 } } }, migrations = 0 })
+			local player = utils.link_entity(t, "p1")
+			local err = t.world:get(player, t.data_error)
+			expect(err ~= nil and string.find(err, "is already a child of kind", 1, true) ~= nil).to.equal(true)
+			local record = t.backend:dump("p1")
+			expect(record.migrations).to.equal(0)
+			expect(record.data.inventory.a.money).to.equal(1)
+		end)
+
+		it("fails a migration that gives one child two kind tags on one relation", function()
+			local t, k = setup()
+			local tool = t.world:entity()
+			t.world:set(tool, jecs.Name, "tool")
+			t.world:set(tool, miumiu.child, { via = k.owns, key = "tools", mode = "owned" })
+			utils.scope(t.world, { tool }, { t.player_data })
+			utils.scope(t.world, { t.money }, { tool })
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(world, entity)
+					local both = world:entity()
+					world:add(both, k.item)
+					world:add(both, tool)
+					world:set(both, t.money, 6)
+					world:add(both, jecs.pair(k.owns, entity))
+				end,
+			})
+			t.backend:seed("p1", { data = { money = 1 }, migrations = 0 })
+			local player = utils.link_entity(t, "p1")
+			local err = t.world:get(player, t.data_error)
+			expect(err ~= nil and string.find(err, "carries the kind tags", 1, true) ~= nil).to.equal(true)
+			expect(t.backend:dump("p1").migrations).to.equal(0)
+		end)
+
+		it("fails a migration that adds a child under a stored array it did not rebuild", function()
+			local t, k = setup()
+			t.world:set(t.player_data, miumiu.migrations, {
+				function(world, entity)
+					local sword = world:entity()
+					world:add(sword, k.item)
+					world:set(sword, t.money, 4)
+					world:add(sword, jecs.pair(k.owns, entity))
+				end,
+			})
+			t.backend:seed("p1", { data = { inventory = { { money = 3 } } }, migrations = 0 })
+			local player = utils.link_entity(t, "p1")
+			local err = t.world:get(player, t.data_error)
+			expect(err ~= nil and string.find(err, "holds an array", 1, true) ~= nil).to.equal(true)
+			local record = t.backend:dump("p1")
+			expect(record.migrations).to.equal(0)
+			expect(record.data.inventory[1].money).to.equal(3)
+		end)
 	end)
 end

@@ -428,6 +428,8 @@ export type LapisSource = {
 
 export type ForeignSource = LapisSource
 
+export type LapisCreated = { collection: LapisCollection, options: any }
+
 export type ForeignImport = { collection: Entity, options: any }
 
 export type CollectionConfig = {
@@ -745,6 +747,7 @@ export type Context = {
 export type MigrationScratch = {
 	world: World,
 	entity: Entity,
+	schema: Schema,
 	kinds: { ChildKind },
 	sink: RecorderSink,
 	children: ChildIndex,

@@ -557,8 +557,12 @@ value already in the record stays. `init` seeds a key the record lacks (an initi
 entity carried) without a stamp, so two servers seeding the same initial before their
 first delta converge instead of adding to nothing twice. A path stamp whose value is gone
 from the record and older than `commit_timeout` is pruned on the next write, so dropped
-children do not accumulate stamps forever; the window it protects (a late final write)
-is far shorter than that.
+children do not accumulate stamps forever. Any holder prunes, not just the one that dropped
+the child, so that window is also how long a holder may sit on an older `put` of the same
+path: past it the stamp is gone and the `put` would bring the child back. A loop writes
+well inside the window, so this binds only under `pull_interval = math.huge`, where nothing
+writes but `sync`, `await`, an unlink and `close`: a game that turns the loop off owns that
+timing and must sync inside the window.
 
 ## Groups
 
@@ -659,10 +663,11 @@ end)
 `pending` holds the entries of multi-key groups that are not decided yet. `landed` holds
 the ids of groups this record has taken, with the time, for `commit_timeout` seconds: a
 write that fails after reaching storage is retried, and the retry skips groups the
-record already holds instead of applying `add` twice. An id whose writer still holds that
-group unwritten outlives the timeout, because the timeout garbage-collects ids nobody
-holds any more and a group still in flight is still in play; pruning it would let the
-next write apply the group a second time. `version` bumps on every write.
+record already holds instead of applying `add` twice. A writer never prunes an id for a
+group it still holds, but another holder of the same key cannot see what this one holds, so
+a write whose response was lost does not wait to find out: it reads the record once and
+settles every group that record already took, adopting it, which is what makes the id safe
+for anyone to prune. `version` bumps on every write.
 `migrations` is how many declared migrations have been applied. A `pending` entry also
 records how many its writer declared, because its ops belong to that schema: a pull
 replays the entries it can decide onto the record as it stands and only then migrates, and

@@ -543,13 +543,16 @@ local function on_unlink(context: Context, entity: Entity, collection_entity: En
 			children.forget_parent(context.world_state.children, entity)
 		end
 		link_state.entities[entity] = nil
-		if link_state.phase.kind == "loaded" and not is_relinking(context, entity, collection_entity, key) then
+		local phase = link_state.phase
+		local relinking = is_relinking(context, entity, collection_entity, key)
+		if phase.kind == "loaded" and not relinking then
 			guard.run(function()
 				reconcile.release_children(context, entity, context.schema.roots[collection_entity].kinds)
 			end)
 		end
 
-		if next(link_state.entities) == nil then
+		local kept = phase.kind == "loaded" and relinking and not phase.session:is_dirty()
+		if next(link_state.entities) == nil and not kept then
 			local loaded = detach(context, link_state)
 			if loaded and loaded:is_open() then
 				link_state.phase =

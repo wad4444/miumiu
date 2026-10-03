@@ -66,6 +66,7 @@ export type Group = {
 export type PendingEntry = {
 	created: number,
 	ops: { Op },
+	migrations: number?,
 }
 
 export type Pending = { [string]: PendingEntry }

@@ -22,6 +22,8 @@ declare namespace miumiu {
 	export interface PendingEntry {
 		created: number;
 		ops: Op[];
+		/** How many migrations the build that wrote this entry declared. Its ops belong to that schema, so they are replayed before a later migration runs, and a migration waits while an entry from an older build is still undecided. */
+		migrations?: number;
 	}
 
 	/** Multi-key batch entries by group id. */

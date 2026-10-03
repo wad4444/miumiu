@@ -3,6 +3,7 @@ return function()
 
 	local commit = require(ReplicatedStorage.Packages.miumiu.commit)
 	local miumiu = require(ReplicatedStorage.Packages.miumiu)
+	local session_module = require(ReplicatedStorage.Packages.miumiu.session)
 	local utils = require(ReplicatedStorage.Tests.utils)
 
 	afterEach(utils.cleanup)
@@ -1104,6 +1105,41 @@ return function()
 			expect(backend:dump("pruned").data.money).to.equal(99)
 			stale_kept:unload()
 			stale_pruned:unload()
+		end)
+
+		it("replays a decided multi-key entry before the migration that renames its key", function()
+			local backend = utils.create_backend()
+			backend:seed("k", { data = { money = 5 }, migrations = 0 })
+			local old = utils.open_session(backend, "k", { pull_interval = never })
+			local id = fresh_id("shared")
+			utils.journal(old, { add("money", 100) }, id, true)
+			old:sync()
+			expect(backend:dump("k").pending[id]).to.be.ok()
+			old:unload()
+
+			local config = utils.create_config(backend, { pull_interval = never, migrations = { function() end } })
+			local function migrate(truth)
+				local migrated = table.clone(truth)
+				migrated.wallet = migrated.money or 0
+				migrated.money = nil
+				return migrated
+			end
+			local holder =
+				{ entity = 0 :: any, config = config, store = utils.open_store(backend), ordered = {}, holder = "new" }
+
+			local loaded, err = pcall(session_module.load_session, holder, "k", migrate)
+			expect(loaded).to.equal(false)
+			expect((string.find(tostring(err), "not decided yet", 1, true))).to.be.ok()
+			expect(backend:dump("k").migrations).to.equal(0)
+			expect(backend:dump("k").data.money).to.equal(5)
+
+			commit.mark(config, id)
+			local newer = session_module.load_session(holder, "k", migrate)
+			local record = backend:dump("k")
+			newer:unload()
+			expect(record.migrations).to.equal(1)
+			expect(record.data.money).to.equal(nil)
+			expect(record.data.wallet).to.equal(105)
 		end)
 	end)
 end

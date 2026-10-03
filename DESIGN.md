@@ -663,7 +663,11 @@ record already holds instead of applying `add` twice. An id whose writer still h
 group unwritten outlives the timeout, because the timeout garbage-collects ids nobody
 holds any more and a group still in flight is still in play; pruning it would let the
 next write apply the group a second time. `version` bumps on every write.
-`migrations` is how many declared migrations have been applied. `format` is the
+`migrations` is how many declared migrations have been applied. A `pending` entry also
+records how many its writer declared, because its ops belong to that schema: a pull
+replays the entries it can decide onto the record as it stands and only then migrates, and
+a migration waits while an entry an older build wrote is still undecided rather than
+replaying old-schema ops onto migrated data. `format` is the
 record-format version this library writes; a read of a record in a higher `format`
 closes the session like a newer migration count, so an old server cannot mangle a record
 a new one owns. Top-level fields a build does not know are carried through its writes

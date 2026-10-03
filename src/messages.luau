@@ -261,6 +261,11 @@ local errors = table.freeze({
 	hook_unknown = function(hook: string, accepted: string)
 		return prefixed(`{hook} is not a hook this surface accepts; it takes {accepted}`)
 	end,
+	pending_before_migration = function(key: string, id: string, declared: number)
+		return prefixed(
+			`record "{key}" holds multi-key batch {id}, written before migration {declared} and not decided yet; the migration waits until it is`
+		)
+	end,
 	newer_format = function(key: string, format: number, known: number)
 		return prefixed(
 			`record "{key}" uses record format {format} but this server knows format {known}: written by a newer server, this server's session on the key ends and its entities get data_error`

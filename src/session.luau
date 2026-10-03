@@ -443,7 +443,14 @@ local function migrate_state(self: SessionInternal, old: StoredRecord?, state: S
 	return { kind = "unchanged", state = state }
 end
 
-local function land_groups(state: State, pending: Pending, landed: Landed, groups: { Group }, now: number): Landing
+local function land_groups(
+	state: State,
+	pending: Pending,
+	landed: Landed,
+	groups: { Group },
+	now: number,
+	declared: number
+): Landing
 	local next_pending = pending
 	local next_landed = landed
 	for _, group in groups do
@@ -454,7 +461,7 @@ local function land_groups(state: State, pending: Pending, landed: Landed, group
 		next_landed[group.id] = now
 		if group.kind == "shared" then
 			next_pending = util.own(pending, next_pending)
-			next_pending[group.id] = { created = now, ops = group.ops }
+			next_pending[group.id] = { created = now, ops = group.ops, migrations = declared }
 		else
 			state = ops.replay(state, group.ops)
 		end
@@ -550,18 +557,27 @@ local function merge(self: SessionInternal, old: StoredRecord?): Merge
 		state = { truth = table.clone(self.internal_seed :: Data), stamps = state.stamps }
 	end
 
-	local migrated = migrate_state(self, old, state, seeded)
+	local original: Pending = table_or_empty(record.pending)
+	resolution = commit.resolve(state, original)
+
+	local declared = #self.internal_collection.config.migrations
+	if declared > applied_migrations(self, old, seeded) then
+		for id, entry in resolution.pending do
+			if number_or(entry.migrations, 0) < declared then
+				local message = messages.errors.pending_before_migration(self.internal_values.key, id, declared)
+				return { kind = "newer", message = message, groups = groups, resolution = resolution }
+			end
+		end
+	end
+
+	local migrated = migrate_state(self, old, { truth = resolution.truth, stamps = resolution.stamps }, seeded)
 	if migrated.kind == "newer" then
 		return { kind = "newer", message = migrated.message, groups = groups, resolution = resolution }
 	end
 
-	local original: Pending = table_or_empty(record.pending)
-	resolution = commit.resolve(migrated.state, original)
-
 	local now = os.time()
 	local landed: Landed = table_or_empty(record.landed)
-	local landing =
-		land_groups({ truth = resolution.truth, stamps = resolution.stamps }, resolution.pending, landed, groups, now)
+	local landing = land_groups(migrated.state, resolution.pending, landed, groups, now, declared)
 	local rolled = rankings.roll(landing.state, self.internal_collection.ordered, now, claim_of(self))
 	landing.state = rolled.state
 

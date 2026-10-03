@@ -347,10 +347,6 @@ local function resolve_group(self: SessionInternal, id: string, message: string)
 		forget_state(self)
 	end)
 	self.internal_watchers[id] = nil
-	if self.internal_values.status.kind == "closed" then
-		settle_watched(self)
-	end
-
 	return outcome
 end
 
@@ -850,6 +846,28 @@ local function pull_now(self: SessionInternal, retry: RetryConfig): boolean
 	return adopted
 end
 
+local function settle_landed(self: SessionInternal, retry: RetryConfig)
+	local collection = self.internal_collection
+	local ok, found = pcall(datastore.get_async, collection.store, self.internal_values.key, retry)
+	local record: StoredRecord = if ok and type(found) == "table" then found else {}
+	local landed: Landed = if type(record.landed) == "table" then record.landed else {}
+	local unwritten = self.internal_unwritten
+	local settled = false
+	for index = #unwritten, 1, -1 do
+		local group = unwritten[index]
+		if landed[group.id] ~= nil then
+			table.remove(unwritten, index)
+			table.insert(self.internal_landed, group.id)
+			settled = true
+		end
+	end
+
+	if settled then
+		adopt_record(self, record)
+		forget_state(self)
+	end
+end
+
 local function pull_with(self: SessionInternal, retry: RetryConfig): boolean
 	validate_open(self)
 	local values = self.internal_values
@@ -873,7 +891,13 @@ local function pull_with(self: SessionInternal, retry: RetryConfig): boolean
 	local entered = false
 	local ok, err = pcall(self.internal_mutex.with, self.internal_mutex, function()
 		entered = true
-		adopted = pull_now(self, retry)
+		local wrote, result = pcall(pull_now, self, retry)
+		if not wrote then
+			settle_landed(self, retry)
+			error(result, 0)
+		end
+
+		adopted = result
 		values.pulls += 1
 	end)
 	if entered then

@@ -115,6 +115,7 @@ local function apply(world: World, entry: RelationEntry, entity: Entity, named: 
 end
 
 return table.freeze({
+	is_target = is_target,
 	pack = pack,
 	prune = prune,
 	apply = apply,

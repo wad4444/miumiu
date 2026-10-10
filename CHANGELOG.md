@@ -2,6 +2,11 @@
 
 ## 0.3.0-pepecs.0
 
+A pairs saveable with a `targets` list ignores writes to any other target: `pair(relation, x)`
+for an undeclared `x` is neither stored (it never was) nor warned about as an unsaved write on
+an entity the relation is not a field of. A record still holding such a target from before the
+list sheds it on the next write to a declared one.
+
 Runs on pepecs 0.1.0 instead of jecs 0.11: `@rbxts/pepecs` is the peer dependency and
 `pepeeltoro41/pepecs@0.1.0` the wally one. pepecs world functions are closures, so the
 library and every example call them with a dot (`world.set`); the public surface and

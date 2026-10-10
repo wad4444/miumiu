@@ -44,11 +44,24 @@ local function watch_pairs(world: World, entry: RelationEntry, named: Named, sin
 		emit(entity, nil, false)
 	end
 
+	local function declared(id: Entity): boolean
+		return relations.is_target(entry, world.pair_second(id))
+	end
+
+	local function settled_declared(entity: Entity, id: Entity)
+		if declared(id) then
+			settled(entity)
+		end
+	end
+
 	local any_pair = pepecs.pair(entry.id, pepecs.Wildcard)
 	return {
-		world.added(any_pair, settled),
-		world.changed(any_pair, settled),
+		world.added(any_pair, settled_declared),
+		world.changed(any_pair, settled_declared),
 		world.removed(any_pair, function(entity, id)
+			if not declared(id) then
+				return
+			end
 			if world.deleting(entity) then
 				forget_entity(world, entity)
 				emit(entity, nil, true)

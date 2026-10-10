@@ -44,10 +44,23 @@ local function watch_pairs(world: World, entry: RelationEntry, named: Named, sin
 		emit(entity, nil, false)
 	end
 
+	local function declared(id: Entity): boolean
+		return relations.is_target(entry, jecs.pair_second(world, id))
+	end
+
+	local function settled_declared(entity: Entity, id: Entity)
+		if declared(id) then
+			settled(entity)
+		end
+	end
+
 	return {
-		world:added(entry.id, settled),
-		world:changed(entry.id, settled),
+		world:added(entry.id, settled_declared),
+		world:changed(entry.id, settled_declared),
 		world:removed(entry.id, function(entity, id, deleted)
+			if not declared(id) then
+				return
+			end
 			if deleted then
 				forget_entity(world, entity)
 				emit(entity, nil, true)

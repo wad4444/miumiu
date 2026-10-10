@@ -2,6 +2,11 @@
 
 ## 0.2.0 (unreleased)
 
+A pairs saveable with a `targets` list ignores writes to any other target: `pair(relation, x)`
+for an undeclared `x` is neither stored (it never was) nor warned about as an unsaved write on
+an entity the relation is not a field of. A record still holding such a target from before the
+list sheds it on the next write to a declared one.
+
 Ordered stores: `meta(entity, miumiu.ordered, { component, period?, reset?, map?,
 period_threshold?, poll_interval?, on_period_change? })` plus `pair(miumiu.field_of, collection)` ranks one
 root field in an `OrderedDataStore` named by the entity's `jecs.Name`. Sessions push the
